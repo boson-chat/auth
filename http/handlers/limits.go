@@ -24,6 +24,10 @@ const (
 	BucketReset    = "reset"
 	BucketVerify   = "verify"
 	BucketInternal = "internal"
+	// BucketInternalIP limits internal password checks per end-user IP, as
+	// forwarded by the (token-authenticated) caller. Only applied when the
+	// caller forwards one, so the IRC server's own address is never limited.
+	BucketInternalIP = "internal_ip"
 )
 
 type bucketPair struct {
@@ -48,6 +52,8 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	// The internal caller is the IRC server: one IP for every user, so only
 	// per-account limits apply, with a larger burst for reconnect storms.
 	l.buckets[BucketInternal] = bucketPair{account: ratelimit.New(cfg.AccountBurst*2, cfg.AccountPerMinute*2)}
+	// Per forwarded client IP: catches one IRC client trying many accounts.
+	l.buckets[BucketInternalIP] = bucketPair{ip: ratelimit.New(cfg.IPBurst*2, cfg.IPPerMinute*2)}
 	return l
 }
 

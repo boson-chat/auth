@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	nethttp "net/http"
+	"net/netip"
+	"strings"
 
 	"github.com/boson-chat/auth/internal/apperr"
+	"github.com/boson-chat/auth/internal/reqmeta"
 )
 
 // InternalTokenHeader carries INTERNAL_API_TOKEN.
@@ -35,6 +38,14 @@ func (h *Handlers) internalOnly(next nethttp.HandlerFunc) nethttp.HandlerFunc {
 			writeError(w, r, apperr.ErrUnauthenticated)
 			return
 		}
+		// The caller proved INTERNAL_API_TOKEN, so it is trusted to tell us the
+		// end user's address (e.g. the IRC client behind Ergo). Use it for rate
+		// limits and the audit log/sessions.
+		if ip, ok := ForwardedClientIP(r); ok {
+			m := reqmeta.From(r.Context())
+			m.IP = ip
+			r = r.WithContext(reqmeta.With(r.Context(), m))
+		}
 		next(w, r)
 	}
 }
@@ -58,6 +69,11 @@ func (h *Handlers) internalVerifyPassword(w nethttp.ResponseWriter, r *nethttp.R
 		writeError(w, r, err)
 		return
 	}
+	if _, forwarded := ForwardedClientIP(r); forwarded {
+		if !h.Limits.allow(w, r, BucketInternalIP, "") {
+			return
+		}
+	}
 	if !h.Limits.allow(w, r, BucketInternal, accountKey(req.Username)) {
 		return
 	}
@@ -71,4 +87,20 @@ func (h *Handlers) internalVerifyPassword(w nethttp.ResponseWriter, r *nethttp.R
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, verifyPasswordResp{OK: true, UserID: u.ID, Username: u.Username})
+}
+
+// ForwardedClientIP returns the end-user IP an internal caller forwarded in
+// X-Forwarded-For (the leftmost entry, i.e. the original client). Only call it
+// for requests that already passed the internal token check.
+func ForwardedClientIP(r *nethttp.Request) (string, bool) {
+	v := r.Header.Get("X-Forwarded-For")
+	if v == "" {
+		return "", false
+	}
+	first, _, _ := strings.Cut(v, ",")
+	a, err := netip.ParseAddr(strings.TrimSpace(first))
+	if err != nil {
+		return "", false
+	}
+	return a.Unmap().String(), true
 }
