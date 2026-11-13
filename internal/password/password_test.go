@@ -3,6 +3,8 @@ package password
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 var fast = Params{MemoryKiB: 1024, Iterations: 1, Parallelism: 1}
@@ -94,5 +96,34 @@ func TestCheckPolicy(t *testing.T) {
 		if got := CheckPolicy(c.pw, c.user, c.email); got != c.want {
 			t.Errorf("CheckPolicy(%q) = %v, want %v", c.pw, got, c.want)
 		}
+	}
+}
+
+func TestVerifyImportedBcrypt(t *testing.T) {
+	h, _ := NewHasher(fast)
+	for _, prefix := range []string{"$2a$", "$2b$", "$2y$"} {
+		raw, err := bcrypt.GenerateFromPassword([]byte("supabase password"), bcrypt.MinCost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := prefix + string(raw[4:])
+		if !IsBcrypt(hash) {
+			t.Fatalf("IsBcrypt(%q) = false", hash)
+		}
+		ok, rehash, err := h.Verify("supabase password", hash)
+		if err != nil || !ok || !rehash {
+			t.Fatalf("%s correct: ok=%v rehash=%v err=%v", prefix, ok, rehash, err)
+		}
+		ok, rehash, err = h.Verify("wrong password", hash)
+		if err != nil || ok || rehash {
+			t.Fatalf("%s wrong: ok=%v rehash=%v err=%v", prefix, ok, rehash, err)
+		}
+	}
+	if _, _, err := h.Verify("x", "$2a$10$tooshort"); err == nil {
+		t.Fatal("accepted a truncated bcrypt hash")
+	}
+	phc, _ := h.Hash("whatever password")
+	if IsBcrypt(phc) {
+		t.Fatal("argon2id PHC detected as bcrypt")
 	}
 }

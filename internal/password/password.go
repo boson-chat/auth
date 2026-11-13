@@ -1,5 +1,8 @@
 // Package password hashes passwords with argon2id into PHC strings and
-// enforces the password policy.
+// enforces the password policy. Verify also accepts bcrypt hashes
+// ($2a$/$2b$/$2y$, as exported from Supabase Auth) so imported accounts can
+// sign in once; a successful bcrypt match always asks for a rehash, and the
+// login path then replaces it with argon2id.
 package password
 
 import (
@@ -12,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -75,6 +79,9 @@ func (h *Hasher) Hash(pw string) (string, error) {
 // Verify reports whether pw matches the PHC string, and whether the hash
 // should be replaced because it uses different parameters than h.
 func (h *Hasher) Verify(pw, phc string) (ok, needsRehash bool, err error) {
+	if IsBcrypt(phc) {
+		return verifyBcrypt(pw, phc)
+	}
 	p, salt, want, err := decode(phc)
 	if err != nil {
 		return false, false, err
@@ -82,6 +89,26 @@ func (h *Hasher) Verify(pw, phc string) (ok, needsRehash bool, err error) {
 	got := argon2.IDKey([]byte(pw), salt, p.Iterations, p.MemoryKiB, p.Parallelism, uint32(len(want)))
 	ok = subtle.ConstantTimeCompare(got, want) == 1
 	return ok, ok && p != h.params, nil
+}
+
+// IsBcrypt reports whether hash is a modular-crypt bcrypt hash. These only
+// come from imports (Supabase Auth stores bcrypt); Hash never produces one.
+func IsBcrypt(hash string) bool {
+	return len(hash) == 60 && (strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$") || strings.HasPrefix(hash, "$2y$"))
+}
+
+// verifyBcrypt checks an imported bcrypt hash. A match always needs a rehash
+// to argon2id. bcrypt only looks at the first 72 bytes of the password, which
+// is what the exporting system did too.
+func verifyBcrypt(pw, hash string) (ok, needsRehash bool, err error) {
+	switch err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)); {
+	case err == nil:
+		return true, true, nil
+	case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
+		return false, false, nil
+	default:
+		return false, false, ErrInvalidHash
+	}
 }
 
 // VerifyDummy burns the same time as a real Verify. Call it when the account
