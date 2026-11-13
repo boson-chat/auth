@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; --fg: #1d1f24; --bg: #f7f7f9; --muted: #5b6170; --accent: #3b5bdb; --err: #c92a2a; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e9eaee; --bg: #17181c; --muted: #a0a6b4; --accent: #7c95f2; --err: #ff8787; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 26rem; margin: 12vh auto; padding: 0 16px; }
+h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+label { display: block; margin: .8rem 0 .3rem; color: var(--muted); font-size: .9rem; }
+input { width: 100%; padding: .6rem .7rem; font: inherit; border: 1px solid var(--muted); border-radius: 6px; background: transparent; color: inherit; }
+button { margin-top: 1.2rem; padding: .6rem 1.2rem; font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+.error { color: var(--err); }

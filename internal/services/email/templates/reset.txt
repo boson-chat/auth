@@ -1,0 +1,10 @@
+Hi {{.Username}},
+
+Someone asked to reset the password for your {{.SiteName}} account. To choose
+a new password, open:
+
+{{.Link}}
+
+The link expires in {{.ExpiresIn}} and can be used once. Resetting signs you
+out everywhere. If this wasn't you, ignore this email; your password has not
+changed.
