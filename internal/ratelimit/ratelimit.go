@@ -99,6 +99,9 @@ func (l *Limiter) Len() int {
 
 // RunPruner prunes every interval until ctx is done.
 func (l *Limiter) RunPruner(ctx context.Context, every time.Duration) {
+	if l == nil {
+		return
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {

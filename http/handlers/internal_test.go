@@ -5,6 +5,7 @@ import (
 	nethttp "net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/boson-chat/auth/config"
 	"github.com/boson-chat/auth/internal/reqmeta"
@@ -63,4 +64,15 @@ func TestInternalIPBucketLimitsPerForwardedIP(t *testing.T) {
 	if b := l.buckets[BucketInternal]; b.ip != nil {
 		t.Fatal("BucketInternal must not have a per-IP limiter")
 	}
+}
+
+// Every bucket's pruner must survive a tick, including buckets that have only
+// an IP or only an account limiter (a nil limiter here crashed 1.2.0 once a
+// minute in production).
+func TestPrunersTickWithoutPanicking(t *testing.T) {
+	l := NewLimits(config.RateLimitConfig{Enabled: true, IPBurst: 2, IPPerMinute: 1, AccountBurst: 2, AccountPerMinute: 1}, metrics.Noop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.runPruners(ctx, 5*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 }
