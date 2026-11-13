@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"database/sql"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/boson-chat/auth/config"
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestRegisterVerifyLoginRefreshReuseLogout(t *testing.T) {
@@ -492,4 +494,33 @@ func TestHostileBytes(t *testing.T) {
 	if !strings.HasPrefix(ua, "evil�é") || len(ua) > 512 || !utf8.ValidString(ua) {
 		t.Fatalf("stored user agent %q (len %d)", ua, len(ua))
 	}
+}
+
+// Accounts imported from Supabase carry bcrypt hashes: the first login
+// verifies bcrypt and replaces the hash with argon2id.
+func TestImportedBcryptPasswordUpgradesOnLogin(t *testing.T) {
+	e := newEnv(t)
+	id := e.registerVerified("imported", "imported@example.com")
+	raw, err := bcrypt.GenerateFromPassword([]byte("old supabase pw"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqldb, err := sql.Open("pgx", e.cfg.DBConfig.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqldb.Close()
+	if _, err := sqldb.Exec(`UPDATE password_credentials SET hash = $1 WHERE user_id = $2`, string(raw), id); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(e.login("imported", "wrong password!!"), 401, "invalid_credentials")
+	e.expect(e.login("imported", "old supabase pw"), 200, "")
+	var hash string
+	if err := sqldb.QueryRow(`SELECT hash FROM password_credentials WHERE user_id = $1`, id).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(hash, "$argon2id$") {
+		t.Fatalf("hash not upgraded: %q", hash)
+	}
+	e.expect(e.login("imported@example.com", "old supabase pw"), 200, "")
 }
