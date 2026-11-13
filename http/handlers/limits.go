@@ -58,12 +58,17 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 }
 
 // RunPruner drops idle buckets until ctx is done.
-func (l *Limits) RunPruner(ctx context.Context) {
+func (l *Limits) RunPruner(ctx context.Context) { l.runPruners(ctx, time.Minute) }
+
+func (l *Limits) runPruners(ctx context.Context, every time.Duration) {
 	for _, b := range l.buckets {
+		// Either side may be absent (internal: account only; internal_ip: IP only).
 		if b.ip != nil {
-			go b.ip.RunPruner(ctx, time.Minute)
+			go b.ip.RunPruner(ctx, every)
 		}
-		go b.account.RunPruner(ctx, time.Minute)
+		if b.account != nil {
+			go b.account.RunPruner(ctx, every)
+		}
 	}
 }
 
