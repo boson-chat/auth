@@ -2,49 +2,66 @@ package commands
 
 import (
 	"context"
-	"errors"
-	nethttp "net/http"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/boson-chat/auth/config"
+	"github.com/boson-chat/auth/db"
+	authhttp "github.com/boson-chat/auth/http"
 	"github.com/boson-chat/auth/internal/logger"
+	"github.com/boson-chat/auth/metrics"
 	"github.com/spf13/cobra"
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the HTTP server",
+	Short: "Run the public and internal HTTP listeners",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := config.LoadConfig()
+		cfg, err := loadConfig()
 		if err != nil {
 			return err
 		}
-		logger.Logger(
-			logger.WithServerName(cfg.AppConfig.APPName),
-			logger.WithVersion(cfg.AppConfig.Version),
-			logger.WithEnvironment(cfg.AppConfig.Env),
-		)
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		log := logger.FromCtx(ctx)
 
-		mux := nethttp.NewServeMux()
-		mux.HandleFunc("GET /healthz", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
-			_, _ = w.Write([]byte("ok"))
-		})
-		srv := &nethttp.Server{Addr: cfg.HTTPConfig.Addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-		logger.FromCtx(ctx).Info().Str("addr", srv.Addr).Msg("listening")
-		if err := srv.ListenAndServe(); !errors.Is(err, nethttp.ErrServerClosed) {
+		if cfg.DBConfig.AutoMigrate {
+			if err := db.MigrateUp(cfg.DBConfig.DSN()); err != nil {
+				return err
+			}
+			log.Info().Msg("migrations up to date")
+		}
+
+		mp, err := metrics.NewProvider(ctx, cfg)
+		if err != nil {
 			return err
 		}
-		return nil
+		defer func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = mp.Shutdown(sctx)
+		}()
+		m, err := metrics.New(mp.MeterProvider())
+		if err != nil {
+			return err
+		}
+
+		app, err := authhttp.Build(ctx, cfg, authhttp.Options{Metrics: m, MetricsHandler: mp.Handler()})
+		if err != nil {
+			return err
+		}
+		defer app.Close()
+		if err := app.Keys.Ensure(ctx); err != nil {
+			return err
+		}
+		if cfg.SMTPConfig.Host == "" {
+			log.Warn().Msg("SMTP_HOST is empty: emails are logged, not sent (dev only)")
+		}
+		if cfg.InternalConfig.APIToken == "" {
+			log.Warn().Msg("INTERNAL_API_TOKEN is empty: /internal/v1 is disabled")
+		}
+		app.RunBackground(ctx)
+		return authhttp.Serve(ctx, app)
 	},
 }
 

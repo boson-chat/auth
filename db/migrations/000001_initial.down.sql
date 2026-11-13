@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS invites;
+DROP TABLE IF EXISTS signing_keys;
+DROP TABLE IF EXISTS email_tokens;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS user_identities;
+DROP TABLE IF EXISTS identity_providers;
+DROP TABLE IF EXISTS password_credentials;
+DROP TABLE IF EXISTS users;

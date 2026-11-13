@@ -1,0 +1,8 @@
+Hi {{.Username}},
+
+Confirm this email address for your {{.SiteName}} account by opening:
+
+{{.Link}}
+
+The link expires in {{.ExpiresIn}} and can be used once. If you didn't create
+an account, ignore this email.

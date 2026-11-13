@@ -1,0 +1,49 @@
+# Local development: Postgres, Mailpit (catches all email; UI on :8025) and
+# the auth service built from this checkout.
+#
+#   make setup && make run                       # deps in Docker, service on the host
+#   docker compose --profile app up -d --build   # everything in Docker (needs .env)
+name: boson-auth-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-auth-dev-password}
+      POSTGRES_DB: auth
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "auth"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:8025:8025" # web UI
+      - "127.0.0.1:1025:1025" # SMTP
+
+  auth:
+    build: .
+    profiles: [app]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://auth:${DB_PASSWORD:-auth-dev-password}@postgres:5432/auth?sslmode=disable
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: none
+      ENV: development
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
