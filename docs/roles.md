@@ -440,6 +440,13 @@ and `GET /v1/config` and enforced by IRC (Ergo):
 Channels of deleted accounts are unregistered through the
 [removed-accounts feed](#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts).
 
+## Guest access
+
+`guest_access` (`GUEST_ACCESS`, default `true`) decides whether people can
+use IRC without an account. Guests hold no roles, so they can chat but can't
+register channels, use voice or get role-based modes, vhosts or oper. When an
+admin sets it to `false`, IRC requires SASL login for every connection.
+
 ## Migrating from 1.x
 
 Migration `000004_roles` creates `roles` and `user_roles`, seeds the four

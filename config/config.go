@@ -170,7 +170,8 @@ const MaxChannelExpiryDays = 3650
 func ValidChannelExpiryDays(n int) bool { return n >= 0 && n <= MaxChannelExpiryDays }
 
 // AccountConfig: Registration, RequireEmailVerification, ChannelCreation,
-// VoiceChannelCreation, ChannelAutoRegister and ChannelExpiryDays are only
+// VoiceChannelCreation, ChannelAutoRegister, ChannelExpiryDays and
+// GuestAccess are only
 // defaults; admins change them at runtime (network_settings,
 // PATCH /v1/admin/settings).
 type AccountConfig struct {
@@ -185,9 +186,12 @@ type AccountConfig struct {
 	ChannelAutoRegister bool `default:"true" env:"CHANNEL_AUTO_REGISTER"`
 	// IRC unregisters registered channels idle (no joins/messages) this many
 	// days; 0..3650, 0 = never.
-	ChannelExpiryDays int           `default:"0" env:"CHANNEL_EXPIRY_DAYS"`
-	EmailVerifyTTL    time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
-	PasswordResetTTL  time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
+	ChannelExpiryDays int `default:"0" env:"CHANNEL_EXPIRY_DAYS"`
+	// IRC lets people connect without an account (guests); false makes IRC
+	// require SASL login.
+	GuestAccess      bool          `default:"true" env:"GUEST_ACCESS"`
+	EmailVerifyTTL   time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
+	PasswordResetTTL time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
 	// Lifetime of the "set your password" link in admin-created account emails.
 	AccountSetupTTL time.Duration `default:"72h" env:"ACCOUNT_SETUP_TTL"`
 	// How long a replica may serve cached network settings written by another replica.

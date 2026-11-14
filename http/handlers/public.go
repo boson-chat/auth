@@ -98,6 +98,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"voice_channel_creation":     st.VoiceChannelCreation,
 		"channel_auto_register":      st.ChannelAutoRegister,
 		"channel_expiry_days":        st.ChannelExpiryDays,
+		"guest_access":               st.GuestAccess,
 		"sso_providers":              providers,
 	})
 }

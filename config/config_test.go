@@ -58,3 +58,17 @@ func TestChannelSettingsFromEnv(t *testing.T) {
 		t.Fatal("CHANNEL_EXPIRY_DAYS=4000 accepted at startup")
 	}
 }
+
+func TestGuestAccessDefault(t *testing.T) {
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AccountConfig.GuestAccess {
+		t.Fatal("GUEST_ACCESS should default to true")
+	}
+	t.Setenv("GUEST_ACCESS", "false")
+	if c, err = LoadConfig(); err != nil || c.AccountConfig.GuestAccess {
+		t.Fatalf("GUEST_ACCESS=false: guest_access=%v err=%v", c.AccountConfig.GuestAccess, err)
+	}
+}
