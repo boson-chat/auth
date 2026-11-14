@@ -72,9 +72,11 @@ type Status struct {
 	Path    string `json:"path,omitempty"`
 	// Present: the file exists (false: env/database mode).
 	Present bool `json:"present"`
-	// LoadedAt is when the config in use was loaded.
+	// LoadedAt is when the config in use was loaded; null while the file
+	// has been invalid since start-up (running on env values).
 	LoadedAt *time.Time `json:"loaded_at"`
-	// FileMtime is the file's modification time at the last check.
+	// FileMtime is the file's modification time at the last check (null
+	// when the file is missing).
 	FileMtime *time.Time `json:"file_mtime"`
 	// OK is false when the file on disk is invalid; the last good config
 	// stays in use and Error says why.
@@ -123,8 +125,10 @@ func New[T any](o Options[T]) *Watcher[T] {
 }
 
 // Load reads the file once at start-up and applies it (Change.Initial).
-// A missing file is not an error (env/database mode). An invalid file is:
-// there is no last good config to fall back to.
+// A missing file is not an error (env/database mode). Neither is an invalid
+// one: with no last good config the service runs on env/database values,
+// Status reports the error with loaded_at null, and the next valid version
+// of the file is applied live. Only an unreadable path is an error.
 func (w *Watcher[T]) Load(ctx context.Context) error {
 	data, info, err := w.read()
 	w.applyMu.Lock()
@@ -146,7 +150,13 @@ func (w *Watcher[T]) Load(ctx context.Context) error {
 	w.hash, w.tried = sha256.Sum256(data), true
 	w.mu.Unlock()
 	if perr != nil {
-		return perr
+		w.mu.Lock()
+		w.err = perr
+		w.mu.Unlock()
+		w.o.Log.Error().Str("path", w.o.Path).Str("error", perr.Error()).
+			Msg("config file invalid at start-up; using env values and the database until it is fixed")
+		w.o.Apply(ctx, Change[T]{Next: State[T]{}, Initial: true})
+		return nil
 	}
 	next := State[T]{Present: true, Value: v}
 	w.mu.Lock()

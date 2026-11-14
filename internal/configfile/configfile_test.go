@@ -249,14 +249,29 @@ func TestWatcherLoadMissingFile(t *testing.T) {
 	}
 }
 
-func TestWatcherLoadInvalidFails(t *testing.T) {
+func TestWatcherLoadInvalidRunsOnEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "boson.yaml")
 	_ = os.WriteFile(path, []byte("svc:\n  name: \"\"\n"), 0o644)
-	w, _ := newTestWatcher(t, path, true, time.Hour)
-	err := w.Load(context.Background())
-	e, ok := AsError(err)
-	if !ok || e.Line != 2 {
-		t.Fatal(err)
+	w, r := newTestWatcher(t, path, true, time.Hour)
+	ctx := context.Background()
+	if err := w.Load(ctx); err != nil {
+		t.Fatal("an invalid file at start-up is reported, not fatal:", err)
+	}
+	if w.Current().Present || len(r.changes) != 1 || r.changes[0].Next.Present {
+		t.Fatal("no last good config: env/database mode", w.Current())
+	}
+	st := w.Status()
+	if st.OK || st.ErrorLine != 2 || st.LoadedAt != nil || st.FileMtime == nil {
+		t.Fatalf("%+v", st)
+	}
+	// Fixed: applied live.
+	writeAtomic(t, path, "svc:\n  name: fixed\n")
+	w.Check(ctx)
+	if !w.Current().Present || w.Current().Value.Name != "fixed" {
+		t.Fatal(w.Current())
+	}
+	if st := w.Status(); !st.OK || st.LoadedAt == nil {
+		t.Fatalf("%+v", st)
 	}
 }
 

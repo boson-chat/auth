@@ -229,10 +229,16 @@ func TestInvalidFileKeepsLastGood(t *testing.T) {
 	}
 }
 
-func TestInvalidFileAtStartFails(t *testing.T) {
+func TestInvalidFileAtStartRunsOnEnv(t *testing.T) {
 	f := newFixture(t, "auth:\n  registration: [\n")
-	if err := f.svc.Load(context.Background()); err == nil {
-		t.Fatal("an invalid file at start-up must fail")
+	if err := f.svc.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.settings.file != nil || f.email.name != "env-site" {
+		t.Fatal("invalid at start-up → env/database values", f.settings.file)
+	}
+	if st := f.svc.Status(); st.OK || st.LoadedAt != nil || st.Error == "" {
+		t.Fatalf("%+v", st)
 	}
 }
 

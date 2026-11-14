@@ -122,7 +122,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /healthz`, `GET /readyz`, `GET /version` | as above |
 | `GET /metrics` | Prometheus exposition |
 | `GET /internal/v1/settings` | header `X-Internal-Token`; the [network settings](#network-settings) object (same as `GET /v1/admin/settings`). For Ergo and quicvoiced. |
-| `GET /internal/config/status` | no token; the [stack config file](#stack-config-file) status → `{enabled, path, present, loaded_at, file_mtime, ok, error?, error_line?, error_column?, restart_required: []}` (`enabled: false` without `BOSON_CONFIG`). For the admin panel. |
+| `GET /internal/config/status` | no token; the [stack config file](#stack-config-file) status → `{path, loaded_at, file_mtime, ok, error?, error_line?, error_column?, restart_required: []}` plus `enabled` (false without `BOSON_CONFIG`) and `present`; `loaded_at` is null while the file has been invalid since start-up, `file_mtime` null while it is missing. For the admin panel. |
 | `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?, irc?: {oper_class, whois_line, vhost}, roles?, permissions?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`; `irc`/`roles`/`permissions` on success). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
 | `GET /internal/v1/roles` | every role with its Ergo oper class, WHOIS line, vhost template and capabilities → `{version, roles}`; `ETag` = version, `If-None-Match` → 304 ([Ergo integration](docs/roles.md#ergo-integration)) |
 | `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
@@ -205,8 +205,9 @@ keys is audited as `config_reloaded` (`meta: {actor: "config file", changed:
 
 An invalid file (YAML error, unknown value, wrong type) is logged with its line
 and column and reported by `GET /internal/config/status`; the last good config
-stays in use. At start-up there is no last good config, so auth refuses to
-start on an invalid file. Unknown keys in `network:` / `auth:` are logged and
+stays in use. At start-up there is no last good config: auth then runs on
+the env values and `network_settings` (as without the file), the status shows
+the error with `loaded_at: null`, and the first valid version is applied live. Unknown keys in `network:` / `auth:` are logged and
 ignored.
 
 Moving an existing install to the file: `auth export-config` prints the
