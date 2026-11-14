@@ -2,8 +2,8 @@
 // emails. Without auth.email in the stack config file they are Boson's
 // built-in templates (templates/*.html|txt); with it, every email is rendered from
 // plain text (Boson's wording or the file's per-template subject / body
-// with {{variables}}) into the branded MJML layout (render.go, layout.go,
-// templates/layout.mjml).
+// with {{variables}}) into the branded MJML layout (render.go, layout.go;
+// templates/layout.mjml, compiled by go generate into templates/compiled).
 //
 // Links carry the token in the URL fragment (#token=...), which browsers
 // never send to servers, so it stays out of access logs and Referer headers.

@@ -2,7 +2,6 @@ package email
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -13,14 +12,17 @@ import (
 	"strings"
 	"sync"
 	texttemplate "text/template"
-
-	mjml "github.com/Boostport/mjml-go"
 )
 
-// The branded layout is templates/layout.mjml, compiled by MJML (as wasm,
-// in-process) once per process into an HTML skeleton: literal HTML with
-// slots. Rendering an email only fills the slots, so it costs microseconds
-// and MJML never sees user data. Each slot has one escaping rule (fill):
+//go:generate go run ./gen
+
+// The branded layout is templates/layout.mjml, compiled by MJML at build
+// time (go generate: ./gen runs mjml-go, MJML as wasm) into
+// templates/compiled/*.html, which is embedded and committed; CI fails
+// when they differ from a fresh compile. The server never links MJML.
+// When the email service starts, the compiled HTML is cut into a
+// skeleton: literal HTML with slots. Rendering an email only fills the
+// slots, so it costs microseconds and MJML never sees user data. Each slot has one escaping rule (fill):
 // text slots are HTML-escaped, URL slots must be http(s) and are escaped,
 // colour slots must be #rrggbb, and the HTML slots take only safeHTML,
 // which this package builds from escaped text (render.go).
@@ -100,12 +102,20 @@ type page struct {
 
 var layoutTmpl = texttemplate.Must(texttemplate.ParseFS(templates, "templates/layout.mjml"))
 
-// layouts compiles the two variants (without and with a footer) the first
-// time an email service is built; every later email reuses them.
+// CompiledLayoutFiles are the go:generate outputs (relative to this
+// package), without and with a footer.
+var CompiledLayoutFiles = [2]string{"templates/compiled/layout.html", "templates/compiled/layout-footer.html"}
+
+// layouts parses the two compiled variants (without and with a footer)
+// the first time an email service is built; every later email reuses them.
 var layouts = sync.OnceValues(func() ([2]*skeleton, error) {
 	var out [2]*skeleton
 	for i, footer := range []bool{false, true} {
-		sk, err := compileLayout(context.Background(), footer)
+		b, err := templates.ReadFile(CompiledLayoutFiles[i])
+		if err != nil {
+			return out, fmt.Errorf("email layout: %w (run go generate ./internal/services/email)", err)
+		}
+		sk, err := parseSkeleton(string(b), footer)
 		if err != nil {
 			return out, err
 		}
@@ -114,30 +124,15 @@ var layouts = sync.OnceValues(func() ([2]*skeleton, error) {
 	return out, nil
 })
 
-// mjmlSource renders layout.mjml for a variant.
-func mjmlSource(footer bool) (string, error) {
+// LayoutMJML renders layout.mjml for a variant: the MJML go:generate
+// compiles into CompiledLayoutFiles[footer].
+func LayoutMJML(footer bool) (string, error) {
 	var src bytes.Buffer
 	err := layoutTmpl.Execute(&src, struct {
 		Light, Dark palette
 		Footer      bool
 	}{lightPalette, darkPalette, footer})
 	return src.String(), err
-}
-
-func compileLayout(ctx context.Context, footer bool) (*skeleton, error) {
-	src, err := mjmlSource(footer)
-	if err != nil {
-		return nil, fmt.Errorf("email layout: %w", err)
-	}
-	// No web fonts (the system stack names Roboto, which MJML would
-	// otherwise import from Google Fonts); strict validation so a broken
-	// layout fails the tests; keep comments (markers, Outlook conditionals).
-	out, err := mjml.ToHTML(ctx, src, mjml.WithFonts(mjml.Fonts{}),
-		mjml.WithValidationLevel(mjml.Strict), mjml.WithKeepComments(true))
-	if err != nil {
-		return nil, fmt.Errorf("email layout: mjml: %w", err)
-	}
-	return parseSkeleton(out, footer)
 }
 
 // parseSkeleton cuts compiled HTML at the markers and the slot tokens, and

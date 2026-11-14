@@ -132,10 +132,19 @@ body with the variables filled in, then `-- ` and the footer.
 
 With `auth.email` present, the HTML part is built from
 [`templates/layout.mjml`](../internal/services/email/templates/layout.mjml)
-with [MJML](https://mjml.io/), compiled in-process by
+with [MJML](https://mjml.io/). It is compiled at build time, not by the
+server: `go generate ./internal/services/email` runs
+[`gen`](../internal/services/email/gen/main.go), which compiles it with
 [mjml-go](https://github.com/Boostport/mjml-go) (MJML as WebAssembly on
-wazero: pure Go, no Node, no CGO). MJML produces the table layout and
-Outlook conditional comments that Gmail, Outlook and Apple Mail need.
+wazero: pure Go, no Node), into `templates/compiled/layout.html` and
+`layout-footer.html`. Those are committed and embedded. CI regenerates them
+and fails on any difference, and checks that the server binary doesn't
+link mjml-go. MJML produces the table layout and Outlook conditional
+comments that Gmail, Outlook and Apple Mail need.
+
+After editing `layout.mjml` (or the palette in `layout.go`), run
+`go generate ./internal/services/email` and commit the compiled files with
+it.
 
 - 600 px wide card on a soft grey page; 4 px accent bar on top; logo
   (40 px high, at most 240 px wide, with explicit `width`/`height` for
@@ -151,14 +160,12 @@ Outlook conditional comments that Gmail, Outlook and Apple Mail need.
   (Outlook for Windows shows no WebP) before SVG (Gmail and Outlook show
   no SVG).
 
-**Performance.** The layout is compiled once per process, when the email
-service starts (two variants: with and without a footer, about 35 ms
-each), into an HTML skeleton with slots. Sending or previewing an email only
-fills the slots: about 10 µs per email (`go test -bench Preview
-./internal/services/email`), no MJML at request time. Config reloads don't
-recompile: the accent, logo, sender name, footer and wording are all slot
-values. The MJML runtime costs about 0.4 s and ~130 MB of memory when the
-process starts (the wasm module stays loaded).
+**Performance.** When the email service starts, the two compiled variants
+(with and without a footer) are cut into an HTML skeleton with slots (under
+1 ms). Sending or previewing an email only fills the slots: about 10 µs per
+email (`go test -bench Preview ./internal/services/email`). Config reloads
+change nothing in the skeleton: the accent, logo, sender name, footer and
+wording are all slot values.
 
 **Escaping.** Nothing user-supplied is ever given to MJML. Each slot has
 one rule, applied when it is filled: text (subject, button label, preview

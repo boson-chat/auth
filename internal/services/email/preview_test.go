@@ -217,11 +217,3 @@ func BenchmarkPreview(b *testing.B) {
 		}
 	})
 }
-
-func BenchmarkCompileLayout(b *testing.B) {
-	for b.Loop() {
-		if _, err := compileLayout(context.Background(), true); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
