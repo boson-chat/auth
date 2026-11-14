@@ -161,7 +161,7 @@ All bodies are JSON. Roles come in the [model](#model) shape.
 | `GET /v1/admin/roles` | → `{roles: [role]}`, most senior first, each with `member_count` |
 | `GET /v1/admin/roles/{id}` | → `{role}` |
 | `POST /v1/admin/roles` | `{name, color?, position?, permissions?, irc?: {whois_line?, vhost?, oper?}, hoist?, mentionable?}` → 201 `{role}` |
-| `PATCH /v1/admin/roles/{id}` | any subset of the create fields → `{role}`. `null` clears `color`, `irc.whois_line`, `irc.vhost` |
+| `PATCH /v1/admin/roles/{id}` | any subset of the create fields → `{role}`. `null` clears `color`, `irc.whois_line`, `irc.vhost`. Optional `If-Match: <updated_at>` → `412 precondition_failed` if the role changed since |
 | `DELETE /v1/admin/roles/{id}` | → 204; holders lose the role. `409 builtin_role` for built-ins |
 | `POST /v1/admin/roles/reorder` | `{order: [role id, …]}` most senior first → `{roles}` (all roles) |
 | `GET /v1/admin/roles/{id}/members?cursor=&limit=` | → `{users: [{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}`; `limit` 1–200 (default 50), ordered by user id; for Member every account, with `assigned_*` `null` |
@@ -181,7 +181,7 @@ role must be below you before and after.
 Errors: `400 invalid_request` (validation, unknown role or permission,
 built-in rules), `403 forbidden` (missing permission), `403 role_hierarchy`,
 `403 permission_not_held`, `404 not_found`, `409 role_name_taken`,
-`409 builtin_role`, `409 last_owner`.
+`409 builtin_role`, `409 last_owner`, `412 precondition_failed`.
 
 **Audit events:** `role_created` (`meta.role_id`, `meta.role` snapshot),
 `role_updated` (`meta.role_id`, `meta.name`, `meta.old` / `meta.new` with
@@ -286,6 +286,73 @@ Failures (`ok: false`) carry no `irc`.
 `username` is matched with RFC 1459 folding; `404 not_found` for unknown
 accounts. `disabled` is reported, not refused: Ergo should not log a
 disabled account in.
+
+### `GET /internal/v1/roles/{id}/members` (RoleServ `WHO`)
+
+The [admin API's members list](#admin-api) on the internal listener: same
+query (`cursor`, `limit` 1–200) and response (`{users: [{id, username,
+display_name, disabled, assigned_at, assigned_by}], next_cursor}`).
+
+### `GET /internal/v1/irc/grants` (live changes)
+
+Every **enabled** account whose `irc` object (as in verify-password) has a
+non-null `oper_class` or `vhost`, by username (RFC 1459-folded):
+
+```json
+{"version": "42", "users": [
+  {"username": "alice", "oper_class": "admin", "whois_line": "is a Network Administrator", "vhost": "staff/alice"},
+  {"username": "dave", "oper_class": null, "whois_line": null, "vhost": "dj/dave"}]}
+```
+
+`ETag: "<version>"`; with `If-None-Match` and nothing changed, `304` costs
+one single-row read. An account that drops out of the list (disabled,
+deleted, lost its roles) should be de-opered and lose its vhost. A vhost
+template on Member puts every enabled account in the list.
+
+`version` is a counter (table `irc_grants_version`, migration 5) bumped by
+database triggers on any write to `roles` or `user_roles`, on user creation
+and deletion, and when a user's `username` or `disabled_at` changes, so
+every path (admin API, acting API, CLI, SQL) moves it. The triggers are
+deferred to commit and bump at most once per transaction; the version is
+read before the data, so a body is never older than its ETag. Unrelated
+changes (e.g. a role colour) may also bump it: pollers then refetch an
+identical list.
+
+## Acting API (RoleServ)
+
+The [admin API](#admin-api) role writes, mirrored on the internal listener
+under `/internal/v1/acting` for RoleServ, which acts **as** the IRC user
+who sent the command:
+
+- `X-Internal-Token: <INTERNAL_ACTING_TOKEN>`, a separate secret only
+  RoleServ has. `INTERNAL_API_TOKEN` is **not** accepted (otherwise every
+  internal client could act as anyone), and auth refuses to start with the
+  two equal. With `INTERNAL_ACTING_TOKEN` unset the whole prefix is `404`.
+  A wrong token is `401 unauthenticated`.
+- `X-Acting-Account: <username>`: the Ergo account (= auth username, RFC
+  1459 folding). Loaded like a session user: unknown or disabled →
+  `403 forbidden`.
+- `X-Acting-Via: roleserv` (optional, `[a-z0-9_-]{1,32}`, default
+  `roleserv`): recorded as `meta.via` on the audit events, whose actor is the
+  acting user.
+- `X-Forwarded-For`: the IRC user's address, for the audit log (as on the
+  rest of the internal API).
+
+Permissions are read from the database and the [hierarchy](#hierarchy),
+validation, error codes and audit events are exactly the admin API's.
+
+| Method & path | Needs | Body → response |
+|---|---|---|
+| `GET /internal/v1/acting/me` | – | → `{username, permissions: [id, …]}` (effective) |
+| `POST /internal/v1/acting/roles` | `roles.manage` | as `POST /v1/admin/roles` → 201 `{role}` |
+| `PATCH /internal/v1/acting/roles/{id}` | `roles.manage` | as `PATCH /v1/admin/roles/{id}` → `{role}`; `null` clears |
+| `DELETE /internal/v1/acting/roles/{id}` | `roles.manage` | → 204 |
+| `PUT /internal/v1/acting/users/{user_id}/roles` | `roles.manage` | `{role_ids}` (replaces) → `{roles: [{id, name, color, position}]}` |
+
+The user id comes from `GET /internal/v1/users/{username}/irc`. To avoid
+lost updates when two people edit one role, send `If-Match: <updated_at>`
+(the role's `updated_at` as last read, quoted or not) on `PATCH`: `412
+precondition_failed` if the role changed since.
 
 ## quicvoiced
 

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	nethttp "net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +49,9 @@ var (
 	ErrBuiltin   = apperr.New(nethttp.StatusConflict, "builtin_role", "built-in roles can't be deleted")
 	ErrNameTaken = apperr.New(nethttp.StatusConflict, "role_name_taken", "a role with that name already exists")
 	ErrLastOwner = apperr.New(nethttp.StatusConflict, "last_owner", "the network must keep at least one Owner")
-	errCursor    = apperr.Invalid("invalid cursor")
+	// ErrStale is If-Match: <updated_at> not matching the role any more.
+	ErrStale  = apperr.New(nethttp.StatusPreconditionFailed, "precondition_failed", "the role changed since you read it")
+	errCursor = apperr.Invalid("invalid cursor")
 )
 
 func errNotHeld(missing []string) error {
@@ -270,6 +273,18 @@ type RolesServiceImpl interface {
 	IRCByUsername(ctx context.Context, username string) (*user.User, IRCInfo, *Access, error)
 	// IRC is userID's IRC login info.
 	IRC(ctx context.Context, u *user.User) (IRCInfo, *Access, error)
+	// GrantsVersion changes whenever any user's IRCInfo may have changed.
+	GrantsVersion(ctx context.Context) (string, error)
+	// Grants is every enabled user whose IRCInfo has an oper class or a
+	// vhost, by folded username, with the GrantsVersion it is at least as
+	// new as.
+	Grants(ctx context.Context) (string, []Grant, error)
+}
+
+// Grant is one entry of GET /internal/v1/irc/grants.
+type Grant struct {
+	Username string
+	IRCInfo
 }
 
 type RolesService struct {
@@ -286,6 +301,10 @@ func NewRolesService(roles role.RoleRepositoryImpl, users user.UserRepositoryImp
 	}
 	return &RolesService{Roles: roles, Users: users, Tx: tx, Audit: auditSvc, Now: now}
 }
+
+// now is the current time at the database's (microsecond) precision, so a
+// role's updated_at reads back exactly as written (If-Match compares it).
+func (s *RolesService) now() time.Time { return s.Now().UTC().Truncate(time.Microsecond) }
 
 func notFound(err error) error {
 	if errors.Is(err, repositories.ErrNotFound) {
@@ -390,7 +409,7 @@ func (s *RolesService) Create(ctx context.Context, actorID string, in Input) (*V
 	if in.Name == nil {
 		return nil, apperr.Invalid("name is required")
 	}
-	now := s.Now().UTC()
+	now := s.now()
 	r := &role.Role{ID: ids.New(ids.Role), Position: MinPosition, Permissions: []string{}, CreatedAt: now, UpdatedAt: now}
 	if err := apply(r, in); err != nil {
 		return nil, err
@@ -445,6 +464,9 @@ func (s *RolesService) Update(ctx context.Context, actorID, id string, in Input)
 		if !a.CanManageRole(r) {
 			return ErrHierarchy
 		}
+		if in.IfMatch != nil && !in.IfMatch.Truncate(time.Microsecond).Equal(r.UpdatedAt.Truncate(time.Microsecond)) {
+			return ErrStale
+		}
 		before = snapshot(r)
 		oldPos, oldPerms := r.Position, EffectivePermissions(r)
 		if err := apply(r, in); err != nil {
@@ -463,7 +485,7 @@ func (s *RolesService) Update(ctx context.Context, actorID, id string, in Input)
 		if missing := a.Missing(added); len(missing) > 0 {
 			return errNotHeld(missing)
 		}
-		r.UpdatedAt = s.Now().UTC()
+		r.UpdatedAt = s.now()
 		if err := s.Roles.Save(ctx, r); err != nil {
 			if errors.Is(err, role.ErrNameTaken) {
 				return ErrNameTaken
@@ -604,7 +626,7 @@ func (s *RolesService) Reorder(ctx context.Context, actorID string, order []stri
 			listed = append(listed, r)
 			current = append(current, r.Position)
 		}
-		now := s.Now().UTC()
+		now := s.now()
 		for i, to := range reorderPositions(current) {
 			r := listed[i]
 			if r.Position == to {
@@ -958,4 +980,62 @@ func (s *RolesService) IRCByUsername(ctx context.Context, username string) (*use
 	}
 	info, a, err := s.IRC(ctx, u)
 	return u, info, a, err
+}
+
+func (s *RolesService) GrantsVersion(ctx context.Context) (string, error) {
+	v, err := s.Roles.GrantsVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(v, 10), nil
+}
+
+func (s *RolesService) Grants(ctx context.Context) (string, []Grant, error) {
+	// The version is read first: the data that follows is at least as new,
+	// so a poller never caches old data under a new version.
+	version, err := s.GrantsVersion(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	all, err := s.Roles.List(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	byID := map[string]*role.Role{}
+	var member *role.Role
+	anyOf := []string{}
+	for _, r := range all {
+		byID[r.ID] = r
+		if r.Is(role.BuiltinMember) {
+			member = r
+		}
+		if EffectiveOper(r) || r.IRCVhost != nil {
+			anyOf = append(anyOf, r.ID)
+		}
+	}
+	if member != nil && slices.Contains(anyOf, member.ID) {
+		anyOf = nil // Member supplies a grant: every enabled account qualifies
+	}
+	rows, err := s.Roles.EnabledUsersWithRoles(ctx, anyOf)
+	if err != nil {
+		return "", nil, err
+	}
+	out := []Grant{}
+	for _, row := range rows {
+		rs := make([]*role.Role, 0, len(row.RoleIDs)+1)
+		for _, id := range row.RoleIDs {
+			if r, ok := byID[id]; ok {
+				rs = append(rs, r)
+			}
+		}
+		if member != nil {
+			rs = append(rs, member)
+		}
+		slices.SortStableFunc(rs, func(a, b *role.Role) int { return b.Position - a.Position })
+		info := ComputeIRC(row.Username, rs)
+		if info.OperClass != nil || info.Vhost != nil {
+			out = append(out, Grant{Username: row.Username, IRCInfo: info})
+		}
+	}
+	return version, out, nil
 }

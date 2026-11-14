@@ -108,6 +108,14 @@ type RoleRepositoryImpl interface {
 	// SyncLegacyRole sets users.role to 'admin' iff the user holds a role with
 	// admin.panel (Owner always counts). nil userIDs = every user.
 	SyncLegacyRole(ctx context.Context, userIDs []string) error
+	// GrantsVersion is the IRC grants counter (migration 5), bumped by
+	// triggers on every change to roles, user_roles and users' names or
+	// disabled state.
+	GrantsVersion(ctx context.Context) (int64, error)
+	// EnabledUsersWithRoles returns enabled users with their stored role ids
+	// (most senior first), ordered by folded username. With anyOf set, only
+	// users holding at least one of those roles; with nil, every enabled user.
+	EnabledUsersWithRoles(ctx context.Context, anyOf []string) ([]*UserRoles, error)
 }
 
 type RoleRepository struct {
@@ -157,8 +165,10 @@ func (r *RoleRepository) Create(ctx context.Context, role *Role) error {
 	return nameErr(r.db.Conn(ctx).Create(role).Error)
 }
 
+// Save writes every column as given (UpdateColumns: GORM must not replace
+// updated_at, which If-Match compares against what the caller saw).
 func (r *RoleRepository) Save(ctx context.Context, role *Role) error {
-	res := r.db.Conn(ctx).Model(&Role{}).Where("id = ?", role.ID).Select("*").Omit("id", "created_at").Updates(role)
+	res := r.db.Conn(ctx).Model(&Role{}).Where("id = ?", role.ID).Select("*").Omit("id", "created_at").UpdateColumns(role)
 	if res.Error != nil {
 		return nameErr(res.Error)
 	}
@@ -315,4 +325,41 @@ func (r *RoleRepository) SyncLegacyRole(ctx context.Context, userIDs []string) e
 		q = q.Where("id IN ?", userIDs)
 	}
 	return q.UpdateColumn("role", gorm.Expr("CASE WHEN "+legacyAdmin+" THEN 'admin' ELSE 'user' END")).Error
+}
+
+func (r *RoleRepository) GrantsVersion(ctx context.Context) (int64, error) {
+	var v int64
+	err := r.db.Conn(ctx).Raw(`SELECT version FROM irc_grants_version`).Scan(&v).Error
+	return v, err
+}
+
+func (r *RoleRepository) EnabledUsersWithRoles(ctx context.Context, anyOf []string) ([]*UserRoles, error) {
+	if anyOf != nil && len(anyOf) == 0 {
+		return nil, nil
+	}
+	q := r.db.Conn(ctx).Model(&user.User{}).Where("disabled_at IS NULL")
+	if anyOf != nil {
+		q = q.Where("id IN (?)", r.db.Conn(ctx).Model(&UserRole{}).Select("user_id").Where("role_id IN ?", anyOf))
+	}
+	var users []*user.User
+	if err := q.Order("username_folded ASC, id ASC").Find(&users).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*UserRoles, 0, len(users))
+	const batch = 1000
+	for i := 0; i < len(users); i += batch {
+		chunk := users[i:min(i+batch, len(users))]
+		ids := make([]string, 0, len(chunk))
+		for _, u := range chunk {
+			ids = append(ids, u.ID)
+		}
+		byUser, err := r.RoleIDsForUsers(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, u := range chunk {
+			out = append(out, &UserRoles{UserID: u.ID, Username: u.Username, UsernameFolded: u.UsernameFolded, RoleIDs: byUser[u.ID]})
+		}
+	}
+	return out, nil
 }

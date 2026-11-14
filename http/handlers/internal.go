@@ -28,6 +28,9 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	mux.HandleFunc("GET /internal/v1/settings", h.internalOnly(h.internalSettings))
 	mux.HandleFunc("GET /internal/v1/roles", h.internalOnly(h.internalRoles))
 	mux.HandleFunc("GET /internal/v1/users/{username}/irc", h.internalOnly(h.internalUserIRC))
+	mux.HandleFunc("GET /internal/v1/roles/{id}/members", h.internalOnly(h.adminRoleMembers))
+	mux.HandleFunc("GET /internal/v1/irc/grants", h.internalOnly(h.internalIRCGrants))
+	h.registerActing(mux)
 }
 
 // internalSettings serves the network settings to Ergo and quicvoiced (same

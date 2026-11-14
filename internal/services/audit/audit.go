@@ -70,10 +70,20 @@ func (s *AuditService) Record(ctx context.Context, userID, event string, meta ma
 }
 
 func (s *AuditService) RecordTarget(ctx context.Context, userID, targetUserID, event string, meta map[string]any) {
+	rm := reqmeta.From(ctx)
+	if rm.Via != "" {
+		// Acting API: the event is the user's, made through another service.
+		m := make(map[string]any, len(meta)+1)
+		for k, v := range meta {
+			m[k] = v
+		}
+		m["via"] = rm.Via
+		meta = m
+	}
 	e := &auditrepo.Entry{
 		ID:    ids.New(ids.Audit),
 		Event: event,
-		IP:    reqmeta.From(ctx).IP,
+		IP:    rm.IP,
 		Meta:  repositories.JSONB(meta),
 		At:    time.Now().UTC(),
 	}
