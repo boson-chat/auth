@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/textutil"
@@ -80,8 +81,10 @@ func (p pattern) match(u *url.URL) bool {
 // ReturnToPolicy decides where a flow may send the browser back to.
 type ReturnToPolicy struct {
 	appURL   *url.URL
-	web      []pattern // our browser origins: cookie mode allowed
 	patterns []pattern // SSO_RETURN_TO_ALLOWED: code mode only
+
+	mu  sync.RWMutex
+	web []pattern // our browser origins (fixed + CORS origins): cookie mode allowed
 }
 
 // NewReturnToPolicy: webOrigins (APP_URL, PUBLIC_URL, CORS origins) are
@@ -92,16 +95,7 @@ func NewReturnToPolicy(appURL string, webOrigins, allowed []string) (*ReturnToPo
 		return nil, fmt.Errorf("APP_URL %q is not an absolute URL", appURL)
 	}
 	p := &ReturnToPolicy{appURL: au}
-	for _, o := range webOrigins {
-		if o == "" {
-			continue
-		}
-		u, err := url.Parse(o)
-		if err != nil || u.Host == "" {
-			continue
-		}
-		p.web = append(p.web, pattern{scheme: strings.ToLower(u.Scheme), host: strings.ToLower(u.Hostname()), port: u.Port()})
-	}
+	p.web = originPatterns(webOrigins)
 	for _, s := range allowed {
 		pt, err := parsePattern(s)
 		if err != nil {
@@ -110,6 +104,30 @@ func NewReturnToPolicy(appURL string, webOrigins, allowed []string) (*ReturnToPo
 		p.patterns = append(p.patterns, pt)
 	}
 	return p, nil
+}
+
+func originPatterns(origins []string) []pattern {
+	var out []pattern
+	for _, o := range origins {
+		if o == "" {
+			continue
+		}
+		u, err := url.Parse(o)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		out = append(out, pattern{scheme: strings.ToLower(u.Scheme), host: strings.ToLower(u.Hostname()), port: u.Port()})
+	}
+	return out
+}
+
+// SetWebOrigins replaces the whole list of web origins (cookie mode) with
+// origins (e.g. APP_URL, PUBLIC_URL and the reloaded CORS origins).
+func (p *ReturnToPolicy) SetWebOrigins(origins []string) {
+	web := originPatterns(origins)
+	p.mu.Lock()
+	p.web = web
+	p.mu.Unlock()
 }
 
 // Resolve validates return_to and the requested mode ("" = automatic:
@@ -145,7 +163,10 @@ func (p *ReturnToPolicy) Resolve(returnTo, mode string) (string, string, error) 
 		return "", "", errReturnTo
 	}
 	web := false
-	for _, w := range p.web {
+	p.mu.RLock()
+	origins := p.web
+	p.mu.RUnlock()
+	for _, w := range origins {
 		if w.match(u) {
 			web = true
 			break

@@ -4,6 +4,7 @@ package mailer
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/boson-chat/auth/config"
@@ -89,3 +90,24 @@ func (LogMailer) Send(ctx context.Context, m Message) error {
 		Msg("SMTP_HOST not set: email not sent, logging it instead")
 	return nil
 }
+
+// Swappable forwards to a mailer that can be replaced at runtime (SMTP
+// settings reloaded from the stack config file).
+type Swappable struct {
+	cur atomic.Pointer[Mailer]
+}
+
+// NewSwappable returns a Swappable starting with m.
+func NewSwappable(m Mailer) *Swappable {
+	s := &Swappable{}
+	s.Set(m)
+	return s
+}
+
+// Set replaces the mailer; sends already in flight finish on the old one.
+func (s *Swappable) Set(m Mailer) { s.cur.Store(&m) }
+
+// Current returns the mailer in use.
+func (s *Swappable) Current() Mailer { return *s.cur.Load() }
+
+func (s *Swappable) Send(ctx context.Context, m Message) error { return s.Current().Send(ctx, m) }

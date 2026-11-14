@@ -82,12 +82,26 @@ func SecurityHeaders(next nethttp.Handler) nethttp.Handler {
 
 // CORS allows credentialed requests from the listed origins only.
 func CORS(origins []string) func(nethttp.Handler) nethttp.Handler {
+	allowed := TrimOrigins(origins)
+	return DynamicCORS(func() []string { return allowed })
+}
+
+// TrimOrigins drops trailing slashes.
+func TrimOrigins(origins []string) []string {
 	allowed := make([]string, 0, len(origins))
 	for _, o := range origins {
 		allowed = append(allowed, strings.TrimRight(o, "/"))
 	}
+	return allowed
+}
+
+// DynamicCORS is CORS with the allowed origins read per request (they
+// change when the stack config file is reloaded). origins must return
+// trimmed origins (TrimOrigins).
+func DynamicCORS(origins func() []string) func(nethttp.Handler) nethttp.Handler {
 	return func(next nethttp.Handler) nethttp.Handler {
 		return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			allowed := origins()
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				w.Header().Add("Vary", "Origin")

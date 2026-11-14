@@ -34,8 +34,15 @@ type AppConfig struct {
 	Env      string `default:"development" env:"ENV"`
 	Version  string `default:"dev" env:"VERSION"`
 	LogLevel string `default:"info" env:"LOG_LEVEL"`
-	// Product name used in emails.
+	// Product name used in emails. network.name in the stack config file wins.
 	SiteName string `default:"boson" env:"SITE_NAME"`
+	// Stack config file (config/boson.yaml). When set and the file exists,
+	// its network: and auth: sections win over the env values below and
+	// over network_settings, and are reloaded live. Unset / missing file:
+	// env + database only.
+	ConfigFile string `env:"BOSON_CONFIG"`
+	// How often the config file's mtime is polled (besides fsnotify).
+	ConfigPoll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
 }
 
 type HTTPConfig struct {

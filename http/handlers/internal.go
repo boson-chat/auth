@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/boson-chat/auth/internal/apperr"
+	"github.com/boson-chat/auth/internal/configfile"
 	"github.com/boson-chat/auth/internal/reqmeta"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/roles"
@@ -26,6 +27,9 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	if metrics != nil {
 		mux.Handle("GET /metrics", metrics)
 	}
+	// Stack config file status for the admin panel (no token: like
+	// /healthz it reveals nothing secret, and the listener is internal).
+	mux.Handle("GET /internal/config/status", configfile.StatusHandler(h.ConfigStatus))
 	mux.HandleFunc("POST /internal/v1/verify-password", h.internalOnly(h.internalVerifyPassword))
 	mux.HandleFunc("GET /internal/v1/settings", h.internalOnly(h.internalSettings))
 	mux.HandleFunc("GET /internal/v1/roles", h.internalOnly(h.internalRoles))

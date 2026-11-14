@@ -4,12 +4,19 @@
 // whether IRC lets guests (no account) connect.
 // Values stored in network_settings override the env defaults; reads are
 // cached for SETTINGS_CACHE_TTL so other replicas pick up changes quickly.
+//
+// With the stack config file (BOSON_CONFIG) present the file is the source
+// of truth instead (SetFile): the effective values are file > env >
+// default, network_settings is ignored and Update answers 409
+// managed_by_config_file.
 package settings
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/boson-chat/auth/config"
@@ -30,7 +37,21 @@ type Settings struct {
 	GuestAccess              bool       `json:"guest_access"`
 	UpdatedAt                *time.Time `json:"updated_at"`
 	UpdatedBy                *string    `json:"updated_by"`
+	// Source is where the values come from: "file" (stack config file,
+	// read-only here) or "db" (network_settings over env defaults).
+	Source string `json:"source"`
 }
+
+// Sources.
+const (
+	SourceFile = "file"
+	SourceDB   = "db"
+)
+
+// ErrManagedByConfigFile: the settings are read-only because the stack
+// config file manages them.
+var ErrManagedByConfigFile = apperr.New(http.StatusConflict, "managed_by_config_file",
+	"these settings are managed by the stack config file (BOSON_CONFIG); edit the file or the admin panel instead")
 
 // Patch is a partial update; nil fields are left alone.
 type Patch struct {
@@ -69,8 +90,12 @@ type SettingsServiceImpl interface {
 	// Get returns the effective settings (cached briefly).
 	Get(ctx context.Context) (Settings, error)
 	// Update applies a partial change, audit-logs it (settings_updated with
-	// old/new values) and returns the new settings.
+	// old/new values) and returns the new settings. ErrManagedByConfigFile
+	// in file mode.
 	Update(ctx context.Context, actorID string, p Patch) (Settings, error)
+	// SetFile switches to file mode with the effective values (file over
+	// env defaults); nil switches back to the database.
+	SetFile(v *config.AccountConfig)
 }
 
 type SettingsService struct {
@@ -80,6 +105,8 @@ type SettingsService struct {
 	Defaults   config.AccountConfig
 	TTL        time.Duration
 	Now        func() time.Time
+
+	file atomic.Pointer[config.AccountConfig]
 
 	mu       sync.Mutex
 	cached   Settings
@@ -106,6 +133,7 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 		GuestAccess:              s.Defaults.GuestAccess,
 		UpdatedAt:                r.UpdatedAt,
 		UpdatedBy:                r.UpdatedBy,
+		Source:                   SourceDB,
 	}
 	if r.Registration != nil {
 		out.Registration = *r.Registration
@@ -131,7 +159,31 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 	return out
 }
 
+// fromFile renders file-mode values.
+func fromFile(a *config.AccountConfig) Settings {
+	return Settings{
+		Registration: a.Registration, RequireEmailVerification: a.RequireEmailVerification,
+		ChannelCreation: a.ChannelCreation, VoiceChannelCreation: a.VoiceChannelCreation,
+		ChannelAutoRegister: a.ChannelAutoRegister, ChannelExpiryDays: a.ChannelExpiryDays,
+		GuestAccess: a.GuestAccess, Source: SourceFile,
+	}
+}
+
+func (s *SettingsService) SetFile(v *config.AccountConfig) {
+	if v != nil {
+		c := *v
+		v = &c
+	}
+	s.file.Store(v)
+	s.mu.Lock()
+	s.valid = false // DB mode again: re-read the row
+	s.mu.Unlock()
+}
+
 func (s *SettingsService) Get(ctx context.Context) (Settings, error) {
+	if f := s.file.Load(); f != nil {
+		return fromFile(f), nil
+	}
 	s.mu.Lock()
 	if s.valid && s.Now().Sub(s.cachedAt) < s.TTL {
 		v := s.cached
@@ -155,6 +207,9 @@ func (s *SettingsService) store(v Settings) {
 }
 
 func (s *SettingsService) Update(ctx context.Context, actorID string, p Patch) (Settings, error) {
+	if s.file.Load() != nil {
+		return Settings{}, ErrManagedByConfigFile
+	}
 	if p.empty() {
 		return Settings{}, apperr.Invalid("nothing to update")
 	}

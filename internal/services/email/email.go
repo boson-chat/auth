@@ -12,6 +12,7 @@ import (
 	htmltemplate "html/template"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	texttemplate "text/template"
 	"time"
 
@@ -47,6 +48,8 @@ type EmailServiceImpl interface {
 	// SendAccountSetup invites a user an admin created to choose a password
 	// (a reset-password token, opened on the same page).
 	SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration)
+	// SetSiteName changes the product name in subjects and bodies.
+	SetSiteName(name string)
 	Wait()
 }
 
@@ -59,12 +62,22 @@ type EmailService struct {
 	Mailer  mailer.Mailer
 	Metrics *metrics.Metrics
 	opts    Options
-	wg      sync.WaitGroup
+	// siteName is opts.SiteName, replaceable at runtime (SetSiteName).
+	siteName atomic.Pointer[string]
+	wg       sync.WaitGroup
 }
 
 func NewEmailService(m mailer.Mailer, met *metrics.Metrics, opts Options) EmailServiceImpl {
-	return &EmailService{Mailer: m, Metrics: met, opts: opts}
+	s := &EmailService{Mailer: m, Metrics: met, opts: opts}
+	s.SetSiteName(opts.SiteName)
+	return s
 }
+
+// SetSiteName changes the product name used in emails (network.name in
+// the stack config file).
+func (s *EmailService) SetSiteName(name string) { s.siteName.Store(&name) }
+
+func (s *EmailService) site() string { return *s.siteName.Load() }
 
 type data struct {
 	SiteName  string
@@ -97,15 +110,15 @@ func humanize(d time.Duration) string {
 }
 
 func (s *EmailService) SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration) {
-	s.send(ctx, u, PurposeVerify, "Verify your email for "+s.opts.SiteName, "verify", s.link(VerifyPath, token), ttl)
+	s.send(ctx, u, PurposeVerify, "Verify your email for "+s.site(), "verify", s.link(VerifyPath, token), ttl)
 }
 
 func (s *EmailService) SendPasswordReset(ctx context.Context, u *user.User, token string, ttl time.Duration) {
-	s.send(ctx, u, PurposeReset, "Reset your "+s.opts.SiteName+" password", "reset", s.link(ResetPath, token), ttl)
+	s.send(ctx, u, PurposeReset, "Reset your "+s.site()+" password", "reset", s.link(ResetPath, token), ttl)
 }
 
 func (s *EmailService) SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration) {
-	s.send(ctx, u, PurposeSetup, "Your "+s.opts.SiteName+" account", "setup", s.link(ResetPath, token), ttl)
+	s.send(ctx, u, PurposeSetup, "Your "+s.site()+" account", "setup", s.link(ResetPath, token), ttl)
 }
 
 func (s *EmailService) send(ctx context.Context, u *user.User, purpose, subject, tmpl, link string, ttl time.Duration) {
@@ -113,7 +126,7 @@ func (s *EmailService) send(ctx context.Context, u *user.User, purpose, subject,
 	if to == "" {
 		return
 	}
-	d := data{SiteName: s.opts.SiteName, Username: u.Username, Link: link, ExpiresIn: humanize(ttl)}
+	d := data{SiteName: s.site(), Username: u.Username, Link: link, ExpiresIn: humanize(ttl)}
 	var text, html bytes.Buffer
 	if err := textTmpl.ExecuteTemplate(&text, tmpl+".txt", d); err != nil {
 		logger.FromCtx(ctx).Error().Err(err).Msg("email template")
