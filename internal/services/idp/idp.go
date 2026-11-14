@@ -1,30 +1,27 @@
-// Package idp is the extension point for external identity providers
-// (OIDC in phase 2, SAML in phase 3). Phase 1 ships the interface, the
-// registry and the storage, but no concrete providers.
+// Package idp defines external identity providers (OIDC, SAML) and the
+// registry that holds the live ones.
 //
-// A provider implementation lives in its own package (idp/oidc, idp/saml)
-// and registers a Factory for its kind at wiring time:
+// A provider kind lives in its own package (idp/oidc, idp/saml) and
+// registers a Kind at wiring time:
 //
-//	registry.RegisterFactory(identity.KindOIDC, oidc.NewFactory(httpClient))
+//	registry.RegisterKind(identity.KindOIDC, oidc.Kind{HTTPClient: c})
 //
-// The registry then builds one IdentityProvider per enabled row in
-// identity_providers (config jsonb holds issuer/client id/metadata URL...).
-// The HTTP layer will expose:
-//
-//	GET /v1/sso/{slug}/start     → IdentityProvider.BeginLogin (redirect to IdP)
-//	GET|POST /v1/sso/{slug}/callback → CompleteLogin → link or create the user
-//	                                  → session.Create(method "oidc:<slug>")
-//
-// See docs/sso.md for the linking rules.
+// The registry builds one IdentityProvider per enabled identity_providers
+// row and reuses it until the row changes (updated_at), so lazily fetched
+// discovery documents and IdP metadata stay cached. The sso service drives
+// the login flow and the linking rules; see docs/sso.md.
 package idp
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/boson-chat/auth/internal/db/repositories/identity"
 	"github.com/boson-chat/auth/internal/logger"
@@ -42,72 +39,132 @@ type ExternalIdentity struct {
 	Claims map[string]any
 }
 
+// LoginRequest is how to send the browser to the IdP, plus values the
+// caller must keep (in the encrypted state cookie) and hand back to
+// CompleteLogin: the OIDC nonce and PKCE verifier, the SAML request id.
+type LoginRequest struct {
+	// RedirectURL: send a 302 there (OIDC, SAML HTTP-Redirect binding).
+	RedirectURL string
+	// PostURL + PostFields: auto-submit a form (SAML HTTP-POST binding).
+	PostURL    string
+	PostFields map[string]string
+	Saved      map[string]string
+}
+
 // IdentityProvider is one configured external IdP.
 type IdentityProvider interface {
 	Kind() string
 	Slug() string
 	DisplayName() string
-	// BeginLogin redirects the browser to the IdP. state is an opaque,
-	// single-use value the caller has already bound to the browser (cookie);
-	// OIDC sends it as state (plus its own nonce/PKCE), SAML as RelayState.
-	BeginLogin(ctx context.Context, w http.ResponseWriter, r *http.Request, state string) error
+	// BeginLogin starts a login. state is the caller's opaque, single-use
+	// value already bound to the browser (cookie); OIDC sends it as state,
+	// SAML as RelayState.
+	BeginLogin(ctx context.Context, state string) (*LoginRequest, error)
 	// CompleteLogin validates the IdP's response (code exchange + ID token
-	// verification, or SAML assertion signature/audience/time checks) and
+	// verification, or SAML signature/audience/time/InResponseTo checks) and
 	// returns the asserted identity. The caller has already checked state.
-	CompleteLogin(ctx context.Context, r *http.Request) (ExternalIdentity, error)
+	CompleteLogin(ctx context.Context, r *http.Request, saved map[string]string) (ExternalIdentity, error)
+	// Check verifies the configuration against the IdP (discovery + JWKS,
+	// or IdP metadata) for the admin "test" button.
+	Check(ctx context.Context) (map[string]any, error)
 }
 
-// Factory builds a provider from its stored configuration.
-type Factory func(ctx context.Context, p *identity.Provider) (IdentityProvider, error)
+// SPMetadata is implemented by providers that publish SAML SP metadata.
+type SPMetadata interface {
+	Metadata() ([]byte, error)
+}
+
+// BuildContext is what a Kind needs besides the stored row.
+type BuildContext struct {
+	ClientSecret string
+	SPKey        *rsa.PrivateKey
+	SPCert       *x509.Certificate
+	// Our endpoints for this provider.
+	CallbackURL string // OIDC redirect_uri
+	ACSURL      string // SAML assertion consumer service
+	MetadataURL string // SAML SP metadata (and default SP entity id)
+}
+
+// Kind implements one provider type.
+type Kind interface {
+	// Normalize validates a provider's config (without secrets) and returns
+	// the form to store.
+	Normalize(cfg map[string]any) (map[string]any, error)
+	// Build makes a provider. It must not do network I/O; fetch discovery
+	// documents or metadata lazily.
+	Build(p *identity.Provider, bc BuildContext) (IdentityProvider, error)
+}
 
 // ProviderInfo is the public description of an enabled provider (login buttons).
 type ProviderInfo struct {
 	Slug        string `json:"slug"`
 	Kind        string `json:"kind"`
 	DisplayName string `json:"display_name"`
+	StartURL    string `json:"start_url"`
+}
+
+type entry struct {
+	updatedAt time.Time
+	provider  IdentityProvider
 }
 
 // Registry maps slugs to live providers.
 type Registry struct {
 	mu        sync.RWMutex
-	factories map[string]Factory
-	providers map[string]IdentityProvider
+	kinds     map[string]Kind
+	providers map[string]entry
 }
 
 func NewRegistry() *Registry {
-	return &Registry{factories: map[string]Factory{}, providers: map[string]IdentityProvider{}}
+	return &Registry{kinds: map[string]Kind{}, providers: map[string]entry{}}
 }
 
-// RegisterFactory installs the factory for a kind ("oidc", "saml").
-func (r *Registry) RegisterFactory(kind string, f Factory) {
+// RegisterKind installs the implementation of a kind ("oidc", "saml").
+func (r *Registry) RegisterKind(name string, k Kind) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.factories[kind] = f
+	r.kinds[name] = k
 }
 
-// Load (re)builds providers from rows. Rows whose kind has no factory or
-// whose config is invalid are skipped with a warning, so one broken IdP
-// can't take down password login.
-func (r *Registry) Load(ctx context.Context, rows []*identity.Provider) {
-	built := map[string]IdentityProvider{}
+// Kind returns the implementation of a kind.
+func (r *Registry) Kind(name string) (Kind, bool) {
 	r.mu.RLock()
-	factories := r.factories
+	defer r.mu.RUnlock()
+	k, ok := r.kinds[name]
+	return k, ok
+}
+
+// Load (re)builds providers from rows, reusing unchanged ones. Rows whose
+// kind is unknown or whose config is invalid are skipped with a log line,
+// so one broken IdP can't take down the others or password login.
+func (r *Registry) Load(ctx context.Context, rows []*identity.Provider, bc func(*identity.Provider) (BuildContext, error)) {
+	r.mu.RLock()
+	old := r.providers
+	kinds := r.kinds
 	r.mu.RUnlock()
+	built := map[string]entry{}
 	for _, row := range rows {
 		if !row.Enabled {
 			continue
 		}
-		f, ok := factories[row.Kind]
+		if e, ok := old[row.Slug]; ok && e.updatedAt.Equal(row.UpdatedAt) && e.provider.Kind() == row.Kind {
+			built[row.Slug] = e
+			continue
+		}
+		k, ok := kinds[row.Kind]
 		if !ok {
 			logger.FromCtx(ctx).Warn().Str("slug", row.Slug).Str("kind", row.Kind).Msg("no implementation for identity provider kind; skipping")
 			continue
 		}
-		p, err := f(ctx, row)
-		if err != nil {
-			logger.FromCtx(ctx).Error().Err(err).Str("slug", row.Slug).Msg("identity provider config invalid; skipping")
-			continue
+		c, err := bc(row)
+		if err == nil {
+			var p IdentityProvider
+			if p, err = k.Build(row, c); err == nil {
+				built[row.Slug] = entry{updatedAt: row.UpdatedAt, provider: p}
+				continue
+			}
 		}
-		built[row.Slug] = p
+		logger.FromCtx(ctx).Error().Err(err).Str("slug", row.Slug).Msg("identity provider config invalid; skipping")
 	}
 	r.mu.Lock()
 	r.providers = built
@@ -118,50 +175,22 @@ func (r *Registry) Load(ctx context.Context, rows []*identity.Provider) {
 func (r *Registry) Get(slug string) (IdentityProvider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.providers[slug]
+	e, ok := r.providers[slug]
 	if !ok {
 		return nil, fmt.Errorf("idp: unknown provider %q", slug)
 	}
-	return p, nil
+	return e.provider, nil
 }
 
-// List describes the loaded providers, sorted by slug.
+// List describes the loaded providers, sorted by slug (StartURL unset).
 func (r *Registry) List() []ProviderInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]ProviderInfo, 0, len(r.providers))
-	for _, p := range r.providers {
+	for _, e := range r.providers {
+		p := e.provider
 		out = append(out, ProviderInfo{Slug: p.Slug(), Kind: p.Kind(), DisplayName: p.DisplayName()})
 	}
 	slices.SortFunc(out, func(a, b ProviderInfo) int { return strings.Compare(a.Slug, b.Slug) })
 	return out
 }
-
-// IdPServiceImpl loads providers from the database into the registry.
-type IdPServiceImpl interface {
-	Reload(ctx context.Context) error
-	Providers() []ProviderInfo
-	Provider(slug string) (IdentityProvider, error)
-}
-
-type IdPService struct {
-	Repository identity.IdentityRepositoryImpl
-	Registry   *Registry
-}
-
-func NewIdPService(repo identity.IdentityRepositoryImpl, reg *Registry) IdPServiceImpl {
-	return &IdPService{Repository: repo, Registry: reg}
-}
-
-func (s *IdPService) Reload(ctx context.Context) error {
-	rows, err := s.Repository.ListProviders(ctx, true)
-	if err != nil {
-		return err
-	}
-	s.Registry.Load(ctx, rows)
-	return nil
-}
-
-func (s *IdPService) Providers() []ProviderInfo { return s.Registry.List() }
-
-func (s *IdPService) Provider(slug string) (IdentityProvider, error) { return s.Registry.Get(slug) }

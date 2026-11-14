@@ -37,6 +37,12 @@ const (
 	EventSettingsUpdated      = "settings_updated"
 	EventAdminResetSent       = "admin_password_reset_sent"
 	EventAdminVerifySent      = "admin_verification_sent"
+	EventSSOLinked            = "sso_identity_linked"
+	EventSSOUnlinked          = "sso_identity_unlinked"
+	EventSSOFailed            = "sso_login_failed"
+	EventSSOProviderCreated   = "sso_provider_created"
+	EventSSOProviderUpdated   = "sso_provider_updated"
+	EventSSOProviderDeleted   = "sso_provider_deleted"
 )
 
 type AuditServiceImpl interface {

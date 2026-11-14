@@ -1,4 +1,4 @@
-.PHONY: setup deps run build test test-unit test-integration test-pg-up test-pg-down lint migrate-up migrate-down migrate-create docker
+.PHONY: setup deps run build test test-unit test-integration test-pg-up test-pg-down test-dex-up test-dex-down lint migrate-up migrate-down migrate-create docker
 
 # Load .env (if present) for run / migrate targets.
 ifneq (,$(wildcard .env))
@@ -9,6 +9,9 @@ endif
 TEST_PG_CONTAINER ?= auth-test-postgres
 TEST_PG_PORT ?= 55432
 TEST_DATABASE_URL ?= postgres://auth:auth-test@127.0.0.1:$(TEST_PG_PORT)/auth?sslmode=disable
+TEST_DEX_CONTAINER ?= auth-test-dex
+DEX_IMAGE ?= ghcr.io/dexidp/dex:v2.44.0
+DEX_DISCOVERY = http://127.0.0.1:5556/dex/.well-known/openid-configuration
 
 setup: deps
 	docker compose up -d --wait postgres mailpit
@@ -38,7 +41,18 @@ test-pg-up:
 test-pg-down:
 	docker stop $(TEST_PG_CONTAINER)
 
+# Real OIDC provider (Dex) for TestOIDCAgainstDex; test-integration uses it
+# whenever it is running.
+test-dex-up:
+	docker run -d --rm --name $(TEST_DEX_CONTAINER) -p 127.0.0.1:5556:5556 \
+		-v $(CURDIR)/test/dex/config.yaml:/etc/dex/config.yaml:ro $(DEX_IMAGE) dex serve /etc/dex/config.yaml
+	@until curl -sf $(DEX_DISCOVERY) >/dev/null; do sleep 1; done
+
+test-dex-down:
+	docker stop $(TEST_DEX_CONTAINER)
+
 test-integration:
+	@if curl -sf -o /dev/null $(DEX_DISCOVERY); then export TEST_DEX_ISSUER=http://127.0.0.1:5556/dex; fi; \
 	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -race -count=1 ./...
 
 lint:

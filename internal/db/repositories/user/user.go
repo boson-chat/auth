@@ -9,6 +9,7 @@ import (
 
 	"github.com/boson-chat/auth/internal/db"
 	"github.com/boson-chat/auth/internal/db/repositories"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -55,6 +56,8 @@ type ListFilter struct {
 type UserRepositoryImpl interface {
 	Create(ctx context.Context, u *User) error
 	FindByID(ctx context.Context, id string) (*User, error)
+	// FindByIDForUpdate locks the row (call inside WithTx).
+	FindByIDForUpdate(ctx context.Context, id string) (*User, error)
 	FindByUsernameFolded(ctx context.Context, folded string) (*User, error)
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	SetEmailVerified(ctx context.Context, id string, at time.Time) error
@@ -97,6 +100,18 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*User, error)
 		return nil, repositories.ErrNotFound
 	}
 	return r.first(ctx, "id = ?", id)
+}
+
+func (r *UserRepository) FindByIDForUpdate(ctx context.Context, id string) (*User, error) {
+	if id == "" {
+		return nil, repositories.ErrNotFound
+	}
+	var u User
+	err := r.db.Conn(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&u).Error
+	if err != nil {
+		return nil, repositories.NotFound(err)
+	}
+	return &u, nil
 }
 
 func (r *UserRepository) FindByUsernameFolded(ctx context.Context, folded string) (*User, error) {

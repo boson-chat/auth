@@ -38,6 +38,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("DELETE /v1/sessions/{id}", h.authed(h.revokeSession))
 	mux.HandleFunc("POST /v1/voice/token", h.authed(h.voiceToken))
 
+	h.registerSSO(mux)
 	h.registerAdmin(mux)
 	h.registerPages(mux)
 }
@@ -82,8 +83,8 @@ func (h *Handlers) discovery(w nethttp.ResponseWriter, _ *nethttp.Request) {
 
 func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	providers := []idp.ProviderInfo{}
-	if h.IdP != nil {
-		providers = h.IdP.Providers()
+	if h.SSO != nil {
+		providers = h.SSO.Providers(r.Context())
 	}
 	st, err := h.Settings.Get(r.Context())
 	if err != nil {

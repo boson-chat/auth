@@ -3,13 +3,18 @@ module github.com/boson-chat/auth
 go 1.27.1
 
 require (
+	github.com/beevik/etree v1.8.1
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/crewjam/saml v0.6.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/jinzhu/configor v1.2.2
+	github.com/oauth2-proxy/mockoidc v0.0.0-20261103160011-e06ed0b7cb7f
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/prometheus/client_golang v1.25.0
 	github.com/rs/zerolog v1.35.1
+	github.com/russellhaering/goxmldsig v1.6.1
 	github.com/spf13/cobra v1.10.2
 	github.com/wneessen/go-mail v0.8.2
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0
@@ -21,6 +26,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	golang.org/x/crypto v0.59.0
+	golang.org/x/oauth2 v0.38.0
 	golang.org/x/term v0.48.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
@@ -31,6 +37,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.8 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -42,6 +49,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

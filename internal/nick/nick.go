@@ -77,3 +77,42 @@ func Fold(s string) string {
 	}
 	return string(b)
 }
+
+// Sanitize turns an arbitrary name (an SSO claim, an email local part) into
+// a valid nickname, or "" if nothing usable is left: separators become _,
+// other invalid characters are dropped, a leading digit or - gets a "u"
+// prefix, and the result is cut to MaxLen. Reserved names get a trailing _.
+func Sanitize(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case isLetter(c) || isDigit(c) || isSpecial(c) || c == '-':
+			b = append(b, c)
+		case c == '.' || c == ' ' || c == '+' || c == '@':
+			if len(b) > 0 && b[len(b)-1] != '_' {
+				b = append(b, '_')
+			}
+		}
+	}
+	out := strings.Trim(string(b), "_-")
+	if out == "" {
+		return ""
+	}
+	if c := out[0]; !isLetter(c) && !isSpecial(c) {
+		out = "u" + out
+	}
+	if len(out) > MaxLen {
+		out = strings.TrimRight(out[:MaxLen], "_-")
+	}
+	if _, ok := reserved[Fold(out)]; ok {
+		if len(out) == MaxLen {
+			out = out[:MaxLen-1]
+		}
+		out += "_"
+	}
+	if Validate(out) != nil {
+		return ""
+	}
+	return out
+}

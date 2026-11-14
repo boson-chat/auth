@@ -36,6 +36,14 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
+      - name: Start Dex (real OIDC provider for TestOIDCAgainstDex)
+        run: |
+          docker run -d --name dex -p 127.0.0.1:5556:5556 \
+            -v "$PWD/test/dex/config.yaml:/etc/dex/config.yaml:ro" ghcr.io/dexidp/dex:v2.44.0 dex serve /etc/dex/config.yaml
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:5556/dex/.well-known/openid-configuration >/dev/null && exit 0; sleep 1; done
+          docker logs dex; exit 1
       - run: go test -race -count=1 ./...
+        env:
+          TEST_DEX_ISSUER: http://127.0.0.1:5556/dex
       - name: Docker build
         run: docker build --build-arg VERSION=ci -t auth:ci .

@@ -54,6 +54,9 @@ type Tokens struct {
 
 type AuthnServiceImpl interface {
 	Login(ctx context.Context, login, pw string) (*Tokens, error)
+	// IssueSession signs in a user who authenticated elsewhere (SSO):
+	// method is "oidc:<slug>" or "saml:<slug>". Disabled users are refused.
+	IssueSession(ctx context.Context, u *user.User, method string) (*Tokens, error)
 	Refresh(ctx context.Context, refreshToken string) (*Tokens, error)
 	Logout(ctx context.Context, p *Principal) error
 	Authenticate(ctx context.Context, accessToken string) (*Principal, error)
@@ -174,6 +177,30 @@ func (s *AuthnService) Login(ctx context.Context, login, pw string) (*Tokens, er
 	}
 	s.Metrics.LoginAttempt(ctx, session.MethodPassword, metrics.OutcomeSuccess)
 	s.Audit.Record(ctx, u.ID, audit.EventLogin, map[string]any{"method": session.MethodPassword, "session_id": issued.Session.ID})
+	return &Tokens{
+		AccessToken: access, AccessExpiresAt: exp,
+		RefreshToken: issued.RefreshToken, RefreshExpiresAt: issued.RefreshExpiresAt,
+		Session: issued.Session, User: u,
+	}, nil
+}
+
+func (s *AuthnService) IssueSession(ctx context.Context, u *user.User, method string) (*Tokens, error) {
+	kind, _, _ := strings.Cut(method, ":")
+	if u.Disabled() {
+		s.Metrics.LoginAttempt(ctx, kind, metrics.OutcomeDisabled)
+		s.Audit.Record(ctx, u.ID, audit.EventLoginFailed, map[string]any{"reason": "disabled", "method": method})
+		return nil, apperr.ErrAccountDisabled
+	}
+	issued, err := s.Sessions.Create(ctx, u.ID, method)
+	if err != nil {
+		return nil, err
+	}
+	access, exp, err := s.Tokens.MintAccess(ctx, u, issued.Session.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.Metrics.LoginAttempt(ctx, kind, metrics.OutcomeSuccess)
+	s.Audit.Record(ctx, u.ID, audit.EventLogin, map[string]any{"method": method, "session_id": issued.Session.ID})
 	return &Tokens{
 		AccessToken: access, AccessExpiresAt: exp,
 		RefreshToken: issued.RefreshToken, RefreshExpiresAt: issued.RefreshExpiresAt,

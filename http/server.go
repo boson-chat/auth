@@ -22,6 +22,7 @@ import (
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey"
+	"github.com/boson-chat/auth/internal/db/repositories/ssocode"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/logger"
 	"github.com/boson-chat/auth/internal/mailer"
@@ -32,10 +33,13 @@ import (
 	"github.com/boson-chat/auth/internal/services/authn"
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/idp"
+	"github.com/boson-chat/auth/internal/services/idp/oidc"
+	"github.com/boson-chat/auth/internal/services/idp/saml"
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
+	"github.com/boson-chat/auth/internal/services/sso"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/boson-chat/auth/metrics"
 )
@@ -46,6 +50,8 @@ type Options struct {
 	Metrics        *metrics.Metrics
 	MetricsHandler nethttp.Handler
 	Now            func() time.Time
+	// SSOHTTPClient is used for calls to identity providers (tests).
+	SSOHTTPClient *nethttp.Client
 }
 
 // App is the wired service.
@@ -60,7 +66,7 @@ type App struct {
 	Admin    admin.AdminServiceImpl
 	Sessions session.SessionServiceImpl
 	Email    email.EmailServiceImpl
-	IdP      idp.IdPServiceImpl
+	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
 	limits   *handlers.Limits
 }
@@ -112,6 +118,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	inviteRepo := invite.NewInviteRepository(database)
 	identityRepo := identity.NewIdentityRepository(database)
 	settingsRepo := settingsrepo.NewSettingsRepository(database)
+	ssoCodeRepo := ssocode.NewSSOCodeRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
@@ -145,8 +152,31 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService,
 	})
 	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, opts.Now)
-	idpService := idp.NewIdPService(identityRepo, idp.NewRegistry())
-	if err := idpService.Reload(ctx); err != nil {
+	ssoClient := opts.SSOHTTPClient
+	if ssoClient == nil {
+		ssoClient = &nethttp.Client{Timeout: cfg.SSOConfig.HTTPTimeout}
+	}
+	registry := idp.NewRegistry()
+	registry.RegisterKind(identity.KindOIDC, oidc.Kind{HTTPClient: ssoClient, AllowHTTP: cfg.SSOConfig.AllowHTTP})
+	registry.RegisterKind(identity.KindSAML, saml.Kind{HTTPClient: ssoClient, AllowHTTP: cfg.SSOConfig.AllowHTTP})
+	returnTo, err := sso.NewReturnToPolicy(cfg.HTTPConfig.AppURL,
+		append([]string{cfg.HTTPConfig.AppURL, cfg.HTTPConfig.PublicURL}, config.SplitList(cfg.HTTPConfig.CORSAllowedOrigins)...),
+		config.SplitList(cfg.SSOConfig.ReturnToAllowed))
+	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	ssoService, err := sso.NewSSOService(sso.Deps{
+		Identities: identityRepo, Codes: ssoCodeRepo, Users: userRepo, Credentials: credRepo, Tx: database,
+		Registry: registry, Invites: inviteService, Settings: settingsService, Authn: authnService,
+		Audit: auditService, Metrics: m, ReturnTo: returnTo, EncryptionKey: kek,
+		PublicURL: cfg.HTTPConfig.PublicURL, StateTTL: cfg.SSOConfig.StateTTL, CodeTTL: cfg.SSOConfig.CodeTTL, Now: opts.Now,
+	})
+	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	if err := ssoService.Reload(ctx); err != nil {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
 	}
 
@@ -154,7 +184,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
-		Keys: keyService, IdP: idpService, Settings: settingsService, Limits: limits, Config: cfg,
+		Keys: keyService, SSO: ssoService, Settings: settingsService, Limits: limits, Config: cfg,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -177,7 +207,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
-		Email: emailService, IdP: idpService, Settings: settingsService, limits: limits,
+		Email: emailService, SSO: ssoService, Settings: settingsService, limits: limits,
 	}, nil
 }
 
@@ -185,6 +215,21 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
 	a.limits.RunPruner(ctx)
+	// Pick up provider changes made on other replicas.
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := a.SSO.Reload(ctx); err != nil && ctx.Err() == nil {
+					logger.FromCtx(ctx).Warn().Err(err).Msg("reloading identity providers")
+				}
+			}
+		}
+	}()
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -198,6 +243,9 @@ func (a *App) RunBackground(ctx context.Context) {
 				}
 				if err := a.Account.Cleanup(ctx); err != nil && ctx.Err() == nil {
 					logger.FromCtx(ctx).Warn().Err(err).Msg("email token cleanup")
+				}
+				if err := a.SSO.Cleanup(ctx); err != nil && ctx.Err() == nil {
+					logger.FromCtx(ctx).Warn().Err(err).Msg("sso code cleanup")
 				}
 			}
 		}
