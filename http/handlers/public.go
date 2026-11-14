@@ -17,6 +17,7 @@ import (
 func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
+	mux.HandleFunc("GET /version", h.version)
 	mux.HandleFunc("GET /.well-known/jwks.json", h.jwks)
 	mux.HandleFunc("GET /.well-known/openid-configuration", h.discovery)
 	mux.HandleFunc("GET /v1/config", h.publicConfig)
@@ -79,14 +80,21 @@ func (h *Handlers) discovery(w nethttp.ResponseWriter, _ *nethttp.Request) {
 	})
 }
 
-func (h *Handlers) publicConfig(w nethttp.ResponseWriter, _ *nethttp.Request) {
+func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	providers := []idp.ProviderInfo{}
 	if h.IdP != nil {
 		providers = h.IdP.Providers()
 	}
+	st, err := h.Settings.Get(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"registration":               h.Config.AccountConfig.Registration,
-		"require_email_verification": h.Config.AccountConfig.RequireEmailVerification,
+		"registration":               st.Registration,
+		"require_email_verification": st.RequireEmailVerification,
+		"channel_creation":           st.ChannelCreation,
+		"voice_channel_creation":     st.VoiceChannelCreation,
 		"sso_providers":              providers,
 	})
 }
@@ -114,10 +122,15 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
+	st, err := h.Settings.Get(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
 	writeJSON(w, nethttp.StatusCreated, map[string]any{
 		"user":                        toUser(u),
 		"email_verification_sent":     true,
-		"email_verification_required": h.Config.AccountConfig.RequireEmailVerification,
+		"email_verification_required": st.RequireEmailVerification,
 	})
 }
 

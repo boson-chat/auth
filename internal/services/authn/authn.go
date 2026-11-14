@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/auth/internal/password"
 	"github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/session"
+	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/boson-chat/auth/internal/textutil"
 	"github.com/boson-chat/auth/metrics"
@@ -70,8 +71,9 @@ type Deps struct {
 	Audit       audit.AuditServiceImpl
 	Hasher      *password.Hasher
 	Metrics     *metrics.Metrics
-	// RequireEmailVerification blocks login until the email is verified.
-	RequireEmailVerification bool
+	// Settings.require_email_verification blocks password login until the
+	// email is verified.
+	Settings settings.SettingsServiceImpl
 }
 
 type AuthnService struct {
@@ -142,7 +144,11 @@ func (s *AuthnService) checkPassword(ctx context.Context, method string, u *user
 		s.Audit.Record(ctx, u.ID, audit.EventLoginFailed, map[string]any{"reason": "disabled", "method": method})
 		return nil, apperr.ErrAccountDisabled
 	}
-	if s.RequireEmailVerification && !u.EmailVerified() {
+	st, err := s.Settings.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if st.RequireEmailVerification && !u.EmailVerified() {
 		s.Metrics.LoginAttempt(ctx, method, metrics.OutcomeUnverified)
 		return nil, apperr.ErrEmailNotVerified
 	}

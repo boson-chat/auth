@@ -19,10 +19,23 @@ const InternalTokenHeader = "X-Internal-Token"
 func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handler) {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
+	mux.HandleFunc("GET /version", h.version)
 	if metrics != nil {
 		mux.Handle("GET /metrics", metrics)
 	}
 	mux.HandleFunc("POST /internal/v1/verify-password", h.internalOnly(h.internalVerifyPassword))
+	mux.HandleFunc("GET /internal/v1/settings", h.internalOnly(h.internalSettings))
+}
+
+// internalSettings serves the network settings to Ergo and quicvoiced (same
+// object as GET /v1/admin/settings).
+func (h *Handlers) internalSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	st, err := h.Settings.Get(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, st)
 }
 
 func (h *Handlers) internalOnly(next nethttp.HandlerFunc) nethttp.HandlerFunc {

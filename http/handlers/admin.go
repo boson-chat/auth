@@ -3,14 +3,23 @@ package handlers
 import (
 	nethttp "net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/boson-chat/auth/internal/apperr"
+	"github.com/boson-chat/auth/internal/db/repositories"
+	auditrepo "github.com/boson-chat/auth/internal/db/repositories/audit"
 	inviterepo "github.com/boson-chat/auth/internal/db/repositories/invite"
+	"github.com/boson-chat/auth/internal/logger"
+	"github.com/boson-chat/auth/internal/services/admin"
+	"github.com/boson-chat/auth/internal/services/settings"
 )
 
 func (h *Handlers) registerAdmin(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/users", h.adminOnly(h.adminListUsers))
+	mux.HandleFunc("POST /v1/admin/users", h.adminOnly(h.adminCreateUser))
+	mux.HandleFunc("POST /v1/admin/users/{id}/password-reset", h.adminOnly(h.adminSendPasswordReset))
+	mux.HandleFunc("POST /v1/admin/users/{id}/verification", h.adminOnly(h.adminSendVerification))
 	mux.HandleFunc("GET /v1/admin/users/{id}", h.adminOnly(h.adminGetUser))
 	mux.HandleFunc("POST /v1/admin/users/{id}/disable", h.adminOnly(h.adminSetDisabled(true)))
 	mux.HandleFunc("POST /v1/admin/users/{id}/enable", h.adminOnly(h.adminSetDisabled(false)))
@@ -21,6 +30,8 @@ func (h *Handlers) registerAdmin(mux *nethttp.ServeMux) {
 	mux.HandleFunc("POST /v1/admin/invites", h.adminOnly(h.adminCreateInvite))
 	mux.HandleFunc("DELETE /v1/admin/invites/{id}", h.adminOnly(h.adminRevokeInvite))
 	mux.HandleFunc("GET /v1/admin/audit", h.adminOnly(h.adminAudit))
+	mux.HandleFunc("GET /v1/admin/settings", h.adminOnly(h.adminGetSettings))
+	mux.HandleFunc("PATCH /v1/admin/settings", h.adminOnly(h.adminUpdateSettings))
 }
 
 func intParam(r *nethttp.Request, name string) int {
@@ -185,11 +196,144 @@ func (h *Handlers) adminRevokeInvite(w nethttp.ResponseWriter, r *nethttp.Reques
 	w.WriteHeader(nethttp.StatusNoContent)
 }
 
+type adminCreateUserReq struct {
+	Username        string `json:"username"`
+	Email           string `json:"email"`
+	Role            string `json:"role"`
+	Password        string `json:"password"`
+	SendInviteEmail bool   `json:"send_invite_email"`
+}
+
+func (h *Handlers) adminCreateUser(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req adminCreateUserReq
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	u, sent, err := h.Admin.CreateUser(r.Context(), principalFrom(r).UserID, admin.CreateUserInput{
+		Username: req.Username, Email: req.Email, Role: req.Role, Password: req.Password, SendSetupEmail: req.SendInviteEmail,
+	})
+	if err != nil && u == nil {
+		writeError(w, r, err)
+		return
+	}
+	if err != nil {
+		// The account exists; only queuing the setup email failed. The admin
+		// can retry with POST /v1/admin/users/{id}/password-reset.
+		logger.FromCtx(r.Context()).Error().Err(err).Str("user_id", u.ID).Msg("account setup email")
+	}
+	writeJSON(w, nethttp.StatusCreated, map[string]any{"user": toUser(u), "invite_email_sent": sent})
+}
+
+func (h *Handlers) adminSendPasswordReset(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if err := h.Admin.SendPasswordReset(r.Context(), principalFrom(r).UserID, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"status": "a password reset link has been sent to the user's email address"})
+}
+
+func (h *Handlers) adminSendVerification(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if err := h.Admin.SendVerification(r.Context(), principalFrom(r).UserID, r.PathValue("id")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]string{"status": "a verification link has been sent to the user's email address"})
+}
+
+type auditEntryJSON struct {
+	ID    string             `json:"id"`
+	Event string             `json:"event"`
+	At    time.Time          `json:"at"`
+	IP    string             `json:"ip"`
+	Meta  repositories.JSONB `json:"meta"`
+	// UserID is the actor (kept for 1.2 clients); same as ActorUserID.
+	UserID         *string `json:"user_id"`
+	ActorUserID    *string `json:"actor_user_id"`
+	ActorUsername  *string `json:"actor_username"`
+	TargetUserID   *string `json:"target_user_id"`
+	TargetUsername *string `json:"target_username"`
+}
+
+func toAuditEntry(e *auditrepo.EntryView) auditEntryJSON {
+	meta := e.Meta
+	if meta == nil {
+		meta = repositories.JSONB{}
+	}
+	return auditEntryJSON{
+		ID: e.ID, Event: e.Event, At: e.At, IP: e.IP, Meta: meta,
+		UserID: e.UserID, ActorUserID: e.UserID, ActorUsername: e.ActorUsername,
+		TargetUserID: e.TargetUserID, TargetUsername: e.TargetUsername,
+	}
+}
+
+func timeParam(r *nethttp.Request, name string) (*time.Time, error) {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return nil, apperr.Invalid(name + " must be an RFC 3339 timestamp")
+	}
+	return &t, nil
+}
+
+// adminAudit: GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=
 func (h *Handlers) adminAudit(w nethttp.ResponseWriter, r *nethttp.Request) {
-	list, err := h.Admin.ListAudit(r.Context(), r.URL.Query().Get("user_id"), intParam(r, "limit"))
+	q := r.URL.Query()
+	since, err := timeParam(r, "since")
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"entries": list})
+	until, err := timeParam(r, "until")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var events []string
+	if ev := q.Get("event"); ev != "" {
+		events = strings.Split(ev, ",")
+	}
+	list, next, err := h.Admin.ListAudit(r.Context(), admin.AuditQuery{
+		Events: events, Actor: q.Get("actor"), Target: q.Get("target"), UserID: q.Get("user_id"),
+		Since: since, Until: until, Cursor: q.Get("cursor"), Limit: intParam(r, "limit"),
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out := make([]auditEntryJSON, 0, len(list))
+	for _, e := range list {
+		out = append(out, toAuditEntry(e))
+	}
+	var nextCursor *string
+	if next != "" {
+		nextCursor = &next
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"entries": out, "next_cursor": nextCursor})
+}
+
+func (h *Handlers) adminGetSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	st, err := h.Settings.Get(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, st)
+}
+
+func (h *Handlers) adminUpdateSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var p settings.Patch
+	if err := decode(w, r, &p); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	st, err := h.Settings.Update(r.Context(), principalFrom(r).UserID, p)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, st)
 }

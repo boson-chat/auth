@@ -1,0 +1,9 @@
+Hi {{.Username}},
+
+An administrator created a {{.SiteName}} account for you with the username
+{{.Username}}. To choose your password, open:
+
+{{.Link}}
+
+The link expires in {{.ExpiresIn}} and can be used once. If you weren't
+expecting this, you can ignore this email.

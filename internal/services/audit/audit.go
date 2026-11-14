@@ -34,13 +34,17 @@ const (
 	EventAdminInviteCreated   = "admin_invite_created"
 	EventAdminInviteRevoked   = "admin_invite_revoked"
 	EventKeyCreated           = "signing_key_created"
+	EventSettingsUpdated      = "settings_updated"
+	EventAdminResetSent       = "admin_password_reset_sent"
+	EventAdminVerifySent      = "admin_verification_sent"
 )
 
 type AuditServiceImpl interface {
 	// Record stores an event. userID may be "" (unknown user).
 	Record(ctx context.Context, userID, event string, meta map[string]any)
-	ListByUser(ctx context.Context, userID string, limit int) ([]*auditrepo.Entry, error)
-	ListRecent(ctx context.Context, limit int) ([]*auditrepo.Entry, error)
+	// RecordTarget stores an event by actorID about targetUserID (admin actions).
+	RecordTarget(ctx context.Context, actorID, targetUserID, event string, meta map[string]any)
+	List(ctx context.Context, f auditrepo.Filter) ([]*auditrepo.EntryView, error)
 }
 
 type AuditService struct {
@@ -52,6 +56,10 @@ func NewAuditService(repo auditrepo.AuditRepositoryImpl) AuditServiceImpl {
 }
 
 func (s *AuditService) Record(ctx context.Context, userID, event string, meta map[string]any) {
+	s.RecordTarget(ctx, userID, "", event, meta)
+}
+
+func (s *AuditService) RecordTarget(ctx context.Context, userID, targetUserID, event string, meta map[string]any) {
 	e := &auditrepo.Entry{
 		ID:    ids.New(ids.Audit),
 		Event: event,
@@ -62,15 +70,14 @@ func (s *AuditService) Record(ctx context.Context, userID, event string, meta ma
 	if userID != "" {
 		e.UserID = &userID
 	}
+	if targetUserID != "" {
+		e.TargetUserID = &targetUserID
+	}
 	if err := s.Repository.Create(ctx, e); err != nil {
 		logger.FromCtx(ctx).Error().Err(err).Str("event", event).Msg("audit log write failed")
 	}
 }
 
-func (s *AuditService) ListByUser(ctx context.Context, userID string, limit int) ([]*auditrepo.Entry, error) {
-	return s.Repository.ListByUser(ctx, userID, limit)
-}
-
-func (s *AuditService) ListRecent(ctx context.Context, limit int) ([]*auditrepo.Entry, error) {
-	return s.Repository.ListRecent(ctx, limit)
+func (s *AuditService) List(ctx context.Context, f auditrepo.Filter) ([]*auditrepo.EntryView, error) {
+	return s.Repository.List(ctx, f)
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories/invite"
 	"github.com/boson-chat/auth/internal/db/repositories/refreshtoken"
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
+	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/logger"
@@ -34,6 +35,7 @@ import (
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/session"
+	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/boson-chat/auth/metrics"
 )
@@ -59,6 +61,7 @@ type App struct {
 	Sessions session.SessionServiceImpl
 	Email    email.EmailServiceImpl
 	IdP      idp.IdPServiceImpl
+	Settings settings.SettingsServiceImpl
 	limits   *handlers.Limits
 }
 
@@ -108,9 +111,11 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	auditRepo := audit.NewAuditRepository(database)
 	inviteRepo := invite.NewInviteRepository(database)
 	identityRepo := identity.NewIdentityRepository(database)
+	settingsRepo := settingsrepo.NewSettingsRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
+	settingsService := settings.NewSettingsService(settingsRepo, database, auditService, cfg.AccountConfig, opts.Now)
 	keyService, err := keys.NewKeyService(keyRepo, database, keys.Options{
 		EncryptionKey: kek,
 		Rotation:      cfg.TokenConfig.KeyRotation,
@@ -133,14 +138,13 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	accountService := account.NewAccountService(account.Deps{
 		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Tx: database,
 		Invites: inviteService, Sessions: sessionService, Email: emailService, Audit: auditService,
-		Hasher: hasher, Metrics: m, Config: cfg.AccountConfig, Now: opts.Now,
+		Settings: settingsService, Hasher: hasher, Metrics: m, Config: cfg.AccountConfig, Now: opts.Now,
 	})
 	authnService := authn.NewAuthnService(authn.Deps{
 		Users: userRepo, Credentials: credRepo, Sessions: sessionService, Tokens: tokenService,
-		Audit: auditService, Hasher: hasher, Metrics: m,
-		RequireEmailVerification: cfg.AccountConfig.RequireEmailVerification,
+		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService,
 	})
-	adminService := admin.NewAdminService(userRepo, database, sessionService, inviteService, auditService, opts.Now)
+	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, opts.Now)
 	idpService := idp.NewIdPService(identityRepo, idp.NewRegistry())
 	if err := idpService.Reload(ctx); err != nil {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
@@ -150,7 +154,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
-		Keys: keyService, IdP: idpService, Limits: limits, Config: cfg,
+		Keys: keyService, IdP: idpService, Settings: settingsService, Limits: limits, Config: cfg,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -173,7 +177,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
-		Email: emailService, IdP: idpService, limits: limits,
+		Email: emailService, IdP: idpService, Settings: settingsService, limits: limits,
 	}, nil
 }
 

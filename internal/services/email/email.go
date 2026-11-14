@@ -32,6 +32,7 @@ var (
 const (
 	PurposeVerify = "verify_email"
 	PurposeReset  = "reset_password"
+	PurposeSetup  = "account_setup"
 	VerifyPath    = "/verify-email"
 	ResetPath     = "/reset-password"
 	sendTimeout   = 30 * time.Second
@@ -43,6 +44,9 @@ type EmailServiceImpl interface {
 	// account exists). Wait blocks until queued sends finish.
 	SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration)
 	SendPasswordReset(ctx context.Context, u *user.User, token string, ttl time.Duration)
+	// SendAccountSetup invites a user an admin created to choose a password
+	// (a reset-password token, opened on the same page).
+	SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration)
 	Wait()
 }
 
@@ -98,6 +102,10 @@ func (s *EmailService) SendVerification(ctx context.Context, u *user.User, token
 
 func (s *EmailService) SendPasswordReset(ctx context.Context, u *user.User, token string, ttl time.Duration) {
 	s.send(ctx, u, PurposeReset, "Reset your "+s.opts.SiteName+" password", "reset", s.link(ResetPath, token), ttl)
+}
+
+func (s *EmailService) SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration) {
+	s.send(ctx, u, PurposeSetup, "Your "+s.opts.SiteName+" account", "setup", s.link(ResetPath, token), ttl)
 }
 
 func (s *EmailService) send(ctx context.Context, u *user.User, purpose, subject, tmpl, link string, ttl time.Duration) {
