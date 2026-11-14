@@ -357,7 +357,16 @@ func (h *Handlers) changePassword(w nethttp.ResponseWriter, r *nethttp.Request) 
 }
 
 func (h *Handlers) me(w nethttp.ResponseWriter, r *nethttp.Request) {
-	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(principalFrom(r).User), "session_id": principalFrom(r).SessionID})
+	p := principalFrom(r)
+	a, err := h.Roles.Access(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"user": toUser(p.User), "session_id": p.SessionID,
+		"roles": toRoleSummaries(a.Assigned()), "permissions": a.Permissions,
+	})
 }
 
 type updateMeReq struct {

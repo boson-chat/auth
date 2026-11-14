@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/boson-chat/auth/internal/db"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey/signingkeytest"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
+	"github.com/boson-chat/auth/internal/perm"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/golang-jwt/jwt/v5"
@@ -76,7 +78,7 @@ func verifyWithJWKS(t *testing.T, set keys.JWKS, raw, aud string) jwt.MapClaims 
 func TestAccessTokenRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	ts, ks, _ := setup(t)
-	raw, exp, err := ts.MintAccess(ctx, alice, "ses_1")
+	raw, exp, err := ts.MintAccess(ctx, alice, "ses_1", token.Grants{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,17 +110,50 @@ func TestAccessTokenRoundTrip(t *testing.T) {
 	}
 }
 
+var (
+	memberGrants = token.Grants{Perms: []string{perm.ChannelCreate, perm.VoiceCreate}}
+	adminGrants  = token.Grants{Roles: []string{"Admin"}, Perms: perm.Without(perm.RolesOwner)}
+)
+
+func TestAccessTokenRoleClaims(t *testing.T) {
+	ctx := context.Background()
+	ts, ks, _ := setup(t)
+	raw, _, err := ts.MintAccess(ctx, alice, "ses_1", adminGrants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := ts.VerifyAccess(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The 1.x role claim follows admin.panel, not users.role.
+	if c.Role != "admin" || len(c.Roles) != 1 || c.Roles[0] != "Admin" || len(c.Perms) != len(perm.IDs())-1 {
+		t.Fatalf("claims = %+v", c)
+	}
+	raw, _, _ = ts.MintAccess(ctx, &user.User{ID: "usr_3", Username: "mod", Role: user.RoleAdmin}, "ses_3",
+		token.Grants{Roles: []string{"Moderator"}, Perms: []string{perm.UsersView}})
+	mc := verifyWithJWKS(t, ks.JWKS(ctx), raw, token.AudienceBoson)
+	if mc["role"] != "user" {
+		t.Fatalf("role without admin.panel = %v, want user", mc["role"])
+	}
+	raw, _, _ = ts.MintAccess(ctx, alice, "ses_1", token.Grants{})
+	mc = verifyWithJWKS(t, ks.JWKS(ctx), raw, token.AudienceBoson)
+	if perms, ok := mc["perms"].([]any); !ok || len(perms) != 0 {
+		t.Fatalf("perms must be present (empty) = %#v", mc["perms"])
+	}
+}
+
 func TestOldKidVerifiesAfterRotation(t *testing.T) {
 	ctx := context.Background()
 	ts, ks, c := setup(t)
-	before, _, _ := ts.MintAccess(ctx, alice, "ses_1")
+	before, _, _ := ts.MintAccess(ctx, alice, "ses_1", token.Grants{})
 	oldKid, _, _ := ks.SigningKey(ctx)
 
 	newKid, err := ks.Rotate(ctx, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, _, _ := ts.MintAccess(ctx, alice, "ses_1")
+	after, _, _ := ts.MintAccess(ctx, alice, "ses_1", token.Grants{})
 	tk, _, _ := jwt.NewParser().ParseUnverified(after, jwt.MapClaims{})
 	if tk.Header["kid"] != newKid || newKid == oldKid {
 		t.Fatalf("new token signed with %v, want %s", tk.Header["kid"], newKid)
@@ -135,7 +170,7 @@ func TestOldKidVerifiesAfterRotation(t *testing.T) {
 func TestVoiceToken(t *testing.T) {
 	ctx := context.Background()
 	ts, ks, _ := setup(t)
-	raw, exp, err := ts.MintVoice(ctx, alice, "ses_1", []string{"lobby", "dev"})
+	raw, exp, err := ts.MintVoice(ctx, alice, "ses_1", []string{"lobby", "dev"}, memberGrants)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,11 +185,24 @@ func TestVoiceToken(t *testing.T) {
 	if len(rooms) != 2 || rooms[0] != "lobby" {
 		t.Fatalf("rooms = %v", mc["rooms"])
 	}
+	if perms, _ := mc["perms"].([]any); len(perms) != 2 || perms[0] != "channel.create" || perms[1] != "voice.create" {
+		t.Fatalf("voice perms = %v", mc["perms"])
+	}
+	if _, ok := mc["roles"]; ok {
+		t.Fatal("roles must be omitted when the user has none")
+	}
 	admin := &user.User{ID: "usr_2", Username: "root2", Role: user.RoleAdmin}
-	raw, _, _ = ts.MintVoice(ctx, admin, "ses_2", nil)
+	raw, _, _ = ts.MintVoice(ctx, admin, "ses_2", nil, adminGrants)
 	mc = verifyWithJWKS(t, ks.JWKS(ctx), raw, token.AudienceQuicvoice)
 	if mc["role"] != "moderator" {
 		t.Fatalf("admin voice role = %v, want moderator", mc["role"])
+	}
+	// Voice tokens carry only the network permissions.
+	if perms, _ := mc["perms"].([]any); len(perms) != 4 || fmt.Sprint(perms) != "[channel.create voice.create voice.manage_any voice.bypass_locks]" {
+		t.Fatalf("admin voice perms = %v", mc["perms"])
+	}
+	if roles, _ := mc["roles"].([]any); len(roles) != 1 || roles[0] != "Admin" {
+		t.Fatalf("voice roles = %v", mc["roles"])
 	}
 	if _, ok := mc["rooms"]; ok {
 		t.Fatal("rooms must be omitted when empty (any room)")
@@ -168,7 +216,7 @@ func TestVoiceToken(t *testing.T) {
 func TestRejects(t *testing.T) {
 	ctx := context.Background()
 	ts, ks, c := setup(t)
-	good, _, _ := ts.MintAccess(ctx, alice, "ses_1")
+	good, _, _ := ts.MintAccess(ctx, alice, "ses_1", token.Grants{})
 
 	parts := strings.Split(good, ".")
 	sig := []byte(parts[2])
@@ -186,7 +234,7 @@ func TestRejects(t *testing.T) {
 	wrongTypRaw, _ := wrongTyp.SignedString(priv)
 
 	wrongIss := token.NewTokenService(ks, token.Options{Issuer: "https://evil.example", AccessTTL: time.Minute, VoiceTTL: time.Minute, Now: c.Now})
-	evil, _, _ := wrongIss.MintAccess(ctx, alice, "ses_1")
+	evil, _, _ := wrongIss.MintAccess(ctx, alice, "ses_1", token.Grants{})
 
 	for name, raw := range map[string]string{
 		"tampered": tampered, "alg none": noneRaw, "wrong typ": wrongTypRaw, "wrong iss": evil, "garbage": "a.b.c", "empty": "",

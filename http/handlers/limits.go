@@ -31,6 +31,9 @@ const (
 	// forwarded by the (token-authenticated) caller. Only applied when the
 	// caller forwards one, so the IRC server's own address is never limited.
 	BucketInternalIP = "internal_ip"
+	// BucketPublic limits the unauthenticated, cacheable lookups
+	// (GET /v1/roles, GET /v1/users/roles) per IP.
+	BucketPublic = "public"
 )
 
 type bucketPair struct {
@@ -57,6 +60,11 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	l.buckets[BucketInternal] = bucketPair{account: ratelimit.New(cfg.AccountBurst*2, cfg.AccountPerMinute*2)}
 	// Per forwarded client IP: catches one IRC client trying many accounts.
 	l.buckets[BucketInternalIP] = bucketPair{ip: ratelimit.New(cfg.IPBurst*2, cfg.IPPerMinute*2)}
+	pubBurst, pubRate := cfg.PublicBurst, cfg.PublicPerMinute
+	if pubBurst <= 0 || pubRate <= 0 { // unset (struct literal): scale the IP limits
+		pubBurst, pubRate = cfg.IPBurst*3, cfg.IPPerMinute*12
+	}
+	l.buckets[BucketPublic] = bucketPair{ip: ratelimit.New(pubBurst, pubRate)}
 	return l
 }
 

@@ -59,3 +59,30 @@ func (j *JSONB) Scan(src any) error {
 	}
 	return json.Unmarshal(b, j)
 }
+
+// StringList is a jsonb array of strings. nil marshals as [].
+type StringList []string
+
+func (l StringList) Value() (driver.Value, error) {
+	if l == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal([]string(l))
+	return string(b), err
+}
+
+func (l *StringList) Scan(src any) error {
+	var b []byte
+	switch v := src.(type) {
+	case nil:
+		*l = nil
+		return nil
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("StringList: cannot scan %T", src)
+	}
+	return json.Unmarshal(b, (*[]string)(l))
+}

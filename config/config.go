@@ -217,6 +217,9 @@ type RateLimitConfig struct {
 	// Per account (username/email/token target): burst and sustained per minute.
 	AccountBurst     int     `default:"5" env:"RATE_LIMIT_ACCOUNT_BURST"`
 	AccountPerMinute float64 `default:"2" env:"RATE_LIMIT_ACCOUNT_PER_MINUTE"`
+	// Per IP for the public role lookups (GET /v1/roles, /v1/users/roles).
+	PublicBurst     int     `default:"60" env:"RATE_LIMIT_PUBLIC_BURST"`
+	PublicPerMinute float64 `default:"120" env:"RATE_LIMIT_PUBLIC_PER_MINUTE"`
 }
 
 // SSOConfig controls sign-in through external identity providers. The

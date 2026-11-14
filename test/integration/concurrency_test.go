@@ -88,3 +88,29 @@ func TestReplicasCreateOneKey(t *testing.T) {
 		}
 	}
 }
+
+// Two Owners demoting each other at once: the role lock serialises them, so
+// one Owner always remains.
+func TestConcurrentOwnerRemovalKeepsAnOwner(t *testing.T) {
+	e := newEnv(t)
+	a := e.ownerToken("ownera")
+	b := e.ownerToken("ownerb")
+	ids := []string{e.userID(a), e.userID(b)}
+	tokens := []string{a, b}
+	statuses := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Go(func() {
+			// Each removes the other's Owner role.
+			statuses[i] = e.api("PUT", "/v1/admin/users/"+ids[1-i]+"/roles", map[string]any{"role_ids": []string{}}, bearer(tokens[i])).status
+		})
+	}
+	wg.Wait()
+	var owners int64
+	if err := e.app.DB.DB.Raw("SELECT count(*) FROM user_roles WHERE role_id = ?", ownerRoleID).Scan(&owners).Error; err != nil {
+		t.Fatal(err)
+	}
+	if owners != 1 {
+		t.Fatalf("owners left = %d (statuses %v)", owners, statuses)
+	}
+}

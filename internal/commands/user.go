@@ -129,13 +129,13 @@ func userAction(use, short string, fn func(ctx context.Context, app *authhttp.Ap
 func init() {
 	userCreateCmd.Flags().String("username", "", "username / IRC nick (required)")
 	userCreateCmd.Flags().String("email", "", "email address")
-	userCreateCmd.Flags().String("role", "user", "user or admin")
+	userCreateCmd.Flags().String("role", "user", "user, admin (the Admin role) or owner (the Owner role)")
 	userCreateCmd.Flags().Bool("password-stdin", false, "read the password from the first line of stdin")
 	userCreateCmd.Flags().Bool("no-password", false, "create without a password (SSO-only)")
 	_ = userCreateCmd.MarkFlagRequired("username")
 	userListCmd.Flags().Int("limit", 50, "max rows")
 
-	setRole := userAction("set-role <id|username> <role>", "Set a user's role (user|admin)", nil)
+	setRole := userAction("set-role <id|username> <role>", "Set a user's 1.x role: user (drop admin-panel roles) | admin (add Admin) | owner (add Owner)", nil)
 	setRole.Args = cobra.ExactArgs(2)
 	setRole.RunE = func(cmd *cobra.Command, args []string) error {
 		return withApp(cmd.Context(), func(ctx context.Context, app *authhttp.App) error {

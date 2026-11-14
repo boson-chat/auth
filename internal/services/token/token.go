@@ -2,11 +2,16 @@
 //
 // Access token (aud "boson"), header {alg: EdDSA, kid, typ: "at+jwt"}:
 //
-//	iss sub aud sid name role iat nbf exp jti
+//	iss sub aud sid name role roles? perms iat nbf exp jti
 //
 // Voice token (aud "quicvoice"), header {alg: EdDSA, kid, typ: "JWT"}:
 //
-//	iss sub aud sid name role rooms? iat nbf exp jti
+//	iss sub aud sid name role roles? perms rooms? iat nbf exp jti
+//
+// role is the 1.x compatibility claim (admin iff admin.panel; speaker or
+// moderator on voice tokens), roles the assigned role names (most senior
+// first, at most 20, omitted when none), perms the effective permissions
+// (voice tokens: only the network group).
 //
 // Both are verifiable with the JWKS at /.well-known/jwks.json. The distinct
 // audiences (and typ for access tokens) stop one being used as the other.
@@ -16,10 +21,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/ids"
+	"github.com/boson-chat/auth/internal/perm"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -39,21 +46,39 @@ const (
 
 var ErrInvalidToken = errors.New("token: invalid")
 
+// Grants are the role-derived claims of a token.
+type Grants struct {
+	Roles []string // assigned role names, most senior first
+	Perms []string // effective permissions
+}
+
+func (g Grants) Has(p string) bool { return slices.Contains(g.Perms, p) }
+
+// LegacyRole is the 1.x role claim: admin iff the user may open the admin panel.
+func (g Grants) LegacyRole() string {
+	if g.Has(perm.AdminPanel) {
+		return user.RoleAdmin
+	}
+	return user.RoleUser
+}
+
 // AccessClaims are the verified contents of an access token.
 type AccessClaims struct {
 	Subject   string
 	SessionID string
 	Name      string
 	Role      string
+	Roles     []string
+	Perms     []string
 	ID        string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
 }
 
 type TokenServiceImpl interface {
-	MintAccess(ctx context.Context, u *user.User, sessionID string) (string, time.Time, error)
+	MintAccess(ctx context.Context, u *user.User, sessionID string, g Grants) (string, time.Time, error)
 	VerifyAccess(ctx context.Context, raw string) (*AccessClaims, error)
-	MintVoice(ctx context.Context, u *user.User, sessionID string, rooms []string) (string, time.Time, error)
+	MintVoice(ctx context.Context, u *user.User, sessionID string, rooms []string, g Grants) (string, time.Time, error)
 }
 
 type Options struct {
@@ -102,30 +127,42 @@ func (s *TokenService) base(u *user.User, sessionID, aud string, ttl time.Durati
 	}, exp
 }
 
-func (s *TokenService) MintAccess(ctx context.Context, u *user.User, sessionID string) (string, time.Time, error) {
+func addGrants(c jwt.MapClaims, roles, perms []string) {
+	if len(roles) > 0 {
+		c["roles"] = roles
+	}
+	if perms == nil {
+		perms = []string{}
+	}
+	c["perms"] = perms
+}
+
+func (s *TokenService) MintAccess(ctx context.Context, u *user.User, sessionID string, g Grants) (string, time.Time, error) {
 	if u == nil || u.ID == "" || sessionID == "" {
 		return "", time.Time{}, errors.New("token: missing subject or session")
 	}
 	c, exp := s.base(u, sessionID, AudienceBoson, s.opts.AccessTTL)
-	c["role"] = u.Role
+	c["role"] = g.LegacyRole()
+	addGrants(c, g.Roles, g.Perms)
 	tok, err := s.sign(ctx, TypAccess, c)
 	return tok, exp, err
 }
 
-// VoiceRole maps an account role to a quicvoiced role.
-func VoiceRole(role string) string {
-	if role == user.RoleAdmin {
+// VoiceRole maps grants to a quicvoiced role: moderator with voice.manage_any.
+func VoiceRole(g Grants) string {
+	if g.Has(perm.VoiceManageAny) {
 		return VoiceRoleModerator
 	}
 	return VoiceRoleSpeaker
 }
 
-func (s *TokenService) MintVoice(ctx context.Context, u *user.User, sessionID string, rooms []string) (string, time.Time, error) {
+func (s *TokenService) MintVoice(ctx context.Context, u *user.User, sessionID string, rooms []string, g Grants) (string, time.Time, error) {
 	if u == nil || u.ID == "" {
 		return "", time.Time{}, errors.New("token: missing subject")
 	}
 	c, exp := s.base(u, sessionID, AudienceQuicvoice, s.opts.VoiceTTL)
-	c["role"] = VoiceRole(u.Role)
+	c["role"] = VoiceRole(g)
+	addGrants(c, g.Roles, perm.Filter(g.Perms, perm.GroupNetwork))
 	if len(rooms) > 0 {
 		c["rooms"] = rooms
 	}
@@ -134,9 +171,11 @@ func (s *TokenService) MintVoice(ctx context.Context, u *user.User, sessionID st
 }
 
 type accessJWT struct {
-	SID  string `json:"sid"`
-	Name string `json:"name"`
-	Role string `json:"role"`
+	SID   string   `json:"sid"`
+	Name  string   `json:"name"`
+	Role  string   `json:"role"`
+	Roles []string `json:"roles"`
+	Perms []string `json:"perms"`
 	jwt.RegisteredClaims
 }
 
@@ -166,7 +205,7 @@ func (s *TokenService) VerifyAccess(ctx context.Context, raw string) (*AccessCla
 	if c.Subject == "" || c.SID == "" {
 		return nil, fmt.Errorf("%w: missing sub or sid", ErrInvalidToken)
 	}
-	out := &AccessClaims{Subject: c.Subject, SessionID: c.SID, Name: c.Name, Role: c.Role, ID: c.ID}
+	out := &AccessClaims{Subject: c.Subject, SessionID: c.SID, Name: c.Name, Role: c.Role, Roles: c.Roles, Perms: c.Perms, ID: c.ID}
 	if c.IssuedAt != nil {
 		out.IssuedAt = c.IssuedAt.Time
 	}

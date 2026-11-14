@@ -137,7 +137,8 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	cfg.InternalConfig.APIToken = randHex(32)
 	cfg.AccountConfig.Registration = config.RegistrationOpen
 	cfg.AccountConfig.RequireEmailVerification = true
-	cfg.RateLimitConfig = config.RateLimitConfig{Enabled: true, IPBurst: 1000, IPPerMinute: 1000, AccountBurst: 1000, AccountPerMinute: 1000}
+	cfg.RateLimitConfig = config.RateLimitConfig{Enabled: true, IPBurst: 1000, IPPerMinute: 1000, AccountBurst: 1000, AccountPerMinute: 1000,
+		PublicBurst: 1000, PublicPerMinute: 1000}
 	cfg.SMTPConfig.Host = ""
 	for _, m := range mutate {
 		m(&cfg)
@@ -302,11 +303,23 @@ func (e *env) jwksKeyfunc() jwt.Keyfunc {
 	}
 }
 
-// adminToken creates an admin account and returns its access token.
+// adminToken creates an account with the Admin role and returns its access token.
 func (e *env) adminToken(username string) string {
 	e.t.Helper()
+	return e.roleToken(username, "admin")
+}
+
+// ownerToken creates an account with the Owner role and returns its access token.
+func (e *env) ownerToken(username string) string {
+	e.t.Helper()
+	return e.roleToken(username, "owner")
+}
+
+// roleToken creates an account with role user | admin | owner and logs in.
+func (e *env) roleToken(username, role string) string {
+	e.t.Helper()
 	if _, err := e.app.Account.CreateUser(e.t.Context(), "", account.CreateUserInput{
-		Username: username, Email: username + "@example.com", Password: pw, Role: "admin", EmailVerified: true,
+		Username: username, Email: username + "@example.com", Password: pw, Role: role, EmailVerified: true,
 	}); err != nil {
 		e.t.Fatal(err)
 	}

@@ -134,7 +134,7 @@ func TestVersionEndpoint(t *testing.T) {
 
 func TestAdminCreateUser(t *testing.T) {
 	e := newEnv(t)
-	adminAT := e.adminToken("creator")
+	adminAT := e.ownerToken("creator") // only an Owner may hand out Admin
 
 	// With a password: email verified, can log in straight away.
 	r := e.api("POST", "/v1/admin/users", map[string]any{"username": "Made", "email": "made@example.com", "role": "user", "password": pw}, bearer(adminAT))
@@ -153,6 +153,11 @@ func TestAdminCreateUser(t *testing.T) {
 	e.expect(e.api("POST", "/v1/admin/users", map[string]any{"username": "other", "email": "o@example.com", "password": pw, "send_invite_email": true}, bearer(adminAT)), 400, "invalid_request")
 	e.expect(e.api("POST", "/v1/admin/users", map[string]any{"username": "other", "send_invite_email": true}, bearer(adminAT)), 400, "invalid_request")
 	e.expect(e.api("POST", "/v1/admin/users", map[string]any{"username": "other", "email": "o@example.com"}, bearer(e.login("made", pw).str("access_token"))), 403, "forbidden")
+
+	// An Admin can create users but not other Admins (role hierarchy).
+	plainAdmin := e.adminToken("plainadmin")
+	e.expect(e.api("POST", "/v1/admin/users", map[string]any{"username": "other", "email": "o@example.com", "role": "admin"}, bearer(plainAdmin)), 403, "role_hierarchy")
+	e.expect(e.api("POST", "/v1/admin/users", map[string]any{"username": "other", "email": "o@example.com"}, bearer(plainAdmin)), 201, "")
 
 	// With an invite email: a "choose your password" link on the reset page.
 	r = e.api("POST", "/v1/admin/users", map[string]any{"username": "invited", "email": "invited@example.com", "role": "admin", "send_invite_email": true}, bearer(adminAT))

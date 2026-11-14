@@ -9,6 +9,7 @@ import (
 
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/reqmeta"
+	"github.com/boson-chat/auth/internal/services/roles"
 )
 
 // InternalTokenHeader carries INTERNAL_API_TOKEN.
@@ -25,6 +26,8 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	}
 	mux.HandleFunc("POST /internal/v1/verify-password", h.internalOnly(h.internalVerifyPassword))
 	mux.HandleFunc("GET /internal/v1/settings", h.internalOnly(h.internalSettings))
+	mux.HandleFunc("GET /internal/v1/roles", h.internalOnly(h.internalRoles))
+	mux.HandleFunc("GET /internal/v1/users/{username}/irc", h.internalOnly(h.internalUserIRC))
 }
 
 // internalSettings serves the network settings to Ergo and quicvoiced (same
@@ -74,6 +77,11 @@ type verifyPasswordResp struct {
 	Username string `json:"username,omitempty"`
 	// Reason is set when ok is false: invalid_credentials | account_disabled | email_not_verified.
 	Reason string `json:"reason,omitempty"`
+	// On success: the oper class / WHOIS line / vhost Ergo applies, and the
+	// user's role names and effective permissions.
+	IRC         *roles.IRCInfo `json:"irc,omitempty"`
+	Roles       []string       `json:"roles,omitempty"`
+	Permissions []string       `json:"permissions,omitempty"`
 }
 
 func (h *Handlers) internalVerifyPassword(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -99,7 +107,13 @@ func (h *Handlers) internalVerifyPassword(w nethttp.ResponseWriter, r *nethttp.R
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, verifyPasswordResp{OK: true, UserID: u.ID, Username: u.Username})
+	irc, a, err := h.Roles.IRC(r.Context(), u)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, verifyPasswordResp{OK: true, UserID: u.ID, Username: u.Username,
+		IRC: &irc, Roles: a.RoleNames(roles.MaxTokenRoles), Permissions: a.Permissions})
 }
 
 // ForwardedClientIP returns the end-user IP an internal caller forwarded in
