@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func TestPreviewCache(t *testing.T) {
 	in := PreviewInput{Template: config.EmailInvite, Body: ptr("Hello {{inviter}}")}
 	a, _ := s.Preview(ctx, "admin", in)
 	b, _ := s.Preview(ctx, "admin", in)
-	if a != b || s.previews.len() != 1 {
+	if !reflect.DeepEqual(a, b) || s.previews.len() != 1 {
 		t.Fatal("same input → one cache entry")
 	}
 	// Anything the email depends on is part of the key.

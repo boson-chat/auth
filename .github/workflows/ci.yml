@@ -36,11 +36,11 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
-      - name: Compiled email layout matches layout.mjml
+      - name: Compiled email layout (and default MJML) match layout.mjml
         run: |
           go generate ./internal/services/email/
-          git diff --exit-code -- internal/services/email/templates/compiled
-          test -z "$(git status --porcelain -- internal/services/email/templates/compiled)" || (git status --porcelain; exit 1)
+          git diff --exit-code -- internal/services/email/templates/compiled internal/services/email/testdata/default-mjml
+          test -z "$(git status --porcelain -- internal/services/email/templates/compiled internal/services/email/testdata/default-mjml)" || (git status --porcelain; exit 1)
       - name: Server binary does not link MJML
         run: '! go list -deps ./cmd/... | grep -i -E "mjml|wazero"'
       - name: Start Dex (real OIDC provider for TestOIDCAgainstDex)

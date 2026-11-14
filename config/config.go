@@ -45,6 +45,10 @@ type AppConfig struct {
 	// Directory of the branding images named in the config file's
 	// branding.images. Default: "branding" next to BOSON_CONFIG.
 	BrandingDir string `env:"BOSON_BRANDING_DIR"`
+	// Directory of the MJML / HTML email files named in the config file's
+	// auth.email.layout and auth.email.templates. Default: "emails" next to
+	// BOSON_CONFIG.
+	EmailsDir string `env:"BOSON_EMAILS_DIR"`
 	// How often the config file's mtime is polled (besides fsnotify).
 	ConfigPoll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
 }
@@ -56,6 +60,15 @@ func (c AppConfig) BrandingDirectory() string {
 		return c.BrandingDir
 	}
 	return filepath.Join(filepath.Dir(c.ConfigFile), "branding")
+}
+
+// EmailsDirectory is BOSON_EMAILS_DIR, by default "emails" next to the
+// config file.
+func (c AppConfig) EmailsDirectory() string {
+	if c.EmailsDir != "" || c.ConfigFile == "" {
+		return c.EmailsDir
+	}
+	return filepath.Join(filepath.Dir(c.ConfigFile), "emails")
 }
 
 type HTTPConfig struct {

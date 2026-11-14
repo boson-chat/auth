@@ -376,3 +376,80 @@ func (m multiBrander) Set(s *branding.Snapshot) {
 		b.Set(s)
 	}
 }
+
+// The email MJML / HTML files: read from the emails directory next to the
+// config file, live on reload, and a bad file keeps the last good config.
+func TestEmailFilesReloadLive(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "")
+	dir := filepath.Join(filepath.Dir(f.path), "emails")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	put := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("layout-1.mjml", "<mjml/>")
+	put("layout-1.html", "<div>ONE {{content}}</div>")
+	write(t, f.path, `version: 1
+auth:
+  email:
+    layout:
+      mjml: emails/layout-1.mjml
+      html: emails/layout-1.html
+`)
+	if err := f.svc.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.email.cfg; c == nil || c.Layout == nil || c.Layout.Source != "<div>ONE {{content}}</div>" {
+		t.Fatalf("%+v", f.email.cfg)
+	}
+
+	// The admin panel writes new files, then the config pointing at them.
+	put("layout-2.html", "<div>TWO {{content}}</div>")
+	put("invite-1.html", `<a href="{{link}}">join</a>`)
+	write(t, f.path, `version: 1
+auth:
+  email:
+    layout: { html: layout-2.html }
+    templates:
+      invite: { html: invite-1.html }
+`)
+	f.svc.Check(ctx)
+	if c := f.email.cfg; c.Layout.Source != "<div>TWO {{content}}</div>" || c.Templates[config.EmailInvite].Files.Source != `<a href="{{link}}">join</a>` {
+		t.Fatalf("%+v", c)
+	}
+	if got := strings.Join(f.audit.metas[len(f.audit.metas)-1]["changed"].([]string), ","); got != "auth.email.layout.html,auth.email.layout.mjml,auth.email.templates.invite.html" {
+		t.Fatal(got)
+	}
+	good := f.email.cfg
+
+	// Invalid: a layout without {{content}}, a missing file. The last good
+	// config stays and the status points at the file name.
+	put("layout-3.html", "<div>no placeholder</div>")
+	for _, c := range []struct {
+		file      string
+		line, col int
+		msg       string
+	}{
+		{"version: 1\nauth:\n  email:\n    layout: { html: layout-3.html }\n", 4, 21, "auth.email.layout.html: layout-3.html must contain {{content}}"},
+		{"version: 1\nauth:\n  email:\n    templates:\n      invite:\n        html: gone.html\n", 6, 15, "gone.html not found in " + dir},
+		{"version: 1\nauth:\n  email:\n    layout: { html: ../boson.html }\n", 4, 21, "plain file name"},
+	} {
+		write(t, f.path, c.file)
+		f.svc.Check(ctx)
+		st := f.svc.Status()
+		if f.email.cfg != good || st.OK || st.ErrorLine != c.line || st.ErrorColumn != c.col || !strings.Contains(st.Error, c.msg) {
+			t.Fatalf("%+v", st)
+		}
+	}
+	// Fixed: applies.
+	put("layout-3.html", "<div>THREE {{content}}</div>")
+	write(t, f.path, "version: 1\nauth:\n  email:\n    layout: { html: layout-3.html }\n")
+	f.svc.Check(ctx)
+	if st := f.svc.Status(); !st.OK || f.email.cfg.Layout.Source != "<div>THREE {{content}}</div>" {
+		t.Fatalf("%+v", st)
+	}
+}

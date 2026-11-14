@@ -45,6 +45,9 @@ type Rendered struct {
 	Text    string `json:"text"`
 	// From is the From: header (previews only).
 	From string `json:"from"`
+	// Warnings are about custom HTML (unknown placeholders and the like;
+	// previews only, always a list there).
+	Warnings []string `json:"warnings"`
 }
 
 // template describes one email kind.
@@ -246,19 +249,19 @@ func previewLine(body string, v Vars) string {
 
 // branded renders tpl (with overrides from cfg and over) into the branded
 // MJML layout. logo.URL "" = the sender name as text.
-func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, v Vars, logo Logo) (Rendered, error) {
+func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, v Vars, logo Logo, cu custom) (Rendered, error) {
 	sks, err := layouts()
 	if err != nil {
 		return Rendered{}, err
 	}
-	subject, body := tpl.subject, tpl.body
+	subject, body, bodySet := tpl.subject, tpl.body, false
 	if cfg != nil {
 		if t, ok := cfg.Templates[tpl.name]; ok {
 			if t.Subject != nil {
 				subject = *t.Subject
 			}
 			if t.Body != nil {
-				body = *t.Body
+				body, bodySet = *t.Body, true
 			}
 		}
 	}
@@ -267,7 +270,7 @@ func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, 
 			subject = *over.Subject
 		}
 		if over.Body != nil {
-			body = *over.Body
+			body, bodySet = *over.Body, true
 		}
 	}
 	accent, name, footer := DefaultAccent, v.get("network"), ""
@@ -290,6 +293,27 @@ func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, 
 	r.Text = text
 	if footer != "" {
 		r.Text += "\n-- \n" + footer + "\n"
+	}
+	if !cu.empty() {
+		vals := docValues{
+			text: map[string]string{"subject": r.Subject, "network": v.get("network"), "username": v.get("username"),
+				"inviter": v.get("inviter"), "expires": v.get("expires"), "footer": footer, "sender_name": name},
+			link: v.get("link"), logoURL: logo.URL, accent: accent,
+		}
+		if d := cu.tpl; d != nil {
+			// The whole email is the admin's; the text part is the body when
+			// one is set, else the HTML's text.
+			r.HTML = d.fill(vals)
+			if !bodySet {
+				r.Text = htmlText(r.HTML)
+			}
+			r.Warnings = append([]string(nil), d.warnings...)
+			return r, nil
+		}
+		vals.content = contentHTML(bodyBlocks(body, v, tpl.button, accent), accent)
+		r.HTML = cu.layout.fill(vals)
+		r.Warnings = append([]string(nil), cu.layout.warnings...)
+		return r, nil
 	}
 	p := page{
 		title: r.Subject, preview: previewLine(body, v), header: headerHTML(logo, name),

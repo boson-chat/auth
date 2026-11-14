@@ -144,6 +144,14 @@ func TestBrandingValidationErrors(t *testing.T) {
 		{"empty body", "auth:\n  email:\n    templates:\n      password_reset: { body: \"  \" }\n", 4, 31, "can't be empty"},
 		{"long body", "auth:\n  email:\n    templates:\n      invite: { body: " + strings.Repeat("a", MaxBodyLen+1) + " }\n", 4, 23, "at most"},
 		{"control char", "auth:\n  email:\n    templates:\n      invite: { body: \"a\\u0007b\" }\n", 4, 23, "control"},
+		{"layout traversal", "auth:\n  email:\n    layout: { html: ../x.html }\n", 3, 21, "plain file name"},
+		{"layout subdir", "auth:\n  email:\n    layout: { html: other/x.html }\n", 3, 21, "plain file name"},
+		{"layout absolute", "auth:\n  email:\n    layout: { html: /etc/x.html }\n", 3, 21, "plain file name"},
+		{"layout ext", "auth:\n  email:\n    layout: { html: x.mjml }\n", 3, 21, "must be a .html file"},
+		{"mjml ext", "auth:\n  email:\n    layout: { mjml: x.html, html: x.html }\n", 3, 21, "must be a .mjml file"},
+		{"mjml without html", "auth:\n  email:\n    layout: { mjml: x.mjml }\n", 3, 21, "needs html too"},
+		{"template html", "auth:\n  email:\n    templates:\n      invite: { html: \"..\" }\n", 4, 23, "plain file name"},
+		{"layout not mapping", "auth:\n  email:\n    layout: x.html\n", 3, 13, "must be a mapping"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -169,5 +177,42 @@ func TestNullKeysAreAbsent(t *testing.T) {
 	}
 	if f.Email.Accent != "" || f.Email.Templates != nil {
 		t.Fatalf("%+v", f.Email)
+	}
+}
+
+func TestEmailFiles(t *testing.T) {
+	f, err := loadFile(t, `auth:
+  email:
+    layout:
+      mjml: emails/layout-1a.mjml
+      html: emails/layout-1a.html
+    templates:
+      invite: { subject: Hi, html: invite-2b.html }
+      verification: { mjml: ~, html: ~ }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := f.Email.Layout
+	if l == nil || l.MJML != "layout-1a.mjml" || l.HTML != "layout-1a.html" || l.Key != "auth.email.layout" ||
+		l.Line != 5 || l.Column != 13 || l.MJMLLine != 4 || l.MJMLColumn != 13 {
+		t.Fatalf("%+v", l)
+	}
+	inv := f.Email.Templates[EmailInvite]
+	if inv.Files == nil || inv.Files.HTML != "invite-2b.html" || inv.Files.MJML != "" || inv.Files.Key != "auth.email.templates.invite" || *inv.Subject != "Hi" {
+		t.Fatalf("%+v", inv)
+	}
+	if _, ok := f.Email.Templates[EmailVerification]; ok {
+		t.Fatal("null files = no override")
+	}
+	flat := f.Flatten()
+	for k, v := range map[string]string{"auth.email.layout.html": "layout-1a.html", "auth.email.layout.mjml": "layout-1a.mjml",
+		"auth.email.templates.invite.html": "invite-2b.html"} {
+		if flat[k] != v {
+			t.Errorf("%s = %v", k, flat[k])
+		}
+	}
+	if len(f.Unknown) != 0 {
+		t.Fatal(f.Unknown)
 	}
 }
