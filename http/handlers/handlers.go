@@ -13,6 +13,8 @@ import (
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/authn"
+	"github.com/boson-chat/auth/internal/services/branding"
+	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/roles"
@@ -44,8 +46,12 @@ type Handlers struct {
 	Roles    roles.RolesServiceImpl
 	// IRCAccounts serves the removed-accounts feed.
 	IRCAccounts ircaccounts.IRCAccountsServiceImpl
-	Limits      *Limits
-	Config      config.Config
+	// Branding serves GET /v1/branding (nil: no branding).
+	Branding branding.BrandingServiceImpl
+	// Email serves the internal email preview / test endpoints.
+	Email  email.EmailServiceImpl
+	Limits *Limits
+	Config config.Config
 	// Ready reports whether dependencies (database) are reachable.
 	Ready func(ctx context.Context) error
 	// ConfigStatus reports the stack config file (nil: not configured).

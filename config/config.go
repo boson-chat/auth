@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,8 +42,20 @@ type AppConfig struct {
 	// over network_settings, and are reloaded live. Unset / missing file:
 	// env + database only.
 	ConfigFile string `env:"BOSON_CONFIG"`
+	// Directory of the branding images named in the config file's
+	// branding.images. Default: "branding" next to BOSON_CONFIG.
+	BrandingDir string `env:"BOSON_BRANDING_DIR"`
 	// How often the config file's mtime is polled (besides fsnotify).
 	ConfigPoll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
+}
+
+// BrandingDirectory is BOSON_BRANDING_DIR, by default "branding" next to
+// the config file.
+func (c AppConfig) BrandingDirectory() string {
+	if c.BrandingDir != "" || c.ConfigFile == "" {
+		return c.BrandingDir
+	}
+	return filepath.Join(filepath.Dir(c.ConfigFile), "branding")
 }
 
 type HTTPConfig struct {

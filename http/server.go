@@ -33,6 +33,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/admin"
 	auditsvc "github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/authn"
+	"github.com/boson-chat/auth/internal/services/branding"
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/idp"
 	"github.com/boson-chat/auth/internal/services/idp/oidc"
@@ -78,7 +79,9 @@ type App struct {
 	IRCAccounts ircaccounts.IRCAccountsServiceImpl
 	// StackConfig applies the stack config file (BOSON_CONFIG).
 	StackConfig stackconfig.StackConfigServiceImpl
-	limits      *handlers.Limits
+	// Branding is the network theme from the config file's branding: section.
+	Branding branding.BrandingServiceImpl
+	limits   *handlers.Limits
 }
 
 // Build constructs everything: database → repositories → services → handlers.
@@ -160,7 +163,12 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	sessionService := session.NewSessionService(sessionRepo, refreshRepo, userRepo, database, auditService, m, session.Options{
 		RefreshTTL: cfg.TokenConfig.RefreshTokenTTL, SessionMaxAge: cfg.TokenConfig.SessionMaxAge, Now: opts.Now,
 	})
-	emailService := email.NewEmailService(mail, m, email.Options{AppURL: cfg.HTTPConfig.AppURL, SiteName: cfg.AppConfig.SiteName})
+	brandingService := branding.NewBrandingService(cfg.HTTPConfig.PublicURL)
+	emailService := email.NewEmailService(mail, m, email.Options{
+		AppURL: cfg.HTTPConfig.AppURL, SiteName: cfg.AppConfig.SiteName, Logo: brandingService.EmailLogoURL,
+		VerifyTTL: cfg.AccountConfig.EmailVerifyTTL, ResetTTL: cfg.AccountConfig.PasswordResetTTL,
+		SetupTTL: cfg.AccountConfig.AccountSetupTTL, InviteTTL: 7 * 24 * time.Hour, Audit: auditService,
+	})
 	inviteService := invitesvc.NewInviteService(inviteRepo, opts.Now)
 	accountService := account.NewAccountService(account.Deps{
 		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Roles: roleRepo, Tx: database,
@@ -200,7 +208,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
 	}
 	stackConfig := stackconfig.NewStackConfigService(stackconfig.Deps{
-		Env: cfg, Settings: settingsService, Email: emailService, Mailer: swapMailer, ReturnTo: returnTo,
+		Env: cfg, Settings: settingsService, Email: emailService, Branding: brandingService, Mailer: swapMailer, ReturnTo: returnTo,
 		Audit: auditService, Now: opts.Now,
 	})
 	if err := stackConfig.Load(ctx); err != nil {
@@ -213,7 +221,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
-		Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -232,12 +240,14 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		DB:     database,
 		Public: middleware.Chain(publicMux,
 			middleware.Recover, middleware.ClientIP(trusted), middleware.Logging,
-			middleware.SecurityHeaders, middleware.DynamicCORS(stackConfig.CORSOrigins)),
+			middleware.SecurityHeaders,
+			// The branding is public: any origin, no credentials.
+			middleware.PublicCORS(middleware.PathPrefix(branding.DocumentPath), middleware.DynamicCORS(stackConfig.CORSOrigins))),
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
-		IRCAccounts: ircAccountsService, StackConfig: stackConfig, limits: limits,
+		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, limits: limits,
 	}, nil
 }
 

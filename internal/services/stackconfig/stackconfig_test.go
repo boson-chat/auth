@@ -12,6 +12,7 @@ import (
 	"github.com/boson-chat/auth/config"
 	auditrepo "github.com/boson-chat/auth/internal/db/repositories/audit"
 	"github.com/boson-chat/auth/internal/mailer"
+	"github.com/boson-chat/auth/internal/services/branding"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
 )
@@ -29,9 +30,13 @@ func (f *fakeSettings) SetFile(v *config.AccountConfig) {
 	f.file, f.sets = v, f.sets+1
 }
 
-type fakeEmail struct{ name string }
+type fakeEmail struct {
+	name string
+	cfg  *config.EmailConfig
+}
 
-func (f *fakeEmail) SetSiteName(n string) { f.name = n }
+func (f *fakeEmail) SetSiteName(n string)            { f.name = n }
+func (f *fakeEmail) SetConfig(c *config.EmailConfig) { f.cfg = c }
 
 type auditSpy struct {
 	events []string
@@ -264,5 +269,110 @@ func TestFileRemovedSwitchesToDatabase(t *testing.T) {
 	}
 	if len(f.audit.events) != 1 || f.audit.metas[0]["mode"] != "db" {
 		t.Fatal(f.audit.metas)
+	}
+}
+
+type brandSpy struct {
+	mu   sync.Mutex
+	cur  *branding.Snapshot
+	sets int
+}
+
+func (b *brandSpy) Set(s *branding.Snapshot) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cur, b.sets = s, b.sets+1
+}
+
+const svgLogo = `<svg xmlns="http://www.w3.org/2000/svg"/>`
+
+func TestBrandingAndEmailReloadLive(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "")
+	brandDir := filepath.Join(filepath.Dir(f.path), "branding")
+	if err := os.Mkdir(brandDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brandDir, "logo-1.svg"), []byte(svgLogo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := envCfg(f.path)
+	env.AppConfig.BrandingDir = brandDir
+	spy := &brandSpy{}
+	svc := branding.NewBrandingService(env.HTTPConfig.PublicURL)
+	f.svc = NewStackConfigService(Deps{
+		Env: env, Settings: f.settings, Email: f.email, Branding: multiBrander{spy, svc}, Audit: f.audit,
+	})
+	write(t, f.path, `version: 1
+branding:
+  theme: { colors: { accent: "#7c3aed" } }
+  images: { logo: logo-1.svg }
+auth:
+  email: { sender_name: Example Chat, accent: "#7c3aed" }
+`)
+	if err := f.svc.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	doc, ok := svc.Document(ctx)
+	if !ok || !strings.Contains(string(doc.JSON), `"logo":"https://auth.example.com/v1/branding/assets/logo-1.svg?v=`) {
+		t.Fatal("branding not applied", ok)
+	}
+	if f.email.cfg == nil || f.email.cfg.SenderName != "Example Chat" {
+		t.Fatalf("%+v", f.email.cfg)
+	}
+
+	// The admin panel writes a new image, then the file pointing at it.
+	if err := os.WriteFile(filepath.Join(brandDir, "logo-2.svg"), []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="2"/>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f.path, `version: 1
+branding:
+  theme: { colors: { accent: "#7c3aed" } }
+  images: { logo: logo-2.svg }
+auth:
+  email: { sender_name: Renamed }
+`)
+	f.svc.Check(ctx)
+	doc2, _ := svc.Document(ctx)
+	if doc2.ETag == doc.ETag || !strings.Contains(string(doc2.JSON), "logo-2.svg") {
+		t.Fatal("new logo must be live")
+	}
+	if f.email.cfg.SenderName != "Renamed" {
+		t.Fatal(f.email.cfg)
+	}
+	if got := strings.Join(f.audit.metas[len(f.audit.metas)-1]["changed"].([]string), ","); got != "auth.email.accent,auth.email.sender_name,branding.images.logo" {
+		t.Fatal(got)
+	}
+
+	// A missing image keeps the last good config and is reported.
+	write(t, f.path, "version: 1\nbranding:\n  images:\n    logo: gone.svg\n")
+	f.svc.Check(ctx)
+	if d, _ := svc.Document(ctx); d.ETag != doc2.ETag {
+		t.Fatal("last good branding must stay")
+	}
+	st := f.svc.Status()
+	if st.OK || st.ErrorLine != 4 || st.ErrorColumn != 11 || !strings.Contains(st.Error, "gone.svg not found") {
+		t.Fatalf("%+v", st)
+	}
+
+	// Removing the sections: no branding, built-in emails.
+	write(t, f.path, "version: 1\nauth: { registration: open }\n")
+	f.svc.Check(ctx)
+	if _, ok := svc.Document(ctx); ok || f.email.cfg != nil || spy.cur != nil {
+		t.Fatal("sections removed → nothing configured")
+	}
+	// The whole file removed: same.
+	_ = os.Remove(f.path)
+	f.svc.Check(ctx)
+	if spy.cur != nil || f.email.cfg != nil {
+		t.Fatal("file removed → nothing configured")
+	}
+}
+
+type multiBrander []Brander
+
+func (m multiBrander) Set(s *branding.Snapshot) {
+	for _, b := range m {
+		b.Set(s)
 	}
 }

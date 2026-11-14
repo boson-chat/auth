@@ -1,0 +1,9 @@
+Hi alice<b>,
+
+An administrator created a Example <Net> & Co account for you with the username
+alice<b>. To choose your password, open:
+
+https://app.example.com/reset-password#token=tok%2F1%2B2
+
+The link expires in 3 days and can be used once. If you weren't
+expecting this, you can ignore this email.

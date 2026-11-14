@@ -50,6 +50,9 @@ const (
 	EventRoleUpdated        = "role_updated"
 	EventRoleDeleted        = "role_deleted"
 	EventUserRolesChanged   = "user_roles_changed"
+	// EventEmailTestSent: POST /internal/email/test (meta: template, to,
+	// outcome, logged_only).
+	EventEmailTestSent = "email_test_sent"
 )
 
 type AuditServiceImpl interface {

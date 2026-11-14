@@ -34,6 +34,14 @@ const (
 	// BucketPublic limits the unauthenticated, cacheable lookups
 	// (GET /v1/roles, GET /v1/users/roles) per IP.
 	BucketPublic = "public"
+	// BucketEmailTest limits POST /internal/email/test per admin.
+	BucketEmailTest = "email_test"
+)
+
+// Test emails per admin: a burst of 5, then one every 6 minutes.
+const (
+	emailTestBurst     = 5
+	emailTestPerMinute = 1.0 / 6
 )
 
 type bucketPair struct {
@@ -65,6 +73,7 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 		pubBurst, pubRate = cfg.IPBurst*3, cfg.IPPerMinute*12
 	}
 	l.buckets[BucketPublic] = bucketPair{ip: ratelimit.New(pubBurst, pubRate)}
+	l.buckets[BucketEmailTest] = bucketPair{account: ratelimit.New(emailTestBurst, emailTestPerMinute)}
 	return l
 }
 
