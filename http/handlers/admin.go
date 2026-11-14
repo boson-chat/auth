@@ -11,27 +11,31 @@ import (
 	auditrepo "github.com/boson-chat/auth/internal/db/repositories/audit"
 	inviterepo "github.com/boson-chat/auth/internal/db/repositories/invite"
 	"github.com/boson-chat/auth/internal/logger"
+	"github.com/boson-chat/auth/internal/perm"
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/settings"
 )
 
 func (h *Handlers) registerAdmin(mux *nethttp.ServeMux) {
-	mux.HandleFunc("GET /v1/admin/users", h.adminOnly(h.adminListUsers))
-	mux.HandleFunc("POST /v1/admin/users", h.adminOnly(h.adminCreateUser))
-	mux.HandleFunc("POST /v1/admin/users/{id}/password-reset", h.adminOnly(h.adminSendPasswordReset))
-	mux.HandleFunc("POST /v1/admin/users/{id}/verification", h.adminOnly(h.adminSendVerification))
-	mux.HandleFunc("GET /v1/admin/users/{id}", h.adminOnly(h.adminGetUser))
-	mux.HandleFunc("POST /v1/admin/users/{id}/disable", h.adminOnly(h.adminSetDisabled(true)))
-	mux.HandleFunc("POST /v1/admin/users/{id}/enable", h.adminOnly(h.adminSetDisabled(false)))
-	mux.HandleFunc("PATCH /v1/admin/users/{id}", h.adminOnly(h.adminUpdateUser))
-	mux.HandleFunc("GET /v1/admin/users/{id}/sessions", h.adminOnly(h.adminListSessions))
-	mux.HandleFunc("DELETE /v1/admin/sessions/{id}", h.adminOnly(h.adminRevokeSession))
-	mux.HandleFunc("GET /v1/admin/invites", h.adminOnly(h.adminListInvites))
-	mux.HandleFunc("POST /v1/admin/invites", h.adminOnly(h.adminCreateInvite))
-	mux.HandleFunc("DELETE /v1/admin/invites/{id}", h.adminOnly(h.adminRevokeInvite))
-	mux.HandleFunc("GET /v1/admin/audit", h.adminOnly(h.adminAudit))
-	mux.HandleFunc("GET /v1/admin/settings", h.adminOnly(h.adminGetSettings))
-	mux.HandleFunc("PATCH /v1/admin/settings", h.adminOnly(h.adminUpdateSettings))
+	view, manage, moderate := h.allow(perm.UsersView), h.allow(perm.UsersManage), h.allow(perm.UsersModerate, perm.UsersManage)
+	mux.HandleFunc("GET /v1/admin/users", view(h.adminListUsers))
+	mux.HandleFunc("POST /v1/admin/users", manage(h.adminCreateUser))
+	mux.HandleFunc("POST /v1/admin/users/{id}/password-reset", manage(h.adminSendPasswordReset))
+	mux.HandleFunc("POST /v1/admin/users/{id}/verification", manage(h.adminSendVerification))
+	mux.HandleFunc("GET /v1/admin/users/{id}", view(h.adminGetUser))
+	mux.HandleFunc("POST /v1/admin/users/{id}/disable", moderate(h.adminSetDisabled(true)))
+	mux.HandleFunc("POST /v1/admin/users/{id}/enable", moderate(h.adminSetDisabled(false)))
+	mux.HandleFunc("PATCH /v1/admin/users/{id}", h.allow(perm.RolesManage)(h.adminUpdateUser))
+	mux.HandleFunc("GET /v1/admin/users/{id}/sessions", view(h.adminListSessions))
+	mux.HandleFunc("DELETE /v1/admin/sessions/{id}", moderate(h.adminRevokeSession))
+	invites := h.allow(perm.InvitesManage)
+	mux.HandleFunc("GET /v1/admin/invites", invites(h.adminListInvites))
+	mux.HandleFunc("POST /v1/admin/invites", invites(h.adminCreateInvite))
+	mux.HandleFunc("DELETE /v1/admin/invites/{id}", invites(h.adminRevokeInvite))
+	mux.HandleFunc("GET /v1/admin/audit", h.allow(perm.AuditView)(h.adminAudit))
+	mux.HandleFunc("GET /v1/admin/settings", h.allow(perm.AdminPanel, perm.SettingsManage)(h.adminGetSettings))
+	mux.HandleFunc("PATCH /v1/admin/settings", h.allow(perm.SettingsManage)(h.adminUpdateSettings))
+	h.registerRoles(mux)
 }
 
 func intParam(r *nethttp.Request, name string) int {
@@ -45,9 +49,18 @@ func (h *Handlers) adminListUsers(w nethttp.ResponseWriter, r *nethttp.Request) 
 		writeError(w, r, err)
 		return
 	}
-	out := make([]userJSON, 0, len(users))
+	ids := make([]string, 0, len(users))
 	for _, u := range users {
-		out = append(out, toUser(u))
+		ids = append(ids, u.ID)
+	}
+	assigned, err := h.Roles.AssignedForUsers(r.Context(), ids)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	out := make([]adminUserJSON, 0, len(users))
+	for _, u := range users {
+		out = append(out, adminUserJSON{userJSON: toUser(u), Roles: toRoleSummaries(assigned[u.ID])})
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{"users": out, "total": total})
 }
@@ -68,7 +81,15 @@ func (h *Handlers) adminGetUser(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u), "identities": toIdentities(idents), "has_password": hasPW})
+	a, err := h.Roles.Access(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"user": toUser(u), "identities": toIdentities(idents), "has_password": hasPW,
+		"roles": toRoleSummaries(a.Assigned()), "permissions": a.Permissions,
+	})
 }
 
 func (h *Handlers) adminSetDisabled(disabled bool) nethttp.HandlerFunc {
@@ -104,7 +125,7 @@ func (h *Handlers) adminUpdateUser(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeError(w, r, apperr.Invalid("nothing to update"))
 		return
 	}
-	if id == p.UserID && *req.Role != "admin" {
+	if id == p.UserID && *req.Role == "user" {
 		writeError(w, r, apperr.Invalid("you can't remove your own admin role"))
 		return
 	}

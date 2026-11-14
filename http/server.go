@@ -19,6 +19,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories/identity"
 	"github.com/boson-chat/auth/internal/db/repositories/invite"
 	"github.com/boson-chat/auth/internal/db/repositories/refreshtoken"
+	"github.com/boson-chat/auth/internal/db/repositories/role"
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey"
@@ -37,6 +38,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/idp/saml"
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
@@ -68,6 +70,7 @@ type App struct {
 	Email    email.EmailServiceImpl
 	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
+	Roles    roles.RolesServiceImpl
 	limits   *handlers.Limits
 }
 
@@ -119,9 +122,11 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	identityRepo := identity.NewIdentityRepository(database)
 	settingsRepo := settingsrepo.NewSettingsRepository(database)
 	ssoCodeRepo := ssocode.NewSSOCodeRepository(database)
+	roleRepo := role.NewRoleRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
+	rolesService := roles.NewRolesService(roleRepo, userRepo, database, auditService, opts.Now)
 	settingsService := settings.NewSettingsService(settingsRepo, database, auditService, cfg.AccountConfig, opts.Now)
 	keyService, err := keys.NewKeyService(keyRepo, database, keys.Options{
 		EncryptionKey: kek,
@@ -143,15 +148,15 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	emailService := email.NewEmailService(mail, m, email.Options{AppURL: cfg.HTTPConfig.AppURL, SiteName: cfg.AppConfig.SiteName})
 	inviteService := invitesvc.NewInviteService(inviteRepo, opts.Now)
 	accountService := account.NewAccountService(account.Deps{
-		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Tx: database,
+		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Roles: roleRepo, Tx: database,
 		Invites: inviteService, Sessions: sessionService, Email: emailService, Audit: auditService,
 		Settings: settingsService, Hasher: hasher, Metrics: m, Config: cfg.AccountConfig, Now: opts.Now,
 	})
 	authnService := authn.NewAuthnService(authn.Deps{
 		Users: userRepo, Credentials: credRepo, Sessions: sessionService, Tokens: tokenService,
-		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService,
+		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService, Roles: rolesService,
 	})
-	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, opts.Now)
+	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, rolesService, opts.Now)
 	ssoClient := opts.SSOHTTPClient
 	if ssoClient == nil {
 		ssoClient = &nethttp.Client{Timeout: cfg.SSOConfig.HTTPTimeout}
@@ -184,7 +189,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
-		Keys: keyService, SSO: ssoService, Settings: settingsService, Limits: limits, Config: cfg,
+		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, Limits: limits, Config: cfg,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -207,7 +212,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
-		Email: emailService, SSO: ssoService, Settings: settingsService, limits: limits,
+		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService, limits: limits,
 	}, nil
 }
 

@@ -43,6 +43,10 @@ const (
 	EventSSOProviderCreated   = "sso_provider_created"
 	EventSSOProviderUpdated   = "sso_provider_updated"
 	EventSSOProviderDeleted   = "sso_provider_deleted"
+	EventRoleCreated          = "role_created"
+	EventRoleUpdated          = "role_updated"
+	EventRoleDeleted          = "role_deleted"
+	EventUserRolesChanged     = "user_roles_changed"
 )
 
 type AuditServiceImpl interface {

@@ -29,10 +29,12 @@ type User struct {
 	Email           *string
 	EmailVerifiedAt *time.Time
 	DisplayName     string
-	Role            string
-	DisabledAt      *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Role mirrors the roles for 1.x clients: admin iff the user holds a
+	// role with admin.panel (kept in sync by the roles repository).
+	Role       string
+	DisabledAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 func (User) TableName() string { return "users" }
@@ -62,7 +64,6 @@ type UserRepositoryImpl interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	SetEmailVerified(ctx context.Context, id string, at time.Time) error
 	SetDisplayName(ctx context.Context, id, name string) error
-	SetRole(ctx context.Context, id, role string) error
 	SetDisabled(ctx context.Context, id string, at *time.Time) error
 	List(ctx context.Context, f ListFilter) ([]*User, int64, error)
 }
@@ -146,10 +147,6 @@ func (r *UserRepository) SetEmailVerified(ctx context.Context, id string, at tim
 
 func (r *UserRepository) SetDisplayName(ctx context.Context, id, name string) error {
 	return r.update(ctx, id, map[string]any{"display_name": name})
-}
-
-func (r *UserRepository) SetRole(ctx context.Context, id, role string) error {
-	return r.update(ctx, id, map[string]any{"role": role})
 }
 
 func (r *UserRepository) SetDisabled(ctx context.Context, id string, at *time.Time) error {

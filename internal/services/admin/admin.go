@@ -13,6 +13,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories"
 	auditrepo "github.com/boson-chat/auth/internal/db/repositories/audit"
 	inviterepo "github.com/boson-chat/auth/internal/db/repositories/invite"
+	"github.com/boson-chat/auth/internal/db/repositories/role"
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/ids"
@@ -20,6 +21,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/invite"
+	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/textutil"
 )
@@ -30,8 +32,10 @@ const MaxPageSize = 200
 // verified. Password and SendSetupEmail are mutually exclusive; with neither
 // the account has no password until a reset (or SSO).
 type CreateUserInput struct {
-	Username       string
-	Email          string
+	Username string
+	Email    string
+	// Role: user (default), admin or owner. Giving admin/owner needs
+	// roles.manage and must respect the role hierarchy.
 	Role           string
 	Password       string
 	SendSetupEmail bool
@@ -64,8 +68,10 @@ type AdminServiceImpl interface {
 	GetUser(ctx context.Context, id string) (*user.User, error)
 	// FindUser resolves a user id or username (CLI convenience).
 	FindUser(ctx context.Context, idOrUsername string) (*user.User, error)
-	// SetDisabled disables (revoking every session) or re-enables a user.
+	// SetDisabled disables (revoking every session) or re-enables a user
+	// ranked below the actor.
 	SetDisabled(ctx context.Context, actorID, userID string, disabled bool) (*user.User, error)
+	// SetRole is the 1.x role switch (user | admin | owner), mapped onto roles.
 	SetRole(ctx context.Context, actorID, userID, role string) (*user.User, error)
 	ListSessions(ctx context.Context, userID string) ([]*sessionrepo.Session, error)
 	RevokeSession(ctx context.Context, actorID, sessionID string) error
@@ -84,15 +90,16 @@ type AdminService struct {
 	Sessions session.SessionServiceImpl
 	Invites  invite.InviteServiceImpl
 	Audit    audit.AuditServiceImpl
+	Roles    roles.RolesServiceImpl
 	Now      func() time.Time
 }
 
 func NewAdminService(acct account.AccountServiceImpl, users user.UserRepositoryImpl, tx db.TxManagerImpl, sessions session.SessionServiceImpl,
-	invites invite.InviteServiceImpl, auditSvc audit.AuditServiceImpl, now func() time.Time) AdminServiceImpl {
+	invites invite.InviteServiceImpl, auditSvc audit.AuditServiceImpl, rolesSvc roles.RolesServiceImpl, now func() time.Time) AdminServiceImpl {
 	if now == nil {
 		now = time.Now
 	}
-	return &AdminService{Account: acct, Users: users, Tx: tx, Sessions: sessions, Invites: invites, Audit: auditSvc, Now: now}
+	return &AdminService{Account: acct, Users: users, Tx: tx, Sessions: sessions, Invites: invites, Audit: auditSvc, Roles: rolesSvc, Now: now}
 }
 
 func clampLimit(limit int) int {
@@ -133,6 +140,12 @@ func (s *AdminService) FindUser(ctx context.Context, idOrUsername string) (*user
 }
 
 func (s *AdminService) SetDisabled(ctx context.Context, actorID, userID string, disabled bool) (*user.User, error) {
+	if _, err := s.GetUser(ctx, userID); err != nil {
+		return nil, err
+	}
+	if err := s.Roles.CheckManageUser(ctx, actorID, userID); err != nil {
+		return nil, err
+	}
 	var revoked int64
 	err := s.Tx.WithTx(ctx, func(ctx context.Context) error {
 		var at *time.Time
@@ -161,14 +174,11 @@ func (s *AdminService) SetDisabled(ctx context.Context, actorID, userID string, 
 	return s.GetUser(ctx, userID)
 }
 
-func (s *AdminService) SetRole(ctx context.Context, actorID, userID, role string) (*user.User, error) {
-	if role != user.RoleUser && role != user.RoleAdmin {
-		return nil, apperr.Invalid("role must be user or admin")
+func (s *AdminService) SetRole(ctx context.Context, actorID, userID, legacy string) (*user.User, error) {
+	if err := s.Roles.SetLegacyRole(ctx, actorID, userID, legacy); err != nil {
+		return nil, err
 	}
-	if err := s.Users.SetRole(ctx, userID, role); err != nil {
-		return nil, notFound(err)
-	}
-	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminRoleChanged, map[string]any{"user_id": userID, "role": role})
+	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminRoleChanged, map[string]any{"user_id": userID, "role": legacy})
 	return s.GetUser(ctx, userID)
 }
 
@@ -179,6 +189,9 @@ func (s *AdminService) ListSessions(ctx context.Context, userID string) ([]*sess
 func (s *AdminService) RevokeSession(ctx context.Context, actorID, sessionID string) error {
 	sess, err := s.Sessions.Get(ctx, sessionID)
 	if err != nil {
+		return err
+	}
+	if err := s.Roles.CheckManageUser(ctx, actorID, sess.UserID); err != nil {
 		return err
 	}
 	if err := s.Sessions.Revoke(ctx, "", sessionID); err != nil {
@@ -215,6 +228,19 @@ func (s *AdminService) CreateUser(ctx context.Context, actorID string, in Create
 	}
 	if in.SendSetupEmail && strings.TrimSpace(in.Email) == "" {
 		return nil, false, apperr.Invalid("send_invite_email needs an email address")
+	}
+	switch in.Role {
+	case "", user.RoleUser:
+	case user.RoleAdmin:
+		if err := s.Roles.CheckAssign(ctx, actorID, role.AdminID); err != nil {
+			return nil, false, err
+		}
+	case role.BuiltinOwner:
+		if err := s.Roles.CheckAssign(ctx, actorID, role.OwnerID); err != nil {
+			return nil, false, err
+		}
+	default:
+		return nil, false, apperr.Invalid("role must be user, admin or owner")
 	}
 	u, err := s.Account.CreateUser(ctx, actorID, account.CreateUserInput{
 		Username: in.Username, Email: in.Email, Password: in.Password, Role: in.Role, EmailVerified: true,

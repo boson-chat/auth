@@ -17,6 +17,7 @@ const (
 	Identity     = "uid"
 	Invite       = "inv"
 	Audit        = "aud"
+	Role         = "rol"
 	SigningKey   = "key"
 	TokenID      = "jti"
 	SSOCode      = "ssc"

@@ -19,6 +19,7 @@ import (
 	"github.com/boson-chat/auth/internal/nick"
 	"github.com/boson-chat/auth/internal/password"
 	"github.com/boson-chat/auth/internal/services/audit"
+	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/token"
@@ -39,8 +40,6 @@ type Principal struct {
 	// disabled state never come from a (possibly stale) token.
 	User *user.User
 }
-
-func (p *Principal) IsAdmin() bool { return p.User.Role == user.RoleAdmin }
 
 // Tokens is the result of a login or refresh.
 type Tokens struct {
@@ -77,6 +76,8 @@ type Deps struct {
 	// Settings.require_email_verification blocks password login until the
 	// email is verified.
 	Settings settings.SettingsServiceImpl
+	// Roles supplies the roles / perms token claims.
+	Roles roles.RolesServiceImpl
 }
 
 type AuthnService struct {
@@ -85,6 +86,23 @@ type AuthnService struct {
 
 func NewAuthnService(d Deps) AuthnServiceImpl {
 	return &AuthnService{Deps: d}
+}
+
+// grants loads the role claims for a token.
+func (s *AuthnService) grants(ctx context.Context, userID string) (token.Grants, error) {
+	a, err := s.Roles.Access(ctx, userID)
+	if err != nil {
+		return token.Grants{}, err
+	}
+	return token.Grants{Roles: a.RoleNames(roles.MaxTokenRoles), Perms: a.Permissions}, nil
+}
+
+func (s *AuthnService) mintAccess(ctx context.Context, u *user.User, sessionID string) (string, time.Time, error) {
+	g, err := s.grants(ctx, u.ID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return s.Tokens.MintAccess(ctx, u, sessionID, g)
 }
 
 // findLogin looks a user up by email (contains @; usernames never do) or by
@@ -171,7 +189,7 @@ func (s *AuthnService) Login(ctx context.Context, login, pw string) (*Tokens, er
 	if err != nil {
 		return nil, err
 	}
-	access, exp, err := s.Tokens.MintAccess(ctx, u, issued.Session.ID)
+	access, exp, err := s.mintAccess(ctx, u, issued.Session.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +213,7 @@ func (s *AuthnService) IssueSession(ctx context.Context, u *user.User, method st
 	if err != nil {
 		return nil, err
 	}
-	access, exp, err := s.Tokens.MintAccess(ctx, u, issued.Session.ID)
+	access, exp, err := s.mintAccess(ctx, u, issued.Session.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +231,7 @@ func (s *AuthnService) Refresh(ctx context.Context, refreshToken string) (*Token
 	if err != nil {
 		return nil, err
 	}
-	access, exp, err := s.Tokens.MintAccess(ctx, u, issued.Session.ID)
+	access, exp, err := s.mintAccess(ctx, u, issued.Session.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +276,11 @@ func (s *AuthnService) VoiceToken(ctx context.Context, p *Principal, rooms []str
 		}
 		clean = append(clean, r)
 	}
-	return s.Tokens.MintVoice(ctx, p.User, p.SessionID, clean)
+	g, err := s.grants(ctx, p.UserID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return s.Tokens.MintVoice(ctx, p.User, p.SessionID, clean, g)
 }
 
 func (s *AuthnService) VerifyPassword(ctx context.Context, username, pw string) (*user.User, error) {

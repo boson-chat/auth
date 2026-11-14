@@ -13,6 +13,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/authn"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
@@ -38,6 +39,7 @@ type Handlers struct {
 	Keys     keys.KeyServiceImpl
 	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
+	Roles    roles.RolesServiceImpl
 	Limits   *Limits
 	Config   config.Config
 	// Ready reports whether dependencies (database) are reachable.
@@ -99,19 +101,35 @@ func (h *Handlers) authed(next nethttp.HandlerFunc) nethttp.HandlerFunc {
 	}
 }
 
-// adminOnly wraps a handler that needs role=admin (checked against the DB).
-func (h *Handlers) adminOnly(next nethttp.HandlerFunc) nethttp.HandlerFunc {
-	return h.authed(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		if !principalFrom(r).IsAdmin() {
-			writeError(w, r, apperr.ErrForbidden)
-			return
-		}
-		if id := r.PathValue("id"); id != "" && !textutil.Storable(id) {
-			writeError(w, r, apperr.ErrNotFound)
-			return
-		}
-		next(w, r)
-	})
+type accessKey struct{}
+
+// accessFrom is the caller's roles and permissions (set by allow).
+func accessFrom(r *nethttp.Request) *roles.Access {
+	a, _ := r.Context().Value(accessKey{}).(*roles.Access)
+	return a
+}
+
+// allow wraps a handler that needs at least one of perms. Roles are read
+// from the database on every request, never from the (possibly stale) token.
+func (h *Handlers) allow(perms ...string) func(nethttp.HandlerFunc) nethttp.HandlerFunc {
+	return func(next nethttp.HandlerFunc) nethttp.HandlerFunc {
+		return h.authed(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			a, err := h.Roles.Access(r.Context(), principalFrom(r).UserID)
+			if err != nil {
+				writeError(w, r, err)
+				return
+			}
+			if !a.HasAny(perms...) {
+				writeError(w, r, apperr.ErrForbidden)
+				return
+			}
+			if id := r.PathValue("id"); id != "" && !textutil.Storable(id) {
+				writeError(w, r, apperr.ErrNotFound)
+				return
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), accessKey{}, a)))
+		})
+	}
 }
 
 // version serves GET /version (both listeners): the build version as plain text.

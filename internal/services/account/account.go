@@ -17,6 +17,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories"
 	"github.com/boson-chat/auth/internal/db/repositories/credential"
 	"github.com/boson-chat/auth/internal/db/repositories/emailtoken"
+	"github.com/boson-chat/auth/internal/db/repositories/role"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/ids"
 	"github.com/boson-chat/auth/internal/logger"
@@ -48,9 +49,11 @@ type RegisterInput struct {
 }
 
 type CreateUserInput struct {
-	Username      string
-	Email         string
-	Password      string // empty = no password credential (SSO-only)
+	Username string
+	Email    string
+	Password string // empty = no password credential (SSO-only)
+	// Role is user (default), admin (the Admin role) or owner (the Owner
+	// role). Callers check the actor may assign it.
 	Role          string
 	EmailVerified bool
 }
@@ -86,6 +89,7 @@ type Deps struct {
 	Users       user.UserRepositoryImpl
 	Credentials credential.CredentialRepositoryImpl
 	EmailTokens emailtoken.EmailTokenRepositoryImpl
+	Roles       role.RoleRepositoryImpl
 	Tx          db.TxManagerImpl
 	Invites     invite.InviteServiceImpl
 	Sessions    session.SessionServiceImpl
@@ -250,12 +254,19 @@ func (s *AccountService) CreateUser(ctx context.Context, actorID string, in Crea
 	if err != nil {
 		return nil, err
 	}
-	role := in.Role
-	if role == "" {
-		role = user.RoleUser
+	roleName := in.Role
+	if roleName == "" {
+		roleName = user.RoleUser
 	}
-	if role != user.RoleUser && role != user.RoleAdmin {
-		return nil, apperr.Invalid("role must be user or admin")
+	var roleID string
+	switch roleName {
+	case user.RoleUser:
+	case user.RoleAdmin:
+		roleID = role.AdminID
+	case role.BuiltinOwner:
+		roleID = role.OwnerID
+	default:
+		return nil, apperr.Invalid("role must be user, admin or owner")
 	}
 	hash := ""
 	if in.Password != "" {
@@ -266,7 +277,7 @@ func (s *AccountService) CreateUser(ctx context.Context, actorID string, in Crea
 	now := s.now()
 	u := &user.User{
 		ID: ids.New(ids.User), Username: in.Username, UsernameFolded: nick.Fold(in.Username),
-		Role: role, CreatedAt: now, UpdatedAt: now,
+		Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
 	}
 	if addr != "" {
 		u.Email = &addr
@@ -279,14 +290,34 @@ func (s *AccountService) CreateUser(ctx context.Context, actorID string, in Crea
 			return mapUserErr(err)
 		}
 		if hash != "" {
-			return s.Credentials.Upsert(ctx, u.ID, hash)
+			if err := s.Credentials.Upsert(ctx, u.ID, hash); err != nil {
+				return err
+			}
 		}
+		if roleID == "" {
+			return nil
+		}
+		var by *string
+		if actorID != "" {
+			by = &actorID
+		}
+		if err := s.Roles.AddUserRoles(ctx, u.ID, []string{roleID}, by, now); err != nil {
+			return err
+		}
+		if err := s.Roles.SyncLegacyRole(ctx, []string{u.ID}); err != nil {
+			return err
+		}
+		fresh, err := s.Users.FindByID(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		u = fresh
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.Audit.RecordTarget(ctx, actorID, u.ID, audit.EventAdminUserCreated, map[string]any{"user_id": u.ID, "role": role})
+	s.Audit.RecordTarget(ctx, actorID, u.ID, audit.EventAdminUserCreated, map[string]any{"user_id": u.ID, "role": roleName})
 	return u, nil
 }
 

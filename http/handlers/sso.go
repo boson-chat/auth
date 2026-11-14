@@ -10,6 +10,7 @@ import (
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/db/repositories/identity"
 	"github.com/boson-chat/auth/internal/logger"
+	"github.com/boson-chat/auth/internal/perm"
 	"github.com/boson-chat/auth/internal/services/sso"
 )
 
@@ -30,12 +31,12 @@ func (h *Handlers) registerSSO(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /v1/me/identities", h.authed(h.listMyIdentities))
 	mux.HandleFunc("DELETE /v1/me/identities/{id}", h.authed(h.unlinkMyIdentity))
 
-	mux.HandleFunc("GET /v1/admin/sso/providers", h.adminOnly(h.adminListProviders))
-	mux.HandleFunc("POST /v1/admin/sso/providers", h.adminOnly(h.adminCreateProvider))
-	mux.HandleFunc("GET /v1/admin/sso/providers/{id}", h.adminOnly(h.adminGetProvider))
-	mux.HandleFunc("PATCH /v1/admin/sso/providers/{id}", h.adminOnly(h.adminUpdateProvider))
-	mux.HandleFunc("DELETE /v1/admin/sso/providers/{id}", h.adminOnly(h.adminDeleteProvider))
-	mux.HandleFunc("POST /v1/admin/sso/providers/{id}/test", h.adminOnly(h.adminTestProvider))
+	mux.HandleFunc("GET /v1/admin/sso/providers", h.allow(perm.SSOManage)(h.adminListProviders))
+	mux.HandleFunc("POST /v1/admin/sso/providers", h.allow(perm.SSOManage)(h.adminCreateProvider))
+	mux.HandleFunc("GET /v1/admin/sso/providers/{id}", h.allow(perm.SSOManage)(h.adminGetProvider))
+	mux.HandleFunc("PATCH /v1/admin/sso/providers/{id}", h.allow(perm.SSOManage)(h.adminUpdateProvider))
+	mux.HandleFunc("DELETE /v1/admin/sso/providers/{id}", h.allow(perm.SSOManage)(h.adminDeleteProvider))
+	mux.HandleFunc("POST /v1/admin/sso/providers/{id}/test", h.allow(perm.SSOManage)(h.adminTestProvider))
 }
 
 func (h *Handlers) setSSOCookie(w nethttp.ResponseWriter, value string, crossSitePost bool) {
