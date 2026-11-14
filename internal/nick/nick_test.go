@@ -51,3 +51,28 @@ func TestFold(t *testing.T) {
 		t.Error("[Bot] and {bot} must collide")
 	}
 }
+
+func TestSanitize(t *testing.T) {
+	for in, want := range map[string]string{
+		"alice":                    "alice",
+		"Alice Smith":              "Alice_Smith",
+		"alice.smith+irc@corp.com": "alice_smith_irc_corp_com",
+		"42cats":                   "u42cats",
+		"-dash":                    "dash",
+		"élodie":                   "lodie",
+		"日本":                       "",
+		"":                         "",
+		"NickServ":                 "NickServ_",
+		"[bot]":                    "[bot]",
+		strings.Repeat("a", 40):    strings.Repeat("a", 30),
+		"a..b  c":                  "a_b_c",
+	} {
+		got := Sanitize(in)
+		if got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
+		if got != "" && Validate(got) != nil {
+			t.Errorf("Sanitize(%q) = %q is not valid: %v", in, got, Validate(got))
+		}
+	}
+}

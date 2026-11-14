@@ -12,10 +12,10 @@ import (
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/authn"
-	"github.com/boson-chat/auth/internal/services/idp"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
+	"github.com/boson-chat/auth/internal/services/sso"
 	"github.com/boson-chat/auth/internal/textutil"
 )
 
@@ -36,7 +36,7 @@ type Handlers struct {
 	Sessions session.SessionServiceImpl
 	Admin    admin.AdminServiceImpl
 	Keys     keys.KeyServiceImpl
-	IdP      idp.IdPServiceImpl
+	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
 	Limits   *Limits
 	Config   config.Config

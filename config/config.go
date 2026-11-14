@@ -25,6 +25,7 @@ type Config struct {
 	SMTPConfig      SMTPConfig
 	InternalConfig  InternalConfig
 	RateLimitConfig RateLimitConfig
+	SSOConfig       SSOConfig
 	TelemetryConfig TelemetryConfig
 }
 
@@ -218,6 +219,25 @@ type RateLimitConfig struct {
 	AccountPerMinute float64 `default:"2" env:"RATE_LIMIT_ACCOUNT_PER_MINUTE"`
 }
 
+// SSOConfig controls sign-in through external identity providers. The
+// providers themselves are configured at runtime (admin API).
+type SSOConfig struct {
+	// Comma-separated return_to patterns allowed besides this site's own web
+	// origins (APP_URL, PUBLIC_URL, CORS_ALLOWED_ORIGINS), which are always
+	// allowed. Matches here get a one-time ?code= instead of cookies.
+	// Patterns: scheme://host[:port|:*][/path-prefix]; boson:// = any URL of
+	// that custom scheme.
+	ReturnToAllowed string `default:"http://127.0.0.1:*,http://[::1]:*,boson://" env:"SSO_RETURN_TO_ALLOWED"`
+	// Lifetime of the encrypted state cookie (time allowed at the IdP).
+	StateTTL time.Duration `default:"10m" env:"SSO_STATE_TTL"`
+	// Lifetime of the one-time code given to native clients.
+	CodeTTL time.Duration `default:"1m" env:"SSO_CODE_TTL"`
+	// Timeout for calls to IdPs (discovery, token exchange, metadata).
+	HTTPTimeout time.Duration `default:"10s" env:"SSO_HTTP_TIMEOUT"`
+	// Accept http:// issuers and metadata URLs on non-loopback hosts (dev only).
+	AllowHTTP bool `default:"false" env:"SSO_ALLOW_HTTP"`
+}
+
 // TelemetryConfig controls metrics export. Prometheus on the internal
 // listener's /metrics is always on; OTLP push is on when an endpoint is set.
 type TelemetryConfig struct {
@@ -286,6 +306,9 @@ func (c Config) Validate() error {
 	}
 	if t.KeyPublishLead < 0 {
 		return errors.New("KEY_PUBLISH_LEAD must not be negative")
+	}
+	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
+		return errors.New("SSO_STATE_TTL, SSO_CODE_TTL and SSO_HTTP_TIMEOUT must be positive")
 	}
 	return nil
 }

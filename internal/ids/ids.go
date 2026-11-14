@@ -19,6 +19,7 @@ const (
 	Audit        = "aud"
 	SigningKey   = "key"
 	TokenID      = "jti"
+	SSOCode      = "ssc"
 )
 
 // New returns prefix_ULID. ulid.Make is safe for concurrent use and

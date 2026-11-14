@@ -58,7 +58,17 @@ func (h *Handlers) adminGetUser(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u)})
+	idents, err := h.SSO.ListIdentities(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	hasPW, err := h.SSO.HasPassword(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u), "identities": toIdentities(idents), "has_password": hasPW})
 }
 
 func (h *Handlers) adminSetDisabled(disabled bool) nethttp.HandlerFunc {

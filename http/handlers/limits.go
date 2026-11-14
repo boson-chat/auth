@@ -23,7 +23,10 @@ const (
 	BucketForgot   = "forgot"
 	BucketReset    = "reset"
 	BucketVerify   = "verify"
-	BucketInternal = "internal"
+	// SSO browser endpoints (start, callback, ACS) and the code exchange; per IP.
+	BucketSSO         = "sso"
+	BucketSSOExchange = "sso_exchange"
+	BucketInternal    = "internal"
 	// BucketInternalIP limits internal password checks per end-user IP, as
 	// forwarded by the (token-authenticated) caller. Only applied when the
 	// caller forwards one, so the IRC server's own address is never limited.
@@ -43,7 +46,7 @@ type Limits struct {
 
 func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	l := &Limits{enabled: cfg.Enabled, buckets: map[string]bucketPair{}, metrics: m}
-	for _, b := range []string{BucketLogin, BucketRegister, BucketForgot, BucketReset, BucketVerify} {
+	for _, b := range []string{BucketLogin, BucketRegister, BucketForgot, BucketReset, BucketVerify, BucketSSO, BucketSSOExchange} {
 		l.buckets[b] = bucketPair{
 			ip:      ratelimit.New(cfg.IPBurst, cfg.IPPerMinute),
 			account: ratelimit.New(cfg.AccountBurst, cfg.AccountPerMinute),
