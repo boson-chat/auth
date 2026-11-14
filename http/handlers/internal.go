@@ -5,10 +5,12 @@ import (
 	"crypto/subtle"
 	nethttp "net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/reqmeta"
+	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/roles"
 )
 
@@ -30,6 +32,7 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	mux.HandleFunc("GET /internal/v1/users/{username}/irc", h.internalOnly(h.internalUserIRC))
 	mux.HandleFunc("GET /internal/v1/roles/{id}/members", h.internalOnly(h.adminRoleMembers))
 	mux.HandleFunc("GET /internal/v1/irc/grants", h.internalOnly(h.internalIRCGrants))
+	mux.HandleFunc("GET /internal/v1/irc/accounts/removed", h.internalOnly(h.internalRemovedAccounts))
 	h.registerActing(mux)
 }
 
@@ -42,6 +45,26 @@ func (h *Handlers) internalSettings(w nethttp.ResponseWriter, r *nethttp.Request
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, st)
+}
+
+// internalRemovedAccounts: GET /internal/v1/irc/accounts/removed?since=&limit=,
+// the deleted and disabled accounts IRC should drop, in commit order.
+func (h *Handlers) internalRemovedAccounts(w nethttp.ResponseWriter, r *nethttp.Request) {
+	q := r.URL.Query()
+	limit := ircaccounts.DefaultLimit
+	if q.Has("limit") {
+		n, err := strconv.Atoi(q.Get("limit"))
+		if err != nil {
+			n = -1 // rejected by the service with the range message
+		}
+		limit = n
+	}
+	list, next, err := h.IRCAccounts.Removed(r.Context(), q.Get("since"), limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"accounts": list, "next": next})
 }
 
 func (h *Handlers) internalOnly(next nethttp.HandlerFunc) nethttp.HandlerFunc {

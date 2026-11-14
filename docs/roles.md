@@ -10,7 +10,7 @@ ranks managed by ChanServ (AMODE) and are not roles.
 - [Model](#model) · [Built-in roles](#built-in-roles) · [Permissions](#permissions)
 - [Hierarchy](#hierarchy) · [Admin API](#admin-api) · [Public API](#public-api)
 - [Tokens](#tokens) · [Ergo integration](#ergo-integration) · [quicvoiced](#quicvoiced)
-- [Channel creation settings](#channel-creation-settings) · [Migrating from 1.x](#migrating-from-1x)
+- [Channel creation settings](#channel-creation-settings) · [Channel lifecycle settings](#channel-lifecycle-settings) · [Migrating from 1.x](#migrating-from-1x)
 
 ## Model
 
@@ -318,6 +318,58 @@ read before the data, so a body is never older than its ETag. Unrelated
 changes (e.g. a role colour) may also bump it: pollers then refetch an
 identical list.
 
+### `GET /internal/v1/irc/accounts/removed` (deleted and disabled accounts)
+
+A feed of account removals, so IRC can drop accounts that were deleted or
+disabled by any path (admin API, CLI, SQL):
+
+```
+GET /internal/v1/irc/accounts/removed?since=<cursor>&limit=<n>
+```
+
+```json
+{"accounts": [
+  {"username": "alice", "reason": "deleted", "at": "2026-11-14T12:57:13.527378Z"},
+  {"username": "bob", "reason": "disabled", "at": "2026-11-14T12:57:20.26056Z"}],
+ "next": "3513.4"}
+```
+
+- `since`: the `next` of the previous response; empty or absent = from the
+  beginning. The cursor is opaque (today `<txid>.<id>`); anything else is
+  `400 invalid_request`.
+- `limit`: 1–1000, default 500; otherwise `400 invalid_request`.
+- `accounts`: in commit order, strictly after `since`, never `null`.
+  `username` is the account name when it was removed, `at` is RFC 3339 UTC.
+- `next`: pass it as `since` next time. With nothing new it equals `since`
+  (`""` when `since` was empty). Fewer than `limit` entries does not mean
+  caught up (filtered entries count against the limit); poll until `next`
+  stops changing.
+
+Entries that no longer apply are left out, but the cursor still moves past
+them:
+
+- `deleted`: omitted while an account with the same username (RFC 1459
+  folding, as everywhere) exists again, so IRC never wipes a re-created
+  account that belongs to someone else.
+- `disabled`: omitted once the account is enabled again, or deleted (its
+  `deleted` entry covers it). Disabling an already disabled account adds
+  nothing.
+
+Source: `irc_account_removals` (migration 7), filled by triggers on `users`
+(`AFTER DELETE` → `deleted`; `disabled_at` going from `NULL` to a time →
+`disabled`). Each row stores the user id, the username at the time and the
+writing transaction's id (`xid8`). The feed is ordered by `(txid, id)` and
+only returns rows from transactions older than every transaction still in
+flight, so a slow transaction can never commit a row behind a cursor that
+was already handed out. Rows older than 180 days are pruned by the hourly
+cleanup; a poller that is offline longer than that should resynchronise.
+
+IRC side (the stack's `boson-ergo` helper): for `deleted` it erases the
+Ergo account, which also unregisters that account's channels; for
+`disabled` it keeps the account and its channels, so re-enabling restores
+everything (the account just can't log in meanwhile; idle channels still
+expire under [`channel_expiry_days`](#channel-lifecycle-settings)).
+
 ## Acting API (RoleServ)
 
 The [admin API](#admin-api) role writes, mirrored on the internal listener
@@ -374,6 +426,19 @@ qualifies:
 | `voice_channel_creation` | `registered` | users with `voice.create` (Member has it) |
 | | `founders` | the IRC channel's founder, if they have `voice.create`; plus anyone with `voice.manage_any` |
 | | `admins` | users with `voice.manage_any` |
+
+## Channel lifecycle settings
+
+Two more network settings, also published on `GET /internal/v1/settings`
+and `GET /v1/config` and enforced by IRC (Ergo):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `channel_auto_register` | `true` (`CHANNEL_AUTO_REGISTER`) | a logged-in user who creates a new channel by joining it gets it registered to their account (subject to `channel_creation`) |
+| `channel_expiry_days` | `0` (`CHANNEL_EXPIRY_DAYS`) | registered channels with no joins or messages for this many days are unregistered; 0–3650, `0` = never |
+
+Channels of deleted accounts are unregistered through the
+[removed-accounts feed](#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts).
 
 ## Migrating from 1.x
 

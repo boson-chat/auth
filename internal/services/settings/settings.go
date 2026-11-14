@@ -1,11 +1,13 @@
 // Package settings serves the runtime network settings: registration mode,
-// email verification, and who may create IRC text and voice channels.
+// email verification, who may create IRC text and voice channels, and the
+// IRC channel lifecycle (auto-registration, expiry of idle channels).
 // Values stored in network_settings override the env defaults; reads are
 // cached for SETTINGS_CACHE_TTL so other replicas pick up changes quickly.
 package settings
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,6 +24,8 @@ type Settings struct {
 	RequireEmailVerification bool       `json:"require_email_verification"`
 	ChannelCreation          string     `json:"channel_creation"`
 	VoiceChannelCreation     string     `json:"voice_channel_creation"`
+	ChannelAutoRegister      bool       `json:"channel_auto_register"`
+	ChannelExpiryDays        int        `json:"channel_expiry_days"`
 	UpdatedAt                *time.Time `json:"updated_at"`
 	UpdatedBy                *string    `json:"updated_by"`
 }
@@ -32,10 +36,13 @@ type Patch struct {
 	RequireEmailVerification *bool   `json:"require_email_verification"`
 	ChannelCreation          *string `json:"channel_creation"`
 	VoiceChannelCreation     *string `json:"voice_channel_creation"`
+	ChannelAutoRegister      *bool   `json:"channel_auto_register"`
+	ChannelExpiryDays        *int    `json:"channel_expiry_days"`
 }
 
 func (p Patch) empty() bool {
-	return p.Registration == nil && p.RequireEmailVerification == nil && p.ChannelCreation == nil && p.VoiceChannelCreation == nil
+	return p.Registration == nil && p.RequireEmailVerification == nil && p.ChannelCreation == nil && p.VoiceChannelCreation == nil &&
+		p.ChannelAutoRegister == nil && p.ChannelExpiryDays == nil
 }
 
 // Validate checks every set field.
@@ -48,6 +55,9 @@ func (p Patch) Validate() error {
 	}
 	if p.VoiceChannelCreation != nil && !config.ValidVoiceChannelCreation(*p.VoiceChannelCreation) {
 		return apperr.Invalid("voice_channel_creation must be admins, founders or registered")
+	}
+	if p.ChannelExpiryDays != nil && !config.ValidChannelExpiryDays(*p.ChannelExpiryDays) {
+		return apperr.Invalid(fmt.Sprintf("channel_expiry_days must be between 0 and %d (0 = never expire)", config.MaxChannelExpiryDays))
 	}
 	return nil
 }
@@ -88,6 +98,8 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 		RequireEmailVerification: s.Defaults.RequireEmailVerification,
 		ChannelCreation:          s.Defaults.ChannelCreation,
 		VoiceChannelCreation:     s.Defaults.VoiceChannelCreation,
+		ChannelAutoRegister:      s.Defaults.ChannelAutoRegister,
+		ChannelExpiryDays:        s.Defaults.ChannelExpiryDays,
 		UpdatedAt:                r.UpdatedAt,
 		UpdatedBy:                r.UpdatedBy,
 	}
@@ -102,6 +114,12 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 	}
 	if r.VoiceChannelCreation != nil {
 		out.VoiceChannelCreation = *r.VoiceChannelCreation
+	}
+	if r.ChannelAutoRegister != nil {
+		out.ChannelAutoRegister = *r.ChannelAutoRegister
+	}
+	if r.ChannelExpiryDays != nil {
+		out.ChannelExpiryDays = *r.ChannelExpiryDays
 	}
 	return out
 }
@@ -155,6 +173,12 @@ func (s *SettingsService) Update(ctx context.Context, actorID string, p Patch) (
 		if p.VoiceChannelCreation != nil {
 			row.VoiceChannelCreation = p.VoiceChannelCreation
 		}
+		if p.ChannelAutoRegister != nil {
+			row.ChannelAutoRegister = p.ChannelAutoRegister
+		}
+		if p.ChannelExpiryDays != nil {
+			row.ChannelExpiryDays = p.ChannelExpiryDays
+		}
 		now := s.Now().UTC()
 		row.UpdatedAt = &now
 		row.UpdatedBy = nil
@@ -188,5 +212,7 @@ func diff(a, b Settings) (map[string]any, map[string]any) {
 	add("require_email_verification", a.RequireEmailVerification, b.RequireEmailVerification)
 	add("channel_creation", a.ChannelCreation, b.ChannelCreation)
 	add("voice_channel_creation", a.VoiceChannelCreation, b.VoiceChannelCreation)
+	add("channel_auto_register", a.ChannelAutoRegister, b.ChannelAutoRegister)
+	add("channel_expiry_days", a.ChannelExpiryDays, b.ChannelExpiryDays)
 	return oldV, newV
 }

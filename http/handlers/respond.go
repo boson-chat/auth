@@ -7,6 +7,7 @@ import (
 	"errors"
 	"mime"
 	nethttp "net/http"
+	"reflect"
 	"time"
 
 	"github.com/boson-chat/auth/internal/apperr"
@@ -59,9 +60,32 @@ func decode(w nethttp.ResponseWriter, r *nethttp.Request, dst any) error {
 		if errors.As(err, &mbe) {
 			return apperr.New(nethttp.StatusRequestEntityTooLarge, "body_too_large", "request body too large")
 		}
+		var ute *json.UnmarshalTypeError
+		if errors.As(err, &ute) && ute.Field != "" {
+			return apperr.Invalid(ute.Field + " must be " + jsonTypeName(ute.Type.Kind()))
+		}
 		return apperr.Invalid("malformed JSON body")
 	}
 	return nil
+}
+
+// jsonTypeName names the JSON type a Go kind decodes from, for error messages.
+func jsonTypeName(k reflect.Kind) string {
+	switch k {
+	case reflect.Bool:
+		return "a boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "an integer"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	case reflect.String:
+		return "a string"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	default:
+		return "an object"
+	}
 }
 
 // decodeOptional is decode for endpoints whose body may be empty.

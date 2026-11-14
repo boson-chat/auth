@@ -163,9 +163,16 @@ func ValidVoiceChannelCreation(v string) bool {
 	return v == VoiceChannelCreationAdmins || v == VoiceChannelCreationFounders || v == VoiceChannelCreationRegistered
 }
 
-// AccountConfig: Registration, RequireEmailVerification, ChannelCreation and
-// VoiceChannelCreation are only defaults; admins change them at runtime
-// (network_settings, PATCH /v1/admin/settings).
+// MaxChannelExpiryDays bounds channel_expiry_days (CHANNEL_EXPIRY_DAYS); 0 = never expire.
+const MaxChannelExpiryDays = 3650
+
+// ValidChannelExpiryDays reports whether n is a channel_expiry_days value.
+func ValidChannelExpiryDays(n int) bool { return n >= 0 && n <= MaxChannelExpiryDays }
+
+// AccountConfig: Registration, RequireEmailVerification, ChannelCreation,
+// VoiceChannelCreation, ChannelAutoRegister and ChannelExpiryDays are only
+// defaults; admins change them at runtime (network_settings,
+// PATCH /v1/admin/settings).
 type AccountConfig struct {
 	// open | invite | closed
 	Registration             string `default:"open" env:"REGISTRATION"`
@@ -173,9 +180,14 @@ type AccountConfig struct {
 	// registered | admins
 	ChannelCreation string `default:"registered" env:"CHANNEL_CREATION"`
 	// admins | founders | registered
-	VoiceChannelCreation string        `default:"founders" env:"VOICE_CHANNEL_CREATION"`
-	EmailVerifyTTL       time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
-	PasswordResetTTL     time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
+	VoiceChannelCreation string `default:"founders" env:"VOICE_CHANNEL_CREATION"`
+	// IRC registers a new channel to the logged-in user who created it by joining.
+	ChannelAutoRegister bool `default:"true" env:"CHANNEL_AUTO_REGISTER"`
+	// IRC unregisters registered channels idle (no joins/messages) this many
+	// days; 0..3650, 0 = never.
+	ChannelExpiryDays int           `default:"0" env:"CHANNEL_EXPIRY_DAYS"`
+	EmailVerifyTTL    time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
+	PasswordResetTTL  time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
 	// Lifetime of the "set your password" link in admin-created account emails.
 	AccountSetupTTL time.Duration `default:"72h" env:"ACCOUNT_SETUP_TTL"`
 	// How long a replica may serve cached network settings written by another replica.
@@ -295,6 +307,9 @@ func (c Config) Validate() error {
 	}
 	if !ValidVoiceChannelCreation(a.VoiceChannelCreation) {
 		return fmt.Errorf("VOICE_CHANNEL_CREATION must be admins, founders or registered, got %q", a.VoiceChannelCreation)
+	}
+	if !ValidChannelExpiryDays(a.ChannelExpiryDays) {
+		return fmt.Errorf("CHANNEL_EXPIRY_DAYS must be between 0 and %d (0 = never expire), got %d", MaxChannelExpiryDays, a.ChannelExpiryDays)
 	}
 	if a.AccountSetupTTL <= 0 || a.SettingsCacheTTL < 0 {
 		return errors.New("ACCOUNT_SETUP_TTL must be positive and SETTINGS_CACHE_TTL not negative")

@@ -134,3 +134,41 @@ func migrateDownTo(t *testing.T, sqldb *sql.DB, dsn string, target int) {
 		t.Fatalf("down to %d: %v", target, err)
 	}
 }
+
+// Migration 6 adds the channel lifecycle settings (NULL = env default) with
+// a 0..3650 CHECK; down drops them again.
+func TestMigrationChannelSettingsDownUp(t *testing.T) {
+	e := newEnv(t)
+	dsn := e.cfg.DBConfig.URL
+	sqldb, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqldb.Close()
+	if _, err := sqldb.Exec(`UPDATE network_settings SET channel_expiry_days = 30, channel_auto_register = false`); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []int{-1, 3651} {
+		if _, err := sqldb.Exec(`UPDATE network_settings SET channel_expiry_days = $1`, bad); err == nil {
+			t.Fatalf("CHECK constraint missing: %d stored", bad)
+		}
+	}
+	migrateDownTo(t, sqldb, dsn, 5)
+	var n int
+	if err := sqldb.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'network_settings'
+		AND column_name IN ('channel_auto_register', 'channel_expiry_days')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("columns after down = %d (%v)", n, err)
+	}
+	if err := db.MigrateUp(dsn); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	var days sql.NullInt64
+	var auto sql.NullBool
+	if err := sqldb.QueryRow(`SELECT channel_expiry_days, channel_auto_register FROM network_settings`).Scan(&days, &auto); err != nil ||
+		days.Valid || auto.Valid {
+		t.Fatalf("after up = %v %v (%v), want NULL (env default)", days, auto, err)
+	}
+	if r := e.api("GET", "/v1/config", nil); r.body["channel_expiry_days"] != float64(0) || r.body["channel_auto_register"] != true {
+		t.Fatalf("env defaults: %s", r.raw)
+	}
+}

@@ -57,7 +57,8 @@ func newSvc(ttl time.Duration) (*SettingsService, *memRepo, *auditSpy, *time.Tim
 	repo, spy := &memRepo{}, &auditSpy{}
 	defaults := config.AccountConfig{
 		Registration: "invite", RequireEmailVerification: true,
-		ChannelCreation: "registered", VoiceChannelCreation: "founders", SettingsCacheTTL: ttl,
+		ChannelCreation: "registered", VoiceChannelCreation: "founders", ChannelAutoRegister: true, ChannelExpiryDays: 0,
+		SettingsCacheTTL: ttl,
 	}
 	s := NewSettingsService(repo, db.NoTx{}, spy, defaults, func() time.Time { return now }).(*SettingsService)
 	return s, repo, spy, &now
@@ -98,6 +99,9 @@ func TestInvalidPatch(t *testing.T) {
 		{Registration: ptr("sometimes")},
 		{ChannelCreation: ptr("founders")},
 		{VoiceChannelCreation: ptr("")},
+		{ChannelExpiryDays: ptr(-1)},
+		{ChannelExpiryDays: ptr(3651)},
+		{ChannelAutoRegister: ptr(false), ChannelExpiryDays: ptr(1 << 40)},
 	} {
 		_, err := s.Update(t.Context(), "usr_a", p)
 		if e, ok := apperr.As(err); !ok || e.Status != 400 {
@@ -106,6 +110,42 @@ func TestInvalidPatch(t *testing.T) {
 	}
 	if repo.row.UpdatedAt != nil || len(spy.events) != 0 {
 		t.Fatal("invalid patch was stored or audited")
+	}
+}
+
+func TestChannelLifecycleSettings(t *testing.T) {
+	s, repo, spy, _ := newSvc(0)
+	got, err := s.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ChannelAutoRegister || got.ChannelExpiryDays != 0 {
+		t.Fatalf("defaults: %+v", got)
+	}
+	got, err = s.Update(t.Context(), "usr_admin", Patch{ChannelAutoRegister: ptr(false), ChannelExpiryDays: ptr(90)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ChannelAutoRegister || got.ChannelExpiryDays != 90 || got.ChannelCreation != "registered" {
+		t.Fatalf("after patch: %+v", got)
+	}
+	if repo.row.ChannelAutoRegister == nil || *repo.row.ChannelAutoRegister || repo.row.ChannelExpiryDays == nil ||
+		*repo.row.ChannelExpiryDays != 90 || repo.row.ChannelCreation != nil {
+		t.Fatalf("stored: %+v", repo.row)
+	}
+	oldV, newV := spy.metas[0]["old"].(map[string]any), spy.metas[0]["new"].(map[string]any)
+	if len(oldV) != 2 || oldV["channel_auto_register"] != true || newV["channel_auto_register"] != false ||
+		oldV["channel_expiry_days"] != 0 || newV["channel_expiry_days"] != 90 {
+		t.Fatalf("audit diff: old=%v new=%v", oldV, newV)
+	}
+	// Both bounds are allowed; only the changed field is audited.
+	for _, n := range []int{3650, 0} {
+		if got, err = s.Update(t.Context(), "usr_admin", Patch{ChannelExpiryDays: ptr(n)}); err != nil || got.ChannelExpiryDays != n {
+			t.Fatalf("expiry %d: %+v %v", n, got, err)
+		}
+	}
+	if newV := spy.metas[2]["new"].(map[string]any); len(newV) != 1 || newV["channel_expiry_days"] != 0 {
+		t.Fatalf("audit diff: %v", newV)
 	}
 }
 

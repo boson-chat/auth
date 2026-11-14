@@ -13,6 +13,7 @@ import (
 	"github.com/boson-chat/auth/http/handlers"
 	"github.com/boson-chat/auth/http/middleware"
 	"github.com/boson-chat/auth/internal/db"
+	"github.com/boson-chat/auth/internal/db/repositories/accountremoval"
 	"github.com/boson-chat/auth/internal/db/repositories/audit"
 	"github.com/boson-chat/auth/internal/db/repositories/credential"
 	"github.com/boson-chat/auth/internal/db/repositories/emailtoken"
@@ -37,6 +38,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/idp/oidc"
 	"github.com/boson-chat/auth/internal/services/idp/saml"
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
+	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
@@ -71,7 +73,9 @@ type App struct {
 	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
 	Roles    roles.RolesServiceImpl
-	limits   *handlers.Limits
+	// IRCAccounts is the removed-accounts feed for IRC.
+	IRCAccounts ircaccounts.IRCAccountsServiceImpl
+	limits      *handlers.Limits
 }
 
 // Build constructs everything: database → repositories → services → handlers.
@@ -123,10 +127,12 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	settingsRepo := settingsrepo.NewSettingsRepository(database)
 	ssoCodeRepo := ssocode.NewSSOCodeRepository(database)
 	roleRepo := role.NewRoleRepository(database)
+	removalRepo := accountremoval.NewAccountRemovalRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
 	rolesService := roles.NewRolesService(roleRepo, userRepo, database, auditService, opts.Now)
+	ircAccountsService := ircaccounts.NewIRCAccountsService(removalRepo, opts.Now)
 	settingsService := settings.NewSettingsService(settingsRepo, database, auditService, cfg.AccountConfig, opts.Now)
 	keyService, err := keys.NewKeyService(keyRepo, database, keys.Options{
 		EncryptionKey: kek,
@@ -189,7 +195,8 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
-		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, Limits: limits, Config: cfg,
+		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
+		Limits: limits, Config: cfg,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -212,7 +219,8 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
-		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService, limits: limits,
+		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
+		IRCAccounts: ircAccountsService, limits: limits,
 	}, nil
 }
 
@@ -251,6 +259,9 @@ func (a *App) RunBackground(ctx context.Context) {
 				}
 				if err := a.SSO.Cleanup(ctx); err != nil && ctx.Err() == nil {
 					logger.FromCtx(ctx).Warn().Err(err).Msg("sso code cleanup")
+				}
+				if err := a.IRCAccounts.Cleanup(ctx); err != nil && ctx.Err() == nil {
+					logger.FromCtx(ctx).Warn().Err(err).Msg("irc account removals cleanup")
 				}
 			}
 		}
