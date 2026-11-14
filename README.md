@@ -3,7 +3,8 @@
 The account and token service for [boson](https://github.com/boson-chat/stack):
 registration, email verification, password login, sessions with rotating
 refresh tokens, password reset, sign-in through OIDC and SAML identity
-providers, runtime network settings, an admin API, and Ed25519-signed JWTs
+providers, runtime network settings, network roles and permissions (mapped
+to IRC oper classes and vhosts), an admin API, and Ed25519-signed JWTs
 that other boson services (voice, later video and the admin panel) verify
 through a public JWKS. IRC SASL uses the internal password-check API.
 
@@ -21,10 +22,10 @@ make setup                     # Postgres + Mailpit in Docker, migrations
 make run                       # http://localhost:8080, internal on :8081
 ```
 
-Mail lands in Mailpit at http://localhost:8025. Create an admin:
+Mail lands in Mailpit at http://localhost:8025. Create the network Owner:
 
 ```sh
-go run ./cmd user create --username admin --email admin@example.com --role admin
+go run ./cmd user create --username admin --email admin@example.com --role owner
 ```
 
 Everything in Docker instead: `docker compose --profile app up -d --build`.
@@ -68,7 +69,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `POST /v1/password/forgot` | – | `{email}` → 202, identical whether or not the account exists |
 | `POST /v1/password/reset` | – | `{token, new_password}` → signs out every session |
 | `POST /v1/password/change` | bearer | `{current, new}` → signs out every *other* session |
-| `GET /v1/me` | bearer | `{user, session_id}` |
+| `GET /v1/me` | bearer | `{user, session_id, roles: [{id, name, color, position}], permissions: [id]}` ([roles](docs/roles.md)) |
 | `PATCH /v1/me` | bearer | `{display_name}` → `{user}` |
 | `GET /v1/sessions` | bearer | `{sessions: [{id, auth_method, ip, user_agent, created_at, last_seen_at, expires_at, current}]}` |
 | `DELETE /v1/sessions/{id}` | bearer | revoke one of your sessions → 204 (other users' ids are 404) |
@@ -80,27 +81,39 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/sso/{slug}/saml/metadata` | – | SP metadata XML (`application/samlmetadata+xml`) |
 | `POST /v1/sso/exchange` | – | `{code, code_verifier?, cookie?}` → same as `/v1/login`; `400 invalid_code` |
 | `POST /v1/voice/token` | bearer | `{rooms?: [string]}` → `{token, expires_in, audience: "quicvoice"}` |
+| `GET /v1/roles` | – | `{roles: [{id, name, color, position, hoist, mentionable}]}`; `ETag`/`If-None-Match`, cacheable, rate-limited ([roles](docs/roles.md#public-api)) |
+| `GET /v1/users/roles?username=a&username=b` | – | ≤ 100 names → `{users: {"a": ["rol_…"]}}` (visible roles only) |
 | `GET /verify-email`, `GET /reset-password` | – | built-in pages for the email links (used when `APP_URL` = `PUBLIC_URL`) |
 
-Admin (role `admin`, checked against the database on every request):
+Admin: each endpoint needs a [permission](docs/roles.md#admin-endpoint--permission)
+(any one of those listed), checked against the database on every request.
+Actions on a user (disable, enable, session revoke, role changes) also need
+the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 
-| Method & path | |
-|---|---|
-| `GET /v1/admin/users?q=&limit=&offset=` | search users (username/email substring) → `{users, total}` |
-| `POST /v1/admin/users` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request` |
-| `GET /v1/admin/users/{id}` | `{user, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` |
-| `POST /v1/admin/users/{id}/password-reset` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
-| `POST /v1/admin/users/{id}/verification` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
-| `PATCH /v1/admin/users/{id}` | `{role: "user"\|"admin"}` |
-| `POST /v1/admin/users/{id}/disable` | disable and revoke every session |
-| `POST /v1/admin/users/{id}/enable` | re-enable |
-| `GET /v1/admin/users/{id}/sessions` | active sessions |
-| `DELETE /v1/admin/sessions/{id}` | revoke any session |
-| `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | invite codes (the code is only in the create response) |
-| `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
-| `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` |
-| `PATCH /v1/admin/settings` | same fields, any subset → the updated object; `400 invalid_request` on unknown values; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
+| Method & path | Permission | |
+|---|---|---|
+| `GET /v1/admin/users?q=&limit=&offset=` | `users.view` | search users (username/email substring) → `{users, total}`; each user has `roles: [{id, name, color, position}]` |
+| `POST /v1/admin/users` | `users.manage` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. `role`: `user` (default) \| `admin` \| `owner` (gives the Admin/Owner role; needs `roles.manage` and the hierarchy, so only Owners create Admins). The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request`, `403 role_hierarchy` |
+| `GET /v1/admin/users/{id}` | `users.view` | `{user, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password, roles: [{id, name, color, position}], permissions: [id]}` |
+| `POST /v1/admin/users/{id}/password-reset` | `users.manage` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
+| `POST /v1/admin/users/{id}/verification` | `users.manage` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
+| `PATCH /v1/admin/users/{id}` | `roles.manage` | 1.x `{role: "user"\|"admin"\|"owner"}`, mapped onto roles ([details](docs/roles.md#migrating-from-1x)) |
+| `PUT /v1/admin/users/{id}/roles` | `roles.manage` | `{role_ids: [id]}` replaces the user's roles → `{roles: [{id, name, color, position}]}` |
+| `POST /v1/admin/users/{id}/disable` | `users.moderate` \| `users.manage` | disable and revoke every session |
+| `POST /v1/admin/users/{id}/enable` | `users.moderate` \| `users.manage` | re-enable |
+| `GET /v1/admin/users/{id}/sessions` | `users.view` | active sessions |
+| `DELETE /v1/admin/sessions/{id}` | `users.moderate` \| `users.manage` | revoke any session |
+| `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
+| `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
+| `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` |
+| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
+| `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
+| `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
+| `POST /v1/admin/roles`, `PATCH /v1/admin/roles/{id}` | `roles.manage` | `{name, color?, position?, permissions?, irc?: {whois_line?, vhost?, oper?}, hoist?, mentionable?}` → 201 / 200 `{role}` |
+| `DELETE /v1/admin/roles/{id}` | `roles.manage` | → 204; `409 builtin_role` |
+| `POST /v1/admin/roles/reorder` | `roles.manage` | `{order: [id]}` (most senior first) → `{roles}` |
+| `GET /v1/admin/roles/{id}/members?cursor=&limit=` | `admin.panel` | `{users: [{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}` |
 
 ### Internal listener (`INTERNAL_ADDR`, default `:8081`)
 
@@ -109,7 +122,9 @@ Admin (role `admin`, checked against the database on every request):
 | `GET /healthz`, `GET /readyz`, `GET /version` | as above |
 | `GET /metrics` | Prometheus exposition |
 | `GET /internal/v1/settings` | header `X-Internal-Token`; the [network settings](#network-settings) object (same as `GET /v1/admin/settings`). For Ergo and quicvoiced. |
-| `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
+| `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?, irc?: {oper_class, whois_line, vhost}, roles?, permissions?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`; `irc`/`roles`/`permissions` on success). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
+| `GET /internal/v1/roles` | every role with its Ergo oper class, WHOIS line, vhost template and capabilities → `{version, roles}`; `ETag` = version, `If-None-Match` → 304 ([Ergo integration](docs/roles.md#ergo-integration)) |
+| `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
 
 The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-script helper does). Because the caller is authenticated by `INTERNAL_API_TOKEN`, auth trusts that value: it is recorded in the audit log and used for an extra per-IP limit (`RATE_LIMIT_IP_*` ×2), so one IRC client can't spray many accounts. Without the header only the per-account limit applies, so the IRC server's own shared address is never limited.
 
@@ -123,8 +138,8 @@ env variable, so env values are the defaults:
 |---|---|---|---|
 | `registration` | `open` \| `invite` \| `closed` | `REGISTRATION` | auth (`/v1/register`, SSO sign-up) |
 | `require_email_verification` | bool | `REQUIRE_EMAIL_VERIFICATION` | auth (password login and `/internal/v1/verify-password`) |
-| `channel_creation` | `registered` \| `admins` | `CHANNEL_CREATION` (`registered`) | IRC (Ergo): who may create text channels |
-| `voice_channel_creation` | `admins` \| `founders` \| `registered` | `VOICE_CHANNEL_CREATION` (`founders`) | quicvoiced: admins only; the founder of an IRC channel may create voice channels under it; or any registered user |
+| `channel_creation` | `registered` \| `admins` | `CHANNEL_CREATION` (`registered`) | IRC (Ergo): who may create text channels: `registered` = holders of `channel.create` (Member has it), `admins` = holders of `admin.panel` |
+| `voice_channel_creation` | `admins` \| `founders` \| `registered` | `VOICE_CHANNEL_CREATION` (`founders`) | quicvoiced: `admins` = holders of `voice.manage_any`; `founders` = the IRC channel's founder (with `voice.create`) or `voice.manage_any`; `registered` = holders of `voice.create` (Member has it) |
 
 ```json
 {"registration":"open","require_email_verification":true,"channel_creation":"registered",
@@ -164,6 +179,17 @@ An unknown username matches nothing (empty page, not an error). Each entry:
 `null`; failed logins for an existing account carry that account as the actor.
 Usernames are `null` when the user was deleted or unknown.
 
+### Roles and permissions
+
+Network roles (built-in Owner, Admin, Moderator, Member, plus custom ones)
+carry permissions from a closed catalog (`admin.*`, network `channel.*` /
+`voice.*`, and `irc.*` = Ergo oper capabilities), an Ergo oper class
+(WHOIS line) and an optional vhost template that Ergo applies at login.
+Positions form a Discord-style hierarchy with Owner on top. See
+[docs/roles.md](docs/roles.md) for the model, the permission → endpoint
+table, the API, token claims, the Ergo/quicvoiced contract and how 1.x
+admins were migrated.
+
 ### Single sign-on
 
 Admins add OIDC and SAML providers at runtime (`/v1/admin/sso/providers`);
@@ -193,7 +219,9 @@ Keycloak, Okta and Entra ID.
 `400 invalid_return_to|invalid_code|invalid_state` (SSO),
 `401 invalid_credentials|unauthenticated|invalid_refresh_token`,
 `403 email_not_verified|account_disabled|forbidden|csrf|registration_closed|invite_required|invalid_password`,
-`409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account), `415 unsupported_media_type`,
+`403 role_hierarchy|permission_not_held` (roles),
+`409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account),
+`409 role_name_taken|builtin_role|last_owner` (roles), `415 unsupported_media_type`,
 `429 rate_limited` (with `Retry-After`).
 
 `account_disabled` and `email_not_verified` are only returned after the
@@ -217,7 +245,9 @@ Header `{"alg":"EdDSA","kid":"key_…","typ":"at+jwt"}`
 | `aud` | `"boson"` |
 | `sid` | session id, `ses_<ULID>` |
 | `name` | username (= IRC nick) |
-| `role` | `user` \| `admin` |
+| `role` | `user` \| `admin` (1.x: `admin` iff `perms` has `admin.panel`) |
+| `roles` | assigned [role](docs/roles.md) names, most senior first, ≤ 20; omitted when none (Member is implicit) |
+| `perms` | effective permission ids |
 | `iat`, `nbf`, `exp` | `exp` = `iat` + `ACCESS_TOKEN_TTL` (15 min) |
 | `jti` | `jti_<ULID>` |
 
@@ -234,7 +264,9 @@ Header `{"alg":"EdDSA","kid":"key_…","typ":"JWT"}`
 | `sub` | user id |
 | `aud` | `"quicvoice"` |
 | `name` | username |
-| `role` | `speaker`; `moderator` for admins (quicvoiced roles: listener < speaker < moderator < admin) |
+| `role` | `speaker`; `moderator` with `voice.manage_any` (Owner, Admin, Moderator by default; quicvoiced roles: listener < speaker < moderator < admin) |
+| `roles` | as in the access token |
+| `perms` | the network permissions only: `channel.create`, `voice.create`, `voice.manage_any`, `voice.bypass_locks` |
 | `rooms` | from the request body; **omitted** when empty (= any room) |
 | `sid`, `iat`, `nbf`, `jti` | as above |
 | `exp` | `iat` + `VOICE_TOKEN_TTL` (5 min) |
@@ -343,6 +375,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `RATE_LIMIT_ENABLED` | `true` | |
 | `RATE_LIMIT_IP_BURST` / `RATE_LIMIT_IP_PER_MINUTE` | `20` / `10` | per client IP, per endpoint group |
 | `RATE_LIMIT_ACCOUNT_BURST` / `RATE_LIMIT_ACCOUNT_PER_MINUTE` | `5` / `2` | per username/email, per endpoint group (internal API: double) |
+| `RATE_LIMIT_PUBLIC_BURST` / `RATE_LIMIT_PUBLIC_PER_MINUTE` | `60` / `120` | per client IP for the public role lookups (`GET /v1/roles`, `GET /v1/users/roles`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP push in addition to Prometheus |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | or `grpc` |
 | `OTEL_METRICS_EXPORTER` | – | `none` disables OTLP push |
@@ -351,7 +384,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 
 Rate-limited endpoint groups: login (and password change), register,
 forgot, reset, verify/resend, internal verify-password, SSO browser
-endpoints (start/callback/ACS, per IP), SSO code exchange (per IP).
+endpoints (start/callback/ACS, per IP), SSO code exchange (per IP), public
+role lookups (per IP).
 
 ### Per-account login limit (for admins)
 
@@ -373,13 +407,16 @@ has its own bucket with twice the limits.
 ```text
 auth serve                                   run both listeners
 auth migrate up | down [--steps N | --all]
-auth user create --username U [--email E] [--role admin] [--password-stdin | --no-password]
-auth user list [query] | set-role <user> <role> | disable <user> | enable <user> | revoke-sessions <user>
+auth user create --username U [--email E] [--role user|admin|owner] [--password-stdin | --no-password]
+auth user list [query] | set-role <user> <user|admin|owner> | disable <user> | enable <user> | revoke-sessions <user>
+auth user set-roles <user> [role name or id ...]   replace a user's roles (none = Member only)
+auth role list
 auth keys list | rotate [--now] | gen-kek
 auth invite create [--uses N] [--ttl 168h] [--note ..] | list | revoke <id>
 ```
 
-In the container: `docker compose exec auth ./auth user create --username admin --role admin`.
+In the container: `docker compose exec auth ./auth user create --username admin --role owner`.
+The CLI acts as the system: it bypasses the role hierarchy but never removes the last Owner.
 
 ## Metrics
 
@@ -429,8 +466,15 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 - **Audit log** (`audit_log`): registrations, logins, failed logins (reason
   only, never the attempted password or login string), reuse detections,
   resets, password changes, session revocations, admin actions (with the
-  target user in `target_user_id`), settings changes (old and new values).
-- **Network settings** are only writable by admins, validated against fixed
+  target user in `target_user_id`), settings changes (old and new values),
+  role changes (`role_created|role_updated|role_deleted`, old/new) and role
+  assignments (`user_roles_changed`, old/new role ids).
+- **Roles** are checked against the database on every admin request, never
+  taken from the token. The hierarchy stops anyone acting on roles or users
+  at or above their own rank or granting permissions they lack; Owners bypass
+  it, and the last Owner can't be removed (role writes are serialised by a
+  row lock).
+- **Network settings** are only writable with `settings.manage`, validated against fixed
   value sets, and audit-logged. A stale replica serves the old value for at
   most `SETTINGS_CACHE_TTL`.
 - **SSO state** lives in an AES-256-GCM-sealed cookie (key derived from
@@ -465,15 +509,19 @@ internal/services/*          business logic (*ServiceImpl interfaces)
 internal/db/repositories/*   data access (*RepositoryImpl), used only by services
 internal/services/idp/*      SSO provider kinds (oidc, saml) and registry
 internal/services/sso        SSO flow, linking, code exchange, provider admin
+internal/services/roles      roles, permissions, hierarchy, IRC oper class / vhost
+internal/perm                the permission catalog
 internal/{nick,password,keycrypt,ratelimit,opaque,ids,mailer,...}
 metrics/                     OpenTelemetry instruments + Prometheus exporter
 test/integration/            HTTP flows against real Postgres
 docs/sso.md                  SSO flow, linking rules, admin API, IdP setup
+docs/roles.md                roles, permissions, hierarchy, Ergo/quicvoiced contract
 ```
 
 ## Roadmap
 
-- **Done:** phase 2 (OIDC) and phase 3 (SAML), see [docs/sso.md](docs/sso.md).
+- **Done:** phase 2 (OIDC) and phase 3 (SAML), see [docs/sso.md](docs/sso.md);
+  network roles and permissions, see [docs/roles.md](docs/roles.md).
 - **Next for SSO:** linking an extra provider from account settings; SAML single logout.
 - **Phase 4, IRC SASL:** Anope/UnrealIRCd bridge calling `/internal/v1/verify-password`.
 
