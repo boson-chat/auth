@@ -35,18 +35,21 @@ const (
 	EventAdminInviteRevoked   = "admin_invite_revoked"
 	EventKeyCreated           = "signing_key_created"
 	EventSettingsUpdated      = "settings_updated"
-	EventAdminResetSent       = "admin_password_reset_sent"
-	EventAdminVerifySent      = "admin_verification_sent"
-	EventSSOLinked            = "sso_identity_linked"
-	EventSSOUnlinked          = "sso_identity_unlinked"
-	EventSSOFailed            = "sso_login_failed"
-	EventSSOProviderCreated   = "sso_provider_created"
-	EventSSOProviderUpdated   = "sso_provider_updated"
-	EventSSOProviderDeleted   = "sso_provider_deleted"
-	EventRoleCreated          = "role_created"
-	EventRoleUpdated          = "role_updated"
-	EventRoleDeleted          = "role_deleted"
-	EventUserRolesChanged     = "user_roles_changed"
+	// EventConfigReloaded: the stack config file changed (meta: actor
+	// "config file", changed keys).
+	EventConfigReloaded     = "config_reloaded"
+	EventAdminResetSent     = "admin_password_reset_sent"
+	EventAdminVerifySent    = "admin_verification_sent"
+	EventSSOLinked          = "sso_identity_linked"
+	EventSSOUnlinked        = "sso_identity_unlinked"
+	EventSSOFailed          = "sso_login_failed"
+	EventSSOProviderCreated = "sso_provider_created"
+	EventSSOProviderUpdated = "sso_provider_updated"
+	EventSSOProviderDeleted = "sso_provider_deleted"
+	EventRoleCreated        = "role_created"
+	EventRoleUpdated        = "role_updated"
+	EventRoleDeleted        = "role_deleted"
+	EventUserRolesChanged   = "user_roles_changed"
 )
 
 type AuditServiceImpl interface {

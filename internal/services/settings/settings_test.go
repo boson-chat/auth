@@ -201,3 +201,43 @@ func TestGuestAccessSetting(t *testing.T) {
 		t.Fatalf("audit diff: old=%v new=%v", oldV, newV)
 	}
 }
+
+func TestFileMode(t *testing.T) {
+	s, repo, spy, _ := newSvc(time.Hour)
+	// A database override exists from before the config file.
+	if _, err := s.Update(t.Context(), "usr_admin", Patch{Registration: ptr("closed")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(t.Context()); got.Source != SourceDB || got.Registration != "closed" {
+		t.Fatalf("%+v", got)
+	}
+	file := config.AccountConfig{Registration: "open", RequireEmailVerification: false, ChannelCreation: "admins",
+		VoiceChannelCreation: "registered", ChannelAutoRegister: false, ChannelExpiryDays: 9, GuestAccess: false}
+	s.SetFile(&file)
+	file.Registration = "invite" // SetFile copies
+	reads := repo.reads
+	got, err := s.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The file wins over network_settings; no database read.
+	if got.Source != SourceFile || got.Registration != "open" || got.RequireEmailVerification || got.ChannelCreation != "admins" ||
+		got.VoiceChannelCreation != "registered" || got.ChannelAutoRegister || got.ChannelExpiryDays != 9 || got.GuestAccess {
+		t.Fatalf("%+v", got)
+	}
+	if repo.reads != reads {
+		t.Fatal("file mode must not read the database")
+	}
+	_, err = s.Update(t.Context(), "usr_admin", Patch{Registration: ptr("closed")})
+	if e, ok := apperr.As(err); !ok || e.Status != 409 || e.Code != "managed_by_config_file" {
+		t.Fatalf("want 409 managed_by_config_file, got %v", err)
+	}
+	if len(spy.events) != 1 {
+		t.Fatal("a refused update is not audited", spy.events)
+	}
+	// Back to database mode (file removed): the stored override applies again at once.
+	s.SetFile(nil)
+	if got, _ := s.Get(t.Context()); got.Source != SourceDB || got.Registration != "closed" {
+		t.Fatalf("%+v", got)
+	}
+}

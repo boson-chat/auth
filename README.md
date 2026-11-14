@@ -106,8 +106,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
 | `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, updated_at, updated_by}` |
-| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, updated_at, updated_by, source}`; `source` is `file` (stack config file) or `db` |
+| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; `409 managed_by_config_file` while the [stack config file](#stack-config-file) is in use; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 | `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
 | `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
 | `POST /v1/admin/roles`, `PATCH /v1/admin/roles/{id}` | `roles.manage` | `{name, color?, position?, permissions?, irc?: {whois_line?, vhost?, oper?}, hoist?, mentionable?}` → 201 / 200 `{role}` |
@@ -122,6 +122,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /healthz`, `GET /readyz`, `GET /version` | as above |
 | `GET /metrics` | Prometheus exposition |
 | `GET /internal/v1/settings` | header `X-Internal-Token`; the [network settings](#network-settings) object (same as `GET /v1/admin/settings`). For Ergo and quicvoiced. |
+| `GET /internal/config/status` | no token; the [stack config file](#stack-config-file) status → `{path, loaded_at, file_mtime, ok, error?, error_line?, error_column?, restart_required: []}` plus `enabled` (false without `BOSON_CONFIG`) and `present`; `loaded_at` is null while the file has been invalid since start-up, `file_mtime` null while it is missing. For the admin panel. |
 | `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?, irc?: {oper_class, whois_line, vhost}, roles?, permissions?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`; `irc`/`roles`/`permissions` on success). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
 | `GET /internal/v1/roles` | every role with its Ergo oper class, WHOIS line, vhost template and capabilities → `{version, roles}`; `ETag` = version, `If-None-Match` → 304 ([Ergo integration](docs/roles.md#ergo-integration)) |
 | `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
@@ -160,6 +161,58 @@ caches the row for `SETTINGS_CACHE_TTL` (5 s); the replica that handled the
 PATCH sees it at once. auth only enforces the first two; the channel settings
 are published for the IRC and voice services (`GET /internal/v1/settings`,
 cache them a few seconds too) and for clients (`GET /v1/config`).
+
+With the [stack config file](#stack-config-file) the same seven settings come
+from its `auth:` section instead (`source: "file"`, `updated_at` / `updated_by`
+`null`), `network_settings` is ignored and `PATCH` answers `409`.
+
+### Stack config file
+
+`BOSON_CONFIG=/config/boson.yaml` points at the boson stack's shared,
+non-secret config file. auth reads its `network:` and `auth:` sections (other
+sections are ignored) and, while the file exists, they are the source of
+truth: **file > env > built-in default**. A key that is absent (or `null`)
+falls back to the env value, so removing a key resets it. Without
+`BOSON_CONFIG`, or while the file does not exist, auth behaves exactly as
+without it (env + `network_settings`).
+
+```yaml
+version: 1
+network:
+  name: Boson                       # SITE_NAME: product name in emails
+auth:
+  registration: open                # open | invite | closed
+  require_email_verification: true
+  guest_access: true
+  channel_creation: registered      # registered | admins
+  voice_channel_creation: founders  # admins | founders | registered
+  channel_auto_register: true
+  channel_expiry_days: 0            # 0..3650, 0 = never
+  cors_allowed_origins: [https://app.example.com]   # CORS_ALLOWED_ORIGINS ([] = none)
+  smtp: { host: smtp.example.com, port: 587, from: "Boson <hi@example.com>", tls: starttls }
+```
+
+`SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
+in the file are rejected). auth watches the file's directory (fsnotify, so an
+atomic tmp-file + rename write is seen) and polls its mtime every
+`BOSON_CONFIG_POLL` (10 s). Mount the **directory** (`./config:/config:ro`),
+not the single file: a bind-mounted file keeps pointing at the old inode
+after a rename. Every key applies live, without a restart, including
+CORS origins (and the SSO `return_to` web origins derived from them) and the
+SMTP mailer; `restart_required` is always empty. A reload that changes auth's
+keys is audited as `config_reloaded` (`meta: {actor: "config file", changed:
+[keys]}`; switching between file and database mode also sets `meta.mode`).
+
+An invalid file (YAML error, unknown value, wrong type) is logged with its line
+and column and reported by `GET /internal/config/status`; the last good config
+stays in use. At start-up there is no last good config: auth then runs on
+the env values and `network_settings` (as without the file), the status shows
+the error with `loaded_at: null`, and the first valid version is applied live. Unknown keys in `network:` / `auth:` are logged and
+ignored.
+
+Moving an existing install to the file: `auth export-config` prints the
+`network:` and `auth:` sections built from the env and `network_settings`;
+merge them into `config/boson.yaml`.
 
 ### Audit log API
 
@@ -343,13 +396,15 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `ENV` | `development` | `development` = console logs; anything else = JSON |
 | `VERSION` | `dev` | reported in logs and metrics (set by the image) |
 | `LOG_LEVEL` | `info` | zerolog level |
-| `SITE_NAME` | `boson` | product name in emails |
+| `BOSON_CONFIG` | – | path of the [stack config file](#stack-config-file); its values win over the env variables marked *file* below |
+| `BOSON_CONFIG_POLL` | `10s` | mtime poll interval for the config file (besides fsnotify) |
+| `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |
 | `PUBLIC_URL` | `http://localhost:8080` | external URL of this service; `jwks_uri` is built from it |
 | `APP_URL` | `PUBLIC_URL` | base of email links: `$APP_URL/verify-email#token=…`, `$APP_URL/reset-password#token=…` |
 | `TRUSTED_PROXIES` | – | comma-separated CIDRs/IPs whose `X-Forwarded-For` is honoured (e.g. the Caddy container network) |
-| `CORS_ALLOWED_ORIGINS` | origin of `APP_URL` | comma-separated origins allowed to make credentialed requests |
+| `CORS_ALLOWED_ORIGINS` | origin of `APP_URL` | comma-separated origins allowed to make credentialed requests (*file*: `auth.cors_allowed_origins`) |
 | `COOKIE_SECURE` | `true` | set `false` only for plain-http dev |
 | `COOKIE_DOMAIN` | – | cookie `Domain`; empty = host-only |
 | `DATABASE_URL` | – | `postgres://…`; wins over the `DB_*` parts |
@@ -364,21 +419,21 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `KEY_ROTATION` | `720h` | signing-key lifetime |
 | `KEY_PUBLISH_LEAD` | `15m` | publish new keys this long before they sign (keep above JWKS cache time) |
 | `AUTH_KEY_ENCRYPTION_KEY` | **required** | 32 random bytes, base64 (`auth keys gen-kek`) |
-| `REGISTRATION` | `open` | default for the `registration` network setting: `open` \| `invite` \| `closed` |
-| `REQUIRE_EMAIL_VERIFICATION` | `true` | default for `require_email_verification`: block password login (and SASL) until the email is verified |
-| `CHANNEL_CREATION` | `registered` | default for `channel_creation`: `registered` \| `admins` |
-| `VOICE_CHANNEL_CREATION` | `founders` | default for `voice_channel_creation`: `admins` \| `founders` \| `registered` |
-| `CHANNEL_AUTO_REGISTER` | `true` | default for `channel_auto_register`: IRC registers new channels to their creator |
-| `CHANNEL_EXPIRY_DAYS` | `0` | default for `channel_expiry_days`: 0–3650, days of inactivity before IRC unregisters a channel (`0` = never) |
-| `GUEST_ACCESS` | `true` | default for `guest_access`: IRC lets people connect without an account; `false` = SASL login required |
+| `REGISTRATION` | `open` | default for the `registration` network setting: `open` \| `invite` \| `closed` (*file*: `auth.registration`) |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` | default for `require_email_verification`: block password login (and SASL) until the email is verified (*file*: `auth.require_email_verification`) |
+| `CHANNEL_CREATION` | `registered` | default for `channel_creation`: `registered` \| `admins` (*file*: `auth.channel_creation`) |
+| `VOICE_CHANNEL_CREATION` | `founders` | default for `voice_channel_creation`: `admins` \| `founders` \| `registered` (*file*: `auth.voice_channel_creation`) |
+| `CHANNEL_AUTO_REGISTER` | `true` | default for `channel_auto_register`: IRC registers new channels to their creator (*file*: `auth.channel_auto_register`) |
+| `CHANNEL_EXPIRY_DAYS` | `0` | default for `channel_expiry_days`: 0–3650, days of inactivity before IRC unregisters a channel (`0` = never) (*file*: `auth.channel_expiry_days`) |
+| `GUEST_ACCESS` | `true` | default for `guest_access`: IRC lets people connect without an account; `false` = SASL login required (*file*: `auth.guest_access`) |
 | `SETTINGS_CACHE_TTL` | `5s` | how long a replica caches the network settings |
 | `ACCOUNT_SETUP_TTL` | `72h` | lifetime of the "choose your password" link for admin-created accounts |
 | `EMAIL_VERIFY_TTL` | `24h` | |
 | `PASSWORD_RESET_TTL` | `30m` | |
 | `ARGON2_MEMORY_KIB` / `ARGON2_ITERATIONS` / `ARGON2_PARALLELISM` | `65536` / `3` / `2` | argon2id cost for new hashes; old hashes upgrade on next login |
-| `SMTP_HOST` | – | empty = log links instead of sending (dev only) |
+| `SMTP_HOST` | – | empty = log links instead of sending (dev only) (*file*: `auth.smtp.host`; likewise `SMTP_PORT`, `SMTP_FROM`, `SMTP_TLS` → `auth.smtp.port` / `from` / `tls`) |
 | `SMTP_PORT` | `587` | |
-| `SMTP_USER` / `SMTP_PASSWORD` | – | auth is used when `SMTP_USER` is set |
+| `SMTP_USER` / `SMTP_PASSWORD` | – | auth is used when `SMTP_USER` is set; env only, never in the config file |
 | `SMTP_FROM` | `boson <no-reply@localhost>` | |
 | `SMTP_TLS` | `starttls` | `starttls` (required) \| `tls` (implicit, 465) \| `none` (dev, e.g. Mailpit) |
 | `INTERNAL_API_TOKEN` | – | shared secret for `/internal/v1/*`; empty disables it |
@@ -429,6 +484,7 @@ auth user set-roles <user> [role name or id ...]   replace a user's roles (none 
 auth role list
 auth keys list | rotate [--now] | gen-kek
 auth invite create [--uses N] [--ttl 168h] [--note ..] | list | revoke <id>
+auth export-config                           print network:/auth: YAML for config/boson.yaml from env + database
 ```
 
 In the container: `docker compose exec auth ./auth user create --username admin --role owner`.
@@ -527,6 +583,8 @@ internal/services/idp/*      SSO provider kinds (oidc, saml) and registry
 internal/services/sso        SSO flow, linking, code exchange, provider admin
 internal/services/roles      roles, permissions, hierarchy, IRC oper class / vhost
 internal/services/ircaccounts removed-accounts feed for IRC (deleted / disabled)
+internal/services/stackconfig applies the stack config file live (BOSON_CONFIG)
+internal/configfile          config file parsing (line/column errors) + watcher
 internal/perm                the permission catalog
 internal/{nick,password,keycrypt,ratelimit,opaque,ids,mailer,...}
 metrics/                     OpenTelemetry instruments + Prometheus exporter

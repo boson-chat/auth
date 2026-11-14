@@ -9,6 +9,7 @@ import (
 
 	"github.com/boson-chat/auth/config"
 	"github.com/boson-chat/auth/internal/apperr"
+	"github.com/boson-chat/auth/internal/configfile"
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/authn"
@@ -47,6 +48,8 @@ type Handlers struct {
 	Config      config.Config
 	// Ready reports whether dependencies (database) are reachable.
 	Ready func(ctx context.Context) error
+	// ConfigStatus reports the stack config file (nil: not configured).
+	ConfigStatus func() configfile.Status
 }
 
 type principalKey struct{}

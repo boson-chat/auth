@@ -44,6 +44,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
+	"github.com/boson-chat/auth/internal/services/stackconfig"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/boson-chat/auth/metrics"
 )
@@ -75,6 +76,8 @@ type App struct {
 	Roles    roles.RolesServiceImpl
 	// IRCAccounts is the removed-accounts feed for IRC.
 	IRCAccounts ircaccounts.IRCAccountsServiceImpl
+	// StackConfig applies the stack config file (BOSON_CONFIG).
+	StackConfig stackconfig.StackConfigServiceImpl
 	limits      *handlers.Limits
 }
 
@@ -95,11 +98,17 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	if m == nil {
 		m = metrics.Noop()
 	}
+	// The SMTP mailer is rebuilt when the config file's smtp keys change;
+	// an injected (test) mailer stays as it is.
+	var swapMailer *mailer.Swappable
 	mail := opts.Mailer
 	if mail == nil {
-		if mail, err = mailer.New(cfg.SMTPConfig); err != nil {
+		smtp, err := mailer.New(cfg.SMTPConfig)
+		if err != nil {
 			return nil, err
 		}
+		swapMailer = mailer.NewSwappable(smtp)
+		mail = swapMailer
 	}
 	hasher, err := password.NewHasher(password.Params{
 		MemoryKiB: cfg.PasswordConfig.MemoryKiB, Iterations: cfg.PasswordConfig.Iterations, Parallelism: cfg.PasswordConfig.Parallelism,
@@ -190,13 +199,21 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	if err := ssoService.Reload(ctx); err != nil {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
 	}
+	stackConfig := stackconfig.NewStackConfigService(stackconfig.Deps{
+		Env: cfg, Settings: settingsService, Email: emailService, Mailer: swapMailer, ReturnTo: returnTo,
+		Audit: auditService, Now: opts.Now,
+	})
+	if err := stackConfig.Load(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("config file %s: %w", cfg.AppConfig.ConfigFile, err)
+	}
 
 	// 4. Handlers
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
-		Limits: limits, Config: cfg,
+		Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
@@ -215,18 +232,19 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		DB:     database,
 		Public: middleware.Chain(publicMux,
 			middleware.Recover, middleware.ClientIP(trusted), middleware.Logging,
-			middleware.SecurityHeaders, middleware.CORS(config.SplitList(cfg.HTTPConfig.CORSAllowedOrigins))),
+			middleware.SecurityHeaders, middleware.DynamicCORS(stackConfig.CORSOrigins)),
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
-		IRCAccounts: ircAccountsService, limits: limits,
+		IRCAccounts: ircAccountsService, StackConfig: stackConfig, limits: limits,
 	}, nil
 }
 
 // RunBackground starts key maintenance, rate-limiter pruning and cleanup.
 func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
+	go a.StackConfig.Run(ctx)
 	a.limits.RunPruner(ctx)
 	// Pick up provider changes made on other replicas.
 	go func() {
