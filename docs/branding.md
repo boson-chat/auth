@@ -122,11 +122,63 @@ Variables: `{{network}}` (network.name / SITE_NAME), `{{username}}`,
 braces are allowed (`{{ link }}`); anything else in braces stays as typed.
 
 The body is plain text: blank lines separate paragraphs, single line breaks
-are kept, `http(s)://` URLs become links, and a paragraph that is only
-`{{link}}` becomes the action button ("Verify email", "Choose a new
-password", …). All template text and every value is HTML-escaped, so a
-template can't inject markup. The plain-text part is the body with the
-variables filled in, then `-- ` and the footer.
+are kept, `http(s)://` URLs become links (no other scheme is ever a link),
+and a paragraph that is only `{{link}}` becomes the action button ("Verify
+email", "Choose a new password", …). All template text and every value is
+HTML-escaped, so a template can't inject markup. The plain-text part is the
+body with the variables filled in, then `-- ` and the footer.
+
+### Layout (MJML)
+
+With `auth.email` present, the HTML part is built from
+[`templates/layout.mjml`](../internal/services/email/templates/layout.mjml)
+with [MJML](https://mjml.io/). It is compiled at build time, not by the
+server: `go generate ./internal/services/email` runs
+[`gen`](../internal/services/email/gen/main.go), which compiles it with
+[mjml-go](https://github.com/Boostport/mjml-go) (MJML as WebAssembly on
+wazero: pure Go, no Node), into `templates/compiled/layout.html` and
+`layout-footer.html`. Those are committed and embedded. CI regenerates them
+and fails on any difference, and checks that the server binary doesn't
+link mjml-go. MJML produces the table layout and Outlook conditional
+comments that Gmail, Outlook and Apple Mail need.
+
+After editing `layout.mjml` (or the palette in `layout.go`), run
+`go generate ./internal/services/email` and commit the compiled files with
+it.
+
+- 600 px wide card on a soft grey page; 4 px accent bar on top; logo
+  (40 px high, at most 240 px wide, with explicit `width`/`height` for
+  Outlook) or the sender name as text; the button in the accent colour,
+  its label white or near-black, whichever contrasts more; small centred
+  footer; system font stack (no web fonts); a hidden inbox preview line
+  (the start of the body, without the link).
+- Dark mode: `color-scheme: light dark`, and `prefers-color-scheme: dark`
+  rules (Apple Mail, iOS Mail; `[data-ogsc]` / `[data-ogsb]` for
+  Outlook.com) switch to a dark page and card with light text. Gmail's
+  apps invert on their own; the light colours are chosen to survive that.
+- The logo is the wordmark, else the mark; PNG / JPEG / GIF before WebP
+  (Outlook for Windows shows no WebP) before SVG (Gmail and Outlook show
+  no SVG).
+
+**Performance.** When the email service starts, the two compiled variants
+(with and without a footer) are cut into an HTML skeleton with slots (under
+1 ms). Sending or previewing an email only fills the slots: about 10 µs per
+email (`go test -bench Preview ./internal/services/email`). Config reloads
+change nothing in the skeleton: the accent, logo, sender name, footer and
+wording are all slot values.
+
+**Escaping.** Nothing user-supplied is ever given to MJML. Each slot has
+one rule, applied when it is filled: text (subject, button label, preview
+line) is HTML-escaped; URLs (button, logo) must be `http(s)` and are escaped
+(anything else becomes `#` / no logo); colours must be `#rrggbb`; and the
+body, header and footer slots take only HTML this package built from
+escaped text.
+
+**Goldens.** `internal/services/email/testdata/legacy` is the built-in
+emails (byte for byte); `testdata/branded` is the MJML layout. After an
+intended layout change: `go test ./internal/services/email -run Golden
+-update`, and look at the samples (`EMAIL_SAMPLES_DIR=/tmp/x go test
+./internal/services/email -run WriteSamples` writes them as HTML files).
 
 ## Admin endpoints (internal listener)
 
@@ -134,12 +186,56 @@ Both need `Authorization: Bearer <access token>` of a user with
 `settings.manage` (like `PATCH /v1/admin/settings`), on the internal
 listener (`AUTH_INTERNAL_URL`); they are not on the public listener.
 
-`POST /internal/email/preview` `{template, subject?, body?}` →
-`{subject, html, text}`: the email as it would be sent now, with sample
-values (the caller's username as `username` and `inviter`, a placeholder
-link, the real TTL). `subject` / `body` try unsaved wording. Without
-`auth.email` and without overrides it is the built-in email. 400
-`invalid_request` for an unknown template or invalid subject / body.
+`POST /internal/email/preview` renders an email as it would be sent now,
+with sample values (the caller's username as `username` and `inviter`, a
+placeholder link, the real TTL), and lets the admin panel try unsaved
+values while the admin types:
+
+```json
+{
+  "template": "verification",
+  "subject": "Confirm your {{network}} account",
+  "body": "Hi {{username}},\n\n{{link}}\n\nExpires in {{expires}}.",
+  "email": { "sender_name": "Example Chat", "accent": "#7c3aed", "footer": "Example Chat · https://example.com", "logo": true }
+}
+```
+
+Only `template` is required. Every other field, and every field of
+`email`, is optional: a missing one is the saved value (`auth.email`, or
+Boson's default). In `email`, `""` means the default (no sender name, the
+default accent, no footer), like leaving the key out of the file. Without
+`auth.email` and without any override it is the built-in email; any
+override (wording or `email`) uses the branded layout.
+
+```json
+{
+  "subject": "Confirm your Example Chat account",
+  "html": "<!doctype html>…",
+  "text": "Hi alice,\n\nhttps://…\n\nExpires in 24 hours.\n\n-- \nExample Chat · https://example.com\n",
+  "from": "\"Example Chat\" <no-reply@example.com>"
+}
+```
+
+`from` is the From: header the email gets (`SMTP_FROM` with `sender_name`
+as display name).
+
+Values are checked with the config file's rules and normalised the same
+way (`sender_name` / `footer` trimmed, `accent` lower case). An invalid one
+is 400 `invalid_request` naming the field:
+
+```json
+{ "error": "invalid_request", "code": "invalid_request", "field": "email.accent", "message": "email.accent must be a #rrggbb colour, got \"blue\"" }
+```
+
+(`field` is one of `subject`, `body`, `email.sender_name`, `email.accent`,
+`email.footer`; an unknown template is a 400 without `field`.)
+
+Meant to be called on every (debounced) keystroke: rate-limited per admin
+at a burst of 60, then 5 a second (429 with `Retry-After`), and answers for
+identical inputs (template, wording, effective settings, network name,
+logo, sender address, username) come from a small in-memory cache. A
+preview takes about 10 µs to render (under 1 µs from the cache); the
+request as a whole is a few milliseconds, mostly the access-token check.
 
 `POST /internal/email/test` `{template, to}` → `{status, to, subject}`
 sends that email (subject prefixed `[Test] `) with the same sample values

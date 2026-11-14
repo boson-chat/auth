@@ -1,8 +1,9 @@
 // Package email sends the verification, password-reset and account-setup
 // emails. Without auth.email in the stack config file they are Boson's
-// built-in templates (templates/*); with it, every email is rendered from
+// built-in templates (templates/*.html|txt); with it, every email is rendered from
 // plain text (Boson's wording or the file's per-template subject / body
-// with {{variables}}) into the branded layout (render.go).
+// with {{variables}}) into the branded MJML layout (render.go, layout.go;
+// templates/layout.mjml, compiled by go generate into templates/compiled).
 //
 // Links carry the token in the URL fragment (#token=...), which browsers
 // never send to servers, so it stays out of access logs and Referer headers.
@@ -65,9 +66,9 @@ type EmailServiceImpl interface {
 	// SetConfig applies auth.email from the stack config file; nil means
 	// Boson's built-in emails (byte for byte as without the file).
 	SetConfig(c *config.EmailConfig)
-	// Preview renders template with sample values for username (the admin
-	// asking) and optional unsaved subject / body.
-	Preview(ctx context.Context, template, username string, over *config.EmailTemplate) (Rendered, error)
+	// Preview renders in.Template with sample values for username (the
+	// admin asking) and optional unsaved wording and email settings.
+	Preview(ctx context.Context, username string, in PreviewInput) (Rendered, error)
 	// SendTest sends template with sample values to `to`, waits for the
 	// mail server's answer and audits it (email_test_sent) as actorID.
 	SendTest(ctx context.Context, actorID, template, username, to string) (Rendered, error)
@@ -79,10 +80,14 @@ type EmailServiceImpl interface {
 type Options struct {
 	AppURL   string // link base
 	SiteName string
-	// Logo returns the branding logo URL for emails (auth.email.logo).
-	Logo func() string
+	// Logo returns the branding logo for emails (auth.email.logo).
+	Logo func() Logo
 	// TTLs of the links, for the sample values of previews and tests.
 	VerifyTTL, ResetTTL, SetupTTL, InviteTTL time.Duration
+	// From is SMTP_FROM for previews when the mailer doesn't say (an
+	// injected mailer); the SMTP and log mailers report their own, which
+	// follows config file reloads.
+	From string
 	// Audit records test sends (nil: not audited).
 	Audit audit.AuditServiceImpl
 }
@@ -94,15 +99,21 @@ type EmailService struct {
 	// siteName is opts.SiteName, replaceable at runtime (SetSiteName).
 	siteName atomic.Pointer[string]
 	cfg      atomic.Pointer[config.EmailConfig]
+	previews *previewCache
 	wg       sync.WaitGroup
 }
 
 func NewEmailService(m mailer.Mailer, met *metrics.Metrics, opts Options) EmailServiceImpl {
 	if opts.Logo == nil {
-		opts.Logo = func() string { return "" }
+		opts.Logo = func() Logo { return Logo{} }
 	}
-	s := &EmailService{Mailer: m, Metrics: met, opts: opts}
+	s := &EmailService{Mailer: m, Metrics: met, opts: opts, previews: newPreviewCache(previewCacheSize)}
 	s.SetSiteName(opts.SiteName)
+	// Compile the MJML layout now (once per process), not on the first
+	// email; an error here resurfaces on every branded render.
+	if _, err := layouts(); err != nil {
+		logger.FromCtx(context.Background()).Error().Err(err).Msg("email layout")
+	}
 	return s
 }
 
@@ -158,8 +169,7 @@ func (s *EmailService) SendAccountSetup(ctx context.Context, u *user.User, token
 
 // render builds an email: Boson's built-in templates while auth.email is
 // absent (and nothing is overridden), otherwise the branded layout.
-func (s *EmailService) render(tpl template, v Vars, over *config.EmailTemplate) (Rendered, error) {
-	cfg := s.cfg.Load()
+func (s *EmailService) render(tpl template, v Vars, cfg *config.EmailConfig, over *config.EmailTemplate) (Rendered, error) {
 	if cfg == nil && over == nil && tpl.legacy != "" {
 		return legacy(tpl, v)
 	}
@@ -201,7 +211,7 @@ func (s *EmailService) sendUser(ctx context.Context, u *user.User, tpl template,
 	if to == "" {
 		return
 	}
-	r, err := s.render(tpl, Vars{Network: s.site(), Username: u.Username, Link: link, Expires: humanize(ttl)}, nil)
+	r, err := s.render(tpl, Vars{Network: s.site(), Username: u.Username, Link: link, Expires: humanize(ttl)}, s.cfg.Load(), nil)
 	if err != nil {
 		logger.FromCtx(ctx).Error().Err(err).Msg("email template")
 		return
@@ -245,31 +255,6 @@ func (s *EmailService) sample(name, username string) (template, Vars, error) {
 	return tpl, v, nil
 }
 
-func (s *EmailService) Preview(_ context.Context, name, username string, over *config.EmailTemplate) (Rendered, error) {
-	tpl, v, err := s.sample(name, username)
-	if err != nil {
-		return Rendered{}, err
-	}
-	if over != nil {
-		for field, p := range map[string]*string{"subject": over.Subject, "body": over.Body} {
-			if p == nil {
-				continue
-			}
-			check := config.CheckSubject
-			if field == "body" {
-				check = config.CheckBody
-			}
-			if msg := check(*p); msg != "" {
-				return Rendered{}, apperr.Invalid(field + " " + msg)
-			}
-		}
-		if over.Subject == nil && over.Body == nil {
-			over = nil
-		}
-	}
-	return s.render(tpl, v, over)
-}
-
 func (s *EmailService) SendTest(ctx context.Context, actorID, name, username, to string) (Rendered, error) {
 	tpl, v, err := s.sample(name, username)
 	if err != nil {
@@ -278,7 +263,7 @@ func (s *EmailService) SendTest(ctx context.Context, actorID, name, username, to
 	if a, err := netmail.ParseAddress(to); err != nil || a.Address != to || len(to) > 254 {
 		return Rendered{}, apperr.Invalid("to must be an email address such as admin@example.com")
 	}
-	r, err := s.render(tpl, v, nil)
+	r, err := s.render(tpl, v, s.cfg.Load(), nil)
 	if err != nil {
 		return Rendered{}, err
 	}

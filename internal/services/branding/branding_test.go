@@ -132,20 +132,32 @@ func TestETagFollowsContent(t *testing.T) {
 func TestEmailLogoFallsBackToSVG(t *testing.T) {
 	dir := dirWith(t, map[string][]byte{"logo.svg": svg, "wide.svg": svg})
 	snap, _ := Prepare(cfg("logo", "logo.svg"), dir, pub)
-	if !strings.Contains(snap.emailLogo, "logo.svg") {
-		t.Fatal(snap.emailLogo)
+	if !strings.Contains(snap.emailLogo.URL, "logo.svg") {
+		t.Fatal(snap.emailLogo.URL)
 	}
 	snap, _ = Prepare(cfg("logo", "logo.svg", "logo_wide", "wide.svg"), dir, pub)
-	if !strings.Contains(snap.emailLogo, "wide.svg") {
-		t.Fatal(snap.emailLogo)
+	if !strings.Contains(snap.emailLogo.URL, "wide.svg") {
+		t.Fatal(snap.emailLogo.URL)
 	}
 	dir = dirWith(t, map[string][]byte{"logo.png": pngBytes(t), "wide.svg": svg})
 	snap, _ = Prepare(cfg("logo", "logo.png", "logo_wide", "wide.svg"), dir, pub)
-	if !strings.Contains(snap.emailLogo, "logo.png") {
-		t.Fatal("raster mark beats an SVG wordmark", snap.emailLogo)
+	if !strings.Contains(snap.emailLogo.URL, "logo.png") {
+		t.Fatal("raster mark beats an SVG wordmark", snap.emailLogo.URL)
+	}
+	if snap.emailLogo.Width != 8 || snap.emailLogo.Height != 8 {
+		t.Fatal("raster size", snap.emailLogo)
+	}
+	dir = dirWith(t, map[string][]byte{"logo.png": pngBytes(t), "wide.webp": webp})
+	snap, _ = Prepare(cfg("logo", "logo.png", "logo_wide", "wide.webp"), dir, pub)
+	if !strings.Contains(snap.emailLogo.URL, "logo.png") {
+		t.Fatal("PNG mark beats a WebP wordmark (Outlook shows no WebP)", snap.emailLogo.URL)
+	}
+	snap, _ = Prepare(cfg("logo_wide", "wide.webp"), dir, pub)
+	if !strings.Contains(snap.emailLogo.URL, "wide.webp") || snap.emailLogo.Width != 1 {
+		t.Fatal("WebP when it is the only raster", snap.emailLogo)
 	}
 	snap, _ = Prepare(cfg("login_background", "logo.png"), dir, pub)
-	if snap.emailLogo != "" {
+	if snap.emailLogo != (EmailLogo{}) {
 		t.Fatal("no logo slot → no email logo")
 	}
 }

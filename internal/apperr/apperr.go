@@ -12,6 +12,8 @@ type Error struct {
 	Status  int
 	Code    string
 	Message string
+	// Field names the request field Message is about (400s), if one.
+	Field string
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -23,6 +25,14 @@ func New(status int, code, msg string) *Error {
 
 // Invalid is a 400 for a bad field value.
 func Invalid(msg string) *Error { return New(http.StatusBadRequest, "invalid_request", msg) }
+
+// InvalidField is a 400 about one request field: the message starts with
+// the field's name and the body carries it as "field".
+func InvalidField(field, msg string) *Error {
+	e := Invalid(field + " " + msg)
+	e.Field = field
+	return e
+}
 
 // As extracts an *Error.
 func As(err error) (*Error, bool) {

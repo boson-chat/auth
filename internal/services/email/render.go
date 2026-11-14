@@ -1,10 +1,8 @@
 package email
 
 import (
-	"bytes"
 	"fmt"
 	"html"
-	htmltemplate "html/template"
 	"regexp"
 	"strings"
 
@@ -45,6 +43,8 @@ type Rendered struct {
 	Subject string `json:"subject"`
 	HTML    string `json:"html"`
 	Text    string `json:"text"`
+	// From is the From: header (previews only).
+	From string `json:"from"`
 }
 
 // template describes one email kind.
@@ -122,12 +122,7 @@ func linkify(s, accent string) string {
 }
 
 func link(href, label, accent string) string {
-	return `<a href="` + html.EscapeString(href) + `" style="color:` + accent + `;word-break:break-all">` + html.EscapeString(label) + `</a>`
-}
-
-func button(href, label, accent string) string {
-	return `<a href="` + html.EscapeString(href) + `" style="display:inline-block;padding:.6rem 1.2rem;background:` + accent +
-		`;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">` + html.EscapeString(label) + `</a>`
+	return `<a href="` + html.EscapeString(href) + `" style="color:` + safeColor(accent, DefaultAccent) + `;word-break:break-all">` + html.EscapeString(label) + `</a>`
 }
 
 // paragraphs splits plain text on blank lines.
@@ -148,33 +143,43 @@ func paragraphs(s string) []string {
 	return out
 }
 
-// bodyHTML renders the template body: every paragraph a <p>, line breaks
-// kept, URLs in the text linkified, the action link ({{link}} alone in its
-// paragraph) a button. Template text and variable values are both escaped,
-// so the result contains no HTML from either.
-func bodyHTML(body string, v Vars, label, accent string) string {
-	var b strings.Builder
+// bodyBlocks renders the template body: every paragraph a <p>, line
+// breaks kept, http(s) URLs in the text linkified, and the action link
+// ({{link}} alone in its paragraph) a button row. Template text and
+// variable values are both escaped, so the result contains no HTML from
+// either. Consecutive paragraphs share one row.
+func bodyBlocks(body string, v Vars, label, accent string) []block {
+	var out []block
+	var run strings.Builder
+	flush := func() {
+		if run.Len() > 0 {
+			out = append(out, block{html: safeHTML(run.String())})
+			run.Reset()
+		}
+	}
 	for _, p := range paragraphs(body) {
-		if m := varRe.FindStringSubmatch(p); m != nil && m[0] == p && m[1] == "link" && v.Link != "" {
-			b.WriteString(`<p style="margin:1.4em 0">` + button(v.get("link"), label, accent) + "</p>\n")
+		if m := varRe.FindStringSubmatch(p); m != nil && m[0] == p && m[1] == "link" && isHTTP(v.get("link")) {
+			flush()
+			out = append(out, block{button: true, href: v.get("link"), label: label})
 			continue
 		}
-		b.WriteString(`<p style="margin:0 0 1em 0">`)
+		run.WriteString(`<p style="margin:0 0 16px 0">`)
 		last := 0
 		for _, loc := range varRe.FindAllStringSubmatchIndex(p, -1) {
-			b.WriteString(textHTML(p[last:loc[0]], accent))
+			run.WriteString(textHTML(p[last:loc[0]], accent))
 			name := p[loc[2]:loc[3]]
-			if val := v.get(name); name == "link" && val != "" {
-				b.WriteString(link(val, val, accent))
+			if val := v.get(name); name == "link" && isHTTP(val) {
+				run.WriteString(link(val, val, accent))
 			} else {
-				b.WriteString(html.EscapeString(val))
+				run.WriteString(html.EscapeString(val))
 			}
 			last = loc[1]
 		}
-		b.WriteString(textHTML(p[last:], accent))
-		b.WriteString("</p>\n")
+		run.WriteString(textHTML(p[last:], accent))
+		run.WriteString("</p>\n")
 	}
-	return b.String()
+	flush()
+	return out
 }
 
 // textHTML is linkify with line breaks.
@@ -189,36 +194,63 @@ func textHTML(s, accent string) string {
 // DefaultAccent is the button colour of Boson's built-in emails.
 const DefaultAccent = "#3b5bdb"
 
-var layout = htmltemplate.Must(htmltemplate.New("layout").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Subject}}</title></head>
-<body style="margin:0;padding:0;background:#f4f4f7">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f7"><tr><td align="center" style="padding:24px 12px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background:#ffffff;border-radius:8px;border-top:4px solid {{.Accent}}">
-<tr><td style="padding:24px 32px 8px 32px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
-{{- if .Logo}}<img src="{{.Logo}}" alt="{{.Name}}" height="40" style="display:block;height:40px;max-width:240px;border:0">{{else}}<span style="font-size:18px;font-weight:700;color:#111">{{.Name}}</span>{{end -}}
-</td></tr>
-<tr><td style="padding:8px 32px 24px 32px;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.55;color:#222">
-{{.Body}}</td></tr>
-</table>
-{{- if .Footer}}
-<p style="max-width:560px;margin:16px auto 0 auto;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.5;color:#777">{{.Footer}}</p>
-{{- end}}
-</td></tr></table>
-</body></html>
-`))
+// Logo is the branding logo for emails: URL "" = none; Width and Height
+// are its pixel size (0 when unknown, e.g. SVG).
+type Logo struct {
+	URL           string
+	Width, Height int
+}
 
-type layoutData struct {
-	Subject string
-	Accent  htmltemplate.CSS
-	Logo    string
-	Name    string
-	Body    htmltemplate.HTML
-	Footer  htmltemplate.HTML
+// Logo box in the header: at most 40 px high and 240 px wide.
+const (
+	logoMaxHeight = 40
+	logoMaxWidth  = 240
+)
+
+// headerHTML is the logo, or the sender name as text.
+func headerHTML(logo Logo, name string) safeHTML {
+	if !isHTTP(logo.URL) {
+		return safeHTML(`<span style="font-size:18px;font-weight:700;line-height:1.3;color:` + lightPalette.Heading + `">` + html.EscapeString(name) + `</span>`)
+	}
+	img := `<img src="` + html.EscapeString(logo.URL) + `" alt="` + html.EscapeString(name) + `"`
+	if logo.Width > 0 && logo.Height > 0 {
+		// Explicit width and height: Outlook ignores CSS sizes on images.
+		w, h := logo.Width*logoMaxHeight/logo.Height, logoMaxHeight
+		if w > logoMaxWidth {
+			w, h = logoMaxWidth, max(1, logo.Height*logoMaxWidth/logo.Width)
+		}
+		w = max(w, 1)
+		img += fmt.Sprintf(` width="%d" height="%d" style="display:block;width:%dpx;height:%dpx;max-width:100%%;border:0;outline:none;text-decoration:none">`, w, h, w, h)
+	} else {
+		img += fmt.Sprintf(` height="%d" style="display:block;height:%dpx;width:auto;max-width:%dpx;border:0;outline:none;text-decoration:none">`, logoMaxHeight, logoMaxHeight, logoMaxWidth)
+	}
+	return safeHTML(img)
+}
+
+// previewLine is the inbox preview: the start of the text without the
+// action link (it is the button), one line.
+func previewLine(body string, v Vars) string {
+	var parts []string
+	for _, p := range paragraphs(body) {
+		if m := varRe.FindStringSubmatch(p); m != nil && m[0] == p && m[1] == "link" {
+			continue
+		}
+		parts = append(parts, substitute(p, v))
+	}
+	s := strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+	if r := []rune(s); len(r) > 140 {
+		s = strings.TrimSpace(string(r[:139])) + "…"
+	}
+	return s
 }
 
 // branded renders tpl (with overrides from cfg and over) into the branded
-// layout. logo is the logo URL ("" = the sender name as text).
-func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, v Vars, logo string) (Rendered, error) {
+// MJML layout. logo.URL "" = the sender name as text.
+func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, v Vars, logo Logo) (Rendered, error) {
+	sks, err := layouts()
+	if err != nil {
+		return Rendered{}, err
+	}
 	subject, body := tpl.subject, tpl.body
 	if cfg != nil {
 		if t, ok := cfg.Templates[tpl.name]; ok {
@@ -248,28 +280,25 @@ func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, 
 		}
 		footer = substitute(cfg.Footer, v)
 		if !cfg.Logo {
-			logo = ""
+			logo = Logo{}
 		}
 	}
+	accent = safeColor(accent, DefaultAccent)
 	r := Rendered{Subject: strings.Join(strings.Fields(substitute(subject, v)), " ")}
 	// Plain-text part: the body with the variables filled in.
 	text := strings.Join(paragraphs(substitute(body, v)), "\n\n") + "\n"
-	if footer != "" {
-		text += "\n-- \n" + footer + "\n"
-	}
 	r.Text = text
-	var footerHTML string
 	if footer != "" {
-		footerHTML = textHTML(footer, accent)
+		r.Text += "\n-- \n" + footer + "\n"
 	}
-	var buf bytes.Buffer
-	err := layout.Execute(&buf, layoutData{
-		Subject: r.Subject, Accent: htmltemplate.CSS(accent), Logo: logo, Name: name,
-		Body: htmltemplate.HTML(bodyHTML(body, v, tpl.button, accent)), Footer: htmltemplate.HTML(footerHTML),
-	})
-	if err != nil {
-		return Rendered{}, fmt.Errorf("email layout: %w", err)
+	p := page{
+		title: r.Subject, preview: previewLine(body, v), header: headerHTML(logo, name),
+		blocks: bodyBlocks(body, v, tpl.button, accent), accent: accent, onAccent: onAccent(accent),
 	}
-	r.HTML = buf.String()
+	sk := sks[0]
+	if footer != "" {
+		sk, p.footer = sks[1], safeHTML(textHTML(footer, accent))
+	}
+	r.HTML = sk.fill(p)
 	return r, nil
 }

@@ -165,7 +165,10 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	})
 	brandingService := branding.NewBrandingService(cfg.HTTPConfig.PublicURL)
 	emailService := email.NewEmailService(mail, m, email.Options{
-		AppURL: cfg.HTTPConfig.AppURL, SiteName: cfg.AppConfig.SiteName, Logo: brandingService.EmailLogoURL,
+		AppURL: cfg.HTTPConfig.AppURL, SiteName: cfg.AppConfig.SiteName, From: cfg.SMTPConfig.From, Logo: func() email.Logo {
+			l := brandingService.EmailLogo()
+			return email.Logo{URL: l.URL, Width: l.Width, Height: l.Height}
+		},
 		VerifyTTL: cfg.AccountConfig.EmailVerifyTTL, ResetTTL: cfg.AccountConfig.PasswordResetTTL,
 		SetupTTL: cfg.AccountConfig.AccountSetupTTL, InviteTTL: 7 * 24 * time.Hour, Audit: auditService,
 	})

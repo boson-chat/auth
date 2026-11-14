@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	netmail "net/mail"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,7 +33,7 @@ type Mailer interface {
 // New returns the SMTP mailer, or the log mailer when SMTP_HOST is empty.
 func New(cfg config.SMTPConfig) (Mailer, error) {
 	if cfg.Host == "" {
-		return LogMailer{}, nil
+		return LogMailer{From: cfg.From}, nil
 	}
 	return NewSMTP(cfg)
 }
@@ -93,9 +94,17 @@ func (s *SMTPMailer) Send(ctx context.Context, m Message) error {
 	return c.DialAndSendWithContext(ctx, msg)
 }
 
+// FromAddress is SMTP_FROM, the sender of every message.
+func (s *SMTPMailer) FromAddress() string { return s.cfg.From }
+
 // LogMailer writes the message (including its link) to the log. Dev only:
 // the link is a live credential.
-type LogMailer struct{}
+type LogMailer struct {
+	// From is SMTP_FROM (shown in previews; nothing is sent).
+	From string
+}
+
+func (l LogMailer) FromAddress() string { return l.From }
 
 func (LogMailer) Send(ctx context.Context, m Message) error {
 	logger.FromCtx(ctx).Warn().Str("to", m.To).Str("from_name", m.FromName).Str("subject", m.Subject).Str("link", m.Link).
@@ -123,3 +132,28 @@ func (s *Swappable) Set(m Mailer) { s.cur.Store(&m) }
 func (s *Swappable) Current() Mailer { return *s.cur.Load() }
 
 func (s *Swappable) Send(ctx context.Context, m Message) error { return s.Current().Send(ctx, m) }
+
+func (s *Swappable) FromAddress() string { return FromAddress(s.Current()) }
+
+// FromAddress returns m's SMTP_FROM ("" when m doesn't say).
+func FromAddress(m Mailer) string {
+	if f, ok := m.(interface{ FromAddress() string }); ok {
+		return f.FromAddress()
+	}
+	return ""
+}
+
+// FromHeader is the From: a message with display name name gets from a
+// mailer sending as from (SMTP_FROM): name replaces from's display name.
+func FromHeader(from, name string) string {
+	if name == "" || from == "" {
+		return from
+	}
+	addr, err := netmail.ParseAddress(from)
+	if err != nil {
+		return from
+	}
+	// Readable (not RFC 2047 encoded): this is for showing, not sending.
+	q := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name)
+	return `"` + q + `" <` + addr.Address + `>`
+}

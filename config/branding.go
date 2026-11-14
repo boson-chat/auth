@@ -123,6 +123,23 @@ func CheckBody(v string) string {
 	return ""
 }
 
+// CheckSenderName validates auth.email.sender_name (file or preview request).
+func CheckSenderName(v string) string { return checkLine(MaxSenderNameLen)(v) }
+
+// CheckAccent validates auth.email.accent.
+func CheckAccent(v string) string { return checkColor(v) }
+
+// CheckFooter validates auth.email.footer.
+func CheckFooter(v string) string {
+	if len([]rune(v)) > MaxFooterLen {
+		return fmt.Sprintf("must be at most %d characters", MaxFooterLen)
+	}
+	if strings.ContainsFunc(v, func(r rune) bool { return unicode.IsControl(r) && r != '\n' }) {
+		return "must not contain control characters"
+	}
+	return ""
+}
+
 func checkLine(maxLen int) func(string) string {
 	return func(v string) string {
 		if strings.ContainsFunc(v, unicode.IsControl) {
@@ -365,23 +382,15 @@ func loadEmail(auth *configfile.Section) (*EmailConfig, []string, error) {
 		return nil, nil, err
 	}
 	e := &EmailConfig{}
-	if err := stringKey(sec, "sender_name", &e.SenderName, checkLine(MaxSenderNameLen)); err != nil {
+	if err := stringKey(sec, "sender_name", &e.SenderName, CheckSenderName); err != nil {
 		return nil, nil, err
 	}
 	e.SenderName = strings.TrimSpace(e.SenderName)
-	if err := stringKey(sec, "accent", &e.Accent, checkColor); err != nil {
+	if err := stringKey(sec, "accent", &e.Accent, CheckAccent); err != nil {
 		return nil, nil, err
 	}
 	e.Accent = strings.ToLower(e.Accent)
-	if err := stringKey(sec, "footer", &e.Footer, func(v string) string {
-		if len([]rune(v)) > MaxFooterLen {
-			return fmt.Sprintf("must be at most %d characters", MaxFooterLen)
-		}
-		if strings.ContainsFunc(v, func(r rune) bool { return unicode.IsControl(r) && r != '\n' }) {
-			return "must not contain control characters"
-		}
-		return ""
-	}); err != nil {
+	if err := stringKey(sec, "footer", &e.Footer, CheckFooter); err != nil {
 		return nil, nil, err
 	}
 	e.Footer = strings.TrimSpace(e.Footer)
