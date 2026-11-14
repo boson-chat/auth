@@ -20,6 +20,11 @@ type PreviewInput struct {
 	Subject  *string
 	Body     *string
 	Email    *EmailOverrides
+	// LayoutHTML and HTML are unsaved compiled MJML: a layout, and this
+	// template's whole-email override. "" previews without (Boson's layout,
+	// no override).
+	LayoutHTML *string
+	HTML       *string
 }
 
 // EmailOverrides are unsaved auth.email settings.
@@ -127,6 +132,26 @@ func (s *EmailService) Preview(_ context.Context, username string, in PreviewInp
 		return Rendered{}, err
 	}
 	cfg := s.cfg.Load()
+	cu := s.customFor(cfg, tpl.name)
+	for _, f := range []struct {
+		field  string
+		src    *string
+		dst    **customDoc
+		layout bool
+	}{{"layout_html", in.LayoutHTML, &cu.layout, true}, {"html", in.HTML, &cu.tpl, false}} {
+		if f.src == nil {
+			continue
+		}
+		*f.dst = nil
+		if *f.src == "" {
+			continue
+		}
+		d, err := compileDoc(*f.src, f.layout)
+		if err != nil {
+			return Rendered{}, apperr.InvalidField(f.field, err.Error())
+		}
+		*f.dst = d
+	}
 	if email != nil {
 		cfg = email.apply(cfg)
 	}
@@ -135,11 +160,11 @@ func (s *EmailService) Preview(_ context.Context, username string, in PreviewInp
 	if from == "" {
 		from = s.opts.From
 	}
-	key := previewKey(tpl.name, v, cfg, over, logo, from)
+	key := previewKey(tpl.name, v, cfg, over, logo, from, cu)
 	if r, ok := s.previews.get(key); ok {
 		return r, nil
 	}
-	r, err := s.render(tpl, v, cfg, over)
+	r, err := s.render(tpl, v, cfg, over, cu)
 	if err != nil {
 		return Rendered{}, err
 	}
@@ -148,12 +173,17 @@ func (s *EmailService) Preview(_ context.Context, username string, in PreviewInp
 		name = cfg.SenderName
 	}
 	r.From = mailer.FromHeader(from, name)
-	s.previews.put(key, r)
+	if r.Warnings == nil {
+		r.Warnings = []string{}
+	}
+	if len(r.HTML) <= maxCachedPreview {
+		s.previews.put(key, r)
+	}
 	return r, nil
 }
 
 // previewKey hashes everything a preview depends on.
-func previewKey(name string, v Vars, cfg *config.EmailConfig, over *config.EmailTemplate, logo Logo, from string) [32]byte {
+func previewKey(name string, v Vars, cfg *config.EmailConfig, over *config.EmailTemplate, logo Logo, from string, cu custom) [32]byte {
 	h := sha256.New()
 	var n [8]byte
 	str := func(s string) {
@@ -174,6 +204,12 @@ func previewKey(name string, v Vars, cfg *config.EmailConfig, over *config.Email
 	binary.LittleEndian.PutUint32(n[:4], uint32(logo.Width))
 	binary.LittleEndian.PutUint32(n[4:], uint32(logo.Height))
 	h.Write(n[:])
+	for i, d := range []*customDoc{cu.layout, cu.tpl} {
+		if d != nil {
+			str([]string{"layout", "tpl"}[i])
+			h.Write(d.hash[:])
+		}
+	}
 	if over != nil {
 		str("over")
 		opt(over.Subject)
@@ -201,6 +237,10 @@ func previewKey(name string, v Vars, cfg *config.EmailConfig, over *config.Email
 // previewCacheSize bounds the cache: a few admins typing, a few hundred
 // recent states each at most ~20 KB.
 const previewCacheSize = 256
+
+// maxCachedPreview: larger previews (custom HTML) aren't cached, so the
+// cache stays a few MB.
+const maxCachedPreview = 64 << 10
 
 // previewCache is a fixed-size map with first-in-first-out eviction.
 type previewCache struct {

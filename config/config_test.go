@@ -84,3 +84,15 @@ func TestBrandingDirectory(t *testing.T) {
 		t.Fatal(d)
 	}
 }
+
+func TestEmailsDirectory(t *testing.T) {
+	if d := (AppConfig{ConfigFile: "/config/boson.yaml"}).EmailsDirectory(); d != "/config/emails" {
+		t.Fatal(d)
+	}
+	if d := (AppConfig{ConfigFile: "/config/boson.yaml", EmailsDir: "/srv/e"}).EmailsDirectory(); d != "/srv/e" {
+		t.Fatal(d)
+	}
+	if d := (AppConfig{}).EmailsDirectory(); d != "" {
+		t.Fatal(d)
+	}
+}

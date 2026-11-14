@@ -3,7 +3,9 @@
 // built-in templates (templates/*.html|txt); with it, every email is rendered from
 // plain text (Boson's wording or the file's per-template subject / body
 // with {{variables}}) into the branded MJML layout (render.go, layout.go;
-// templates/layout.mjml, compiled by go generate into templates/compiled).
+// templates/layout.mjml, compiled by go generate into templates/compiled),
+// or into an admin's own layout or whole-email HTML, compiled from MJML in
+// the admin panel (custom.go, files.go).
 //
 // Links carry the token in the URL fragment (#token=...), which browsers
 // never send to servers, so it stays out of access logs and Referer headers.
@@ -99,6 +101,8 @@ type EmailService struct {
 	// siteName is opts.SiteName, replaceable at runtime (SetSiteName).
 	siteName atomic.Pointer[string]
 	cfg      atomic.Pointer[config.EmailConfig]
+	// docs are cfg's custom HTML files, parsed (SetConfig).
+	docs     atomic.Pointer[docSet]
 	previews *previewCache
 	wg       sync.WaitGroup
 }
@@ -121,7 +125,59 @@ func NewEmailService(m mailer.Mailer, met *metrics.Metrics, opts Options) EmailS
 // the stack config file).
 func (s *EmailService) SetSiteName(name string) { s.siteName.Store(&name) }
 
-func (s *EmailService) SetConfig(c *config.EmailConfig) { s.cfg.Store(c) }
+func (s *EmailService) SetConfig(c *config.EmailConfig) {
+	s.docs.Store(compileSet(c))
+	s.cfg.Store(c)
+}
+
+// docSet is a config's custom HTML (auth.email.layout and the whole-email
+// overrides), parsed once.
+type docSet struct {
+	cfg    *config.EmailConfig
+	layout *customDoc
+	tpls   map[string]*customDoc
+}
+
+// custom is the custom HTML one email uses (nil: Boson's).
+type custom struct{ layout, tpl *customDoc }
+
+func (c custom) empty() bool { return c.layout == nil && c.tpl == nil }
+
+// compileSet parses c's files. They were checked when the config was
+// loaded (LoadFiles); one that fails anyway is logged and left out.
+func compileSet(c *config.EmailConfig) *docSet {
+	set := &docSet{cfg: c, tpls: map[string]*customDoc{}}
+	if c == nil {
+		return set
+	}
+	compile := func(f *config.EmailFiles, layout bool) *customDoc {
+		if f == nil || f.Source == "" {
+			return nil
+		}
+		d, err := compileDoc(f.Source, layout)
+		if err != nil {
+			logger.FromCtx(context.Background()).Error().Err(err).Str("key", f.Key).Msg("email: custom HTML rejected; using Boson's")
+			return nil
+		}
+		return d
+	}
+	set.layout = compile(c.Layout, true)
+	for name, t := range c.Templates {
+		if d := compile(t.Files, false); d != nil {
+			set.tpls[name] = d
+		}
+	}
+	return set
+}
+
+// customFor returns the custom HTML of template name under cfg.
+func (s *EmailService) customFor(cfg *config.EmailConfig, name string) custom {
+	set := s.docs.Load()
+	if set == nil || set.cfg != cfg {
+		set = compileSet(cfg) // SetConfig is between storing docs and cfg
+	}
+	return custom{layout: set.layout, tpl: set.tpls[name]}
+}
 
 func (s *EmailService) site() string { return *s.siteName.Load() }
 
@@ -169,11 +225,11 @@ func (s *EmailService) SendAccountSetup(ctx context.Context, u *user.User, token
 
 // render builds an email: Boson's built-in templates while auth.email is
 // absent (and nothing is overridden), otherwise the branded layout.
-func (s *EmailService) render(tpl template, v Vars, cfg *config.EmailConfig, over *config.EmailTemplate) (Rendered, error) {
-	if cfg == nil && over == nil && tpl.legacy != "" {
+func (s *EmailService) render(tpl template, v Vars, cfg *config.EmailConfig, over *config.EmailTemplate, cu custom) (Rendered, error) {
+	if cfg == nil && over == nil && cu.empty() && tpl.legacy != "" {
 		return legacy(tpl, v)
 	}
-	return branded(tpl, cfg, over, v, s.opts.Logo())
+	return branded(tpl, cfg, over, v, s.opts.Logo(), cu)
 }
 
 // legacy renders the embedded templates exactly as before branding existed.
@@ -211,7 +267,8 @@ func (s *EmailService) sendUser(ctx context.Context, u *user.User, tpl template,
 	if to == "" {
 		return
 	}
-	r, err := s.render(tpl, Vars{Network: s.site(), Username: u.Username, Link: link, Expires: humanize(ttl)}, s.cfg.Load(), nil)
+	cfg := s.cfg.Load()
+	r, err := s.render(tpl, Vars{Network: s.site(), Username: u.Username, Link: link, Expires: humanize(ttl)}, cfg, nil, s.customFor(cfg, tpl.name))
 	if err != nil {
 		logger.FromCtx(ctx).Error().Err(err).Msg("email template")
 		return
@@ -263,7 +320,8 @@ func (s *EmailService) SendTest(ctx context.Context, actorID, name, username, to
 	if a, err := netmail.ParseAddress(to); err != nil || a.Address != to || len(to) > 254 {
 		return Rendered{}, apperr.Invalid("to must be an email address such as admin@example.com")
 	}
-	r, err := s.render(tpl, v, s.cfg.Load(), nil)
+	cfg := s.cfg.Load()
+	r, err := s.render(tpl, v, cfg, nil, s.customFor(cfg, tpl.name))
 	if err != nil {
 		return Rendered{}, err
 	}

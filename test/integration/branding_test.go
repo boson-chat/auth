@@ -125,6 +125,54 @@ auth:
 	}
 	e.expect(e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "email": map[string]any{"logo": "yes"}}, bearer(adminAT)), 400, "invalid_request")
 
+	// Unsaved compiled MJML (layout and whole email) and its warnings.
+	layoutHTML := "<html><body><div>{{content}}</div><p>{{nope}}</p></body></html>"
+	p = e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "layout_html": layoutHTML}, bearer(adminAT))
+	e.expect(p, 200, "")
+	if ws, _ := p.body["warnings"].([]any); len(ws) != 1 || !strings.Contains(p.str("html"), "<div><p") || !strings.Contains(p.str("html"), "{{nope}}") {
+		t.Fatalf("layout_html preview: %s", p.raw)
+	}
+	p = e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "invite", "html": `<a href="{{link}}">Join {{network}}</a>`}, bearer(adminAT))
+	e.expect(p, 200, "")
+	if ws, ok := p.body["warnings"].([]any); !ok || len(ws) != 0 || !strings.HasPrefix(p.str("html"), `<a href="http`) || !strings.HasSuffix(p.str("html"), ">Join Example Chat</a>") {
+		t.Fatalf("html preview: %s", p.raw)
+	}
+	for field, body := range map[string]map[string]any{
+		"layout_html": {"template": "verification", "layout_html": "<p>none</p>"},
+		"html":        {"template": "verification", "html": "<p>no link</p>"},
+	} {
+		bad := e.do(e.internal, "POST", "/internal/email/preview", body, bearer(adminAT))
+		e.expect(bad, 400, "invalid_request")
+		if bad.str("field") != field {
+			t.Fatalf("%s: %s", field, bad.raw)
+		}
+	}
+	// 512 KB per document fits the preview body limit; one byte more is a 400.
+	big := "{{content}}" + strings.Repeat("x", 512<<10-len("{{content}}"))
+	e.expect(e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "layout_html": big}, bearer(adminAT)), 200, "")
+	bad = e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "layout_html": big + "x"}, bearer(adminAT))
+	e.expect(bad, 400, "invalid_request")
+	if bad.str("field") != "layout_html" {
+		t.Fatalf("size: %s", bad.raw)
+	}
+
+	// Boson's default MJML: same auth as preview.
+	e.expect(e.do(e.internal, "GET", "/internal/email/default-mjml?part=layout", nil), 401, "unauthenticated")
+	e.expect(e.do(e.internal, "GET", "/internal/email/default-mjml?part=layout", nil, bearer(userAT)), 403, "forbidden")
+	e.expect(e.api("GET", "/internal/email/default-mjml?part=layout", nil, bearer(adminAT)), 404, "")
+	for _, part := range []string{"layout", "verification", "password_reset", "account_setup", "invite"} {
+		d := e.do(e.internal, "GET", "/internal/email/default-mjml?part="+part, nil, bearer(adminAT))
+		e.expect(d, 200, "")
+		if m := d.str("mjml"); !strings.HasPrefix(m, "<mjml") || (part == "layout") != strings.Contains(m, "{{content}}") || (part != "layout") != strings.Contains(m, `href="{{link}}"`) {
+			t.Fatalf("%s: %s", part, d.raw)
+		}
+	}
+	d := e.do(e.internal, "GET", "/internal/email/default-mjml?part=welcome", nil, bearer(adminAT))
+	e.expect(d, 400, "invalid_request")
+	if d.str("field") != "part" {
+		t.Fatalf("%s", d.raw)
+	}
+
 	e.expect(e.do(e.internal, "POST", "/internal/email/test", map[string]any{"template": "verification", "to": "x"}, bearer(adminAT)), 400, "invalid_request")
 	tr := e.do(e.internal, "POST", "/internal/email/test", map[string]any{"template": "verification", "to": "me@example.com"}, bearer(adminAT))
 	e.expect(tr, 200, "")

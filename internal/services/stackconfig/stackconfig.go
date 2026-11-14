@@ -1,6 +1,7 @@
 // Package stackconfig applies the stack config file (BOSON_CONFIG) to the
 // running service: network settings, CORS origins, SMTP, the site name,
-// branding (theme and images) and the email templates are reloaded live when the file changes. Without BOSON_CONFIG (or while
+// branding (theme and images) and the email templates (with their MJML /
+// HTML files) are reloaded live when the file changes. Without BOSON_CONFIG (or while
 // the file is missing) the env values and the database apply, as before.
 package stackconfig
 
@@ -16,6 +17,7 @@ import (
 	"github.com/boson-chat/auth/internal/mailer"
 	"github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/branding"
+	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
 )
@@ -37,6 +39,8 @@ type Brander interface{ Set(s *branding.Snapshot) }
 type loaded struct {
 	file     config.FileConfig
 	branding *branding.Snapshot
+	// emailWarnings are about the custom email HTML (logged on apply).
+	emailWarnings []string
 }
 
 // Deps are the parts the file reconfigures.
@@ -114,7 +118,12 @@ func (s *StackConfigService) load(doc *configfile.Document) (loaded, error) {
 	if err != nil {
 		return loaded{}, err
 	}
-	return loaded{file: f, branding: snap}, nil
+	// So must the email MJML / HTML files (read into f.Email).
+	warnings, err := email.LoadFiles(f.Email, s.d.Env.AppConfig.EmailsDirectory())
+	if err != nil {
+		return loaded{}, err
+	}
+	return loaded{file: f, branding: snap, emailWarnings: warnings}, nil
 }
 
 func (s *StackConfigService) setEffective(c config.Config) {
@@ -147,6 +156,9 @@ func (s *StackConfigService) apply(ctx context.Context, lc configfile.Change[loa
 		s.d.Settings.SetFile(&eff.AccountConfig)
 	} else {
 		s.d.Settings.SetFile(nil)
+	}
+	if len(lc.Next.Value.emailWarnings) > 0 {
+		log.Warn().Strs("warnings", lc.Next.Value.emailWarnings).Msg("config file: custom email HTML")
 	}
 	if s.d.Email != nil {
 		s.d.Email.SetSiteName(eff.AppConfig.SiteName)

@@ -1,5 +1,8 @@
 // Command gen compiles templates/layout.mjml into the HTML the email
-// package embeds (templates/compiled/*.html). Run it with go generate from
+// package embeds (templates/compiled/*.html), and Boson's default MJML for
+// the admin panel's editor (email.DefaultMJML) into
+// testdata/default-mjml/*.html, which the email tests render as custom
+// HTML, as the admin panel's compiler would. Run it with go generate from
 // internal/services/email; it is the only code that links MJML (mjml-go,
 // MJML as wasm on wazero), so the server binary doesn't carry its runtime.
 package main
@@ -39,6 +42,27 @@ func run(ctx context.Context) error {
 		}
 		// The email package checks the markers and slots when it loads.
 		path := email.CompiledLayoutFiles[i]
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+			return err
+		}
+	}
+	for _, part := range email.MJMLParts {
+		src, err := email.DefaultMJML(part)
+		if err != nil {
+			return err
+		}
+		out, err := mjml.ToHTML(ctx, src, mjml.WithFonts(mjml.Fonts{}),
+			mjml.WithValidationLevel(mjml.Strict), mjml.WithKeepComments(true))
+		if err != nil {
+			return fmt.Errorf("mjml %s: %w", part, err)
+		}
+		if err := email.CheckCustomHTML(out, part == "layout"); err != nil {
+			return fmt.Errorf("default MJML %s: %w", part, err)
+		}
+		path := filepath.Join(email.DefaultMJMLTestdata, part+".html")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}

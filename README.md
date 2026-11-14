@@ -131,7 +131,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /internal/v1/roles/{id}/members?cursor=&limit=` | the admin API's members list (`{users, next_cursor}`), for RoleServ |
 | `GET /internal/v1/irc/grants` | `{version, users: [{username, oper_class, whois_line, vhost}]}`: every enabled account with an oper class or vhost; `ETag` = version, `If-None-Match` → 304 ([grants feed](docs/roles.md#get-internalv1ircgrants-live-changes)) |
 | `GET /internal/v1/irc/accounts/removed?since=&limit=` | `{accounts: [{username, reason: "deleted"\|"disabled", at}], next}`: deleted and disabled accounts in commit order after the cursor `since`, for IRC to drop; `limit` 1–1000 (500) ([removed-accounts feed](docs/roles.md#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts)) |
-| `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}}` → `{subject, html, text, from}`, live preview with unsaved settings ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
+| `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}, layout_html?, html?}` → `{subject, html, text, from, warnings}`, live preview with unsaved settings and unsaved compiled MJML (`layout_html` with `{{content}}`, `html` with `{{link}}`, ≤ 512 KB each; field-tagged 400s) ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
+| `GET /internal/email/default-mjml?part=layout\|verification\|password_reset\|account_setup\|invite` | bearer with `settings.manage`; `{mjml}`: Boson's default MJML source (the layout, or a whole email built on it) for the admin panel's MJML editor ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `POST /internal/email/test` | bearer with `settings.manage`; `{template, to}` → `{status: "sent"\|"logged", to, subject}`; rate-limited, audited `email_test_sent` |
 | `/internal/v1/acting/…` | the admin roles API on behalf of `X-Acting-Account`, authenticated by `X-Internal-Token: $INTERNAL_ACTING_TOKEN` (never `INTERNAL_API_TOKEN`); 404 when that is unset ([acting API](docs/roles.md#acting-api-roleserv)) |
 
@@ -201,6 +202,8 @@ auth:
     logo: true
     templates:
       verification: { subject: "Confirm your {{network}} account", body: "Hi {{username}},\n\n{{link}}" }
+      invite: { mjml: emails/invite-7a8b.mjml, html: emails/invite-7a8b.html }   # whole-email override
+    layout: { mjml: emails/layout-5e6f.mjml, html: emails/layout-5e6f.html }    # custom MJML layout, files in BOSON_EMAILS_DIR
 branding:                           # GET /v1/branding ([details](docs/branding.md))
   theme: { base: dark, colors: { accent: "#7c3aed" } }
   images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
@@ -413,6 +416,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `BOSON_CONFIG` | – | path of the [stack config file](#stack-config-file); its values win over the env variables marked *file* below |
 | `BOSON_CONFIG_POLL` | `10s` | mtime poll interval for the config file (besides fsnotify) |
 | `BOSON_BRANDING_DIR` | `branding` next to `BOSON_CONFIG` | directory of the images named in `branding.images` ([branding](docs/branding.md)) |
+| `BOSON_EMAILS_DIR` | `emails` next to `BOSON_CONFIG` | directory of the MJML / HTML files named in `auth.email.layout` and `auth.email.templates.<name>` ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |

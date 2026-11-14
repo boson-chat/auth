@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -32,8 +34,12 @@ import (
 //	    accent: "#7c3aed"
 //	    footer: "Example Chat · example.com"
 //	    logo: true
+//	    layout:                     # optional: an admin's MJML layout, files in
+//	      mjml: layout-1a2b.mjml    # <config dir>/emails/ (BOSON_EMAILS_DIR)
+//	      html: layout-1a2b.html    # compiled HTML (what auth renders)
 //	    templates:
 //	      verification: { subject: "…", body: "…" }
+//	      invite: { mjml: invite-3c4d.mjml, html: invite-3c4d.html }   # whole-email override
 
 // BrandingConfig is the branding: section.
 type BrandingConfig struct {
@@ -80,19 +86,93 @@ type EmailConfig struct {
 	Footer     string                   `json:"footer,omitempty"`
 	Logo       bool                     `json:"logo"`
 	Templates  map[string]EmailTemplate `json:"templates,omitempty"`
+	// Layout is an admin's MJML layout (auth.email.layout); nil = Boson's.
+	Layout *EmailFiles `json:"layout,omitempty"`
 }
 
 // EmailTemplate overrides one email's wording; nil = Boson's default.
 type EmailTemplate struct {
 	Subject *string `json:"subject,omitempty"`
 	Body    *string `json:"body,omitempty"`
+	// Files replaces the whole email (templates.<name>.mjml|html); nil = the
+	// layout with Subject / Body.
+	Files *EmailFiles `json:"files,omitempty"`
+}
+
+// MaxEmailFileBytes bounds each MJML / HTML file of auth.email.
+const MaxEmailFileBytes = 512 << 10
+
+// EmailFiles is an MJML source and the HTML the admin panel compiled from
+// it, files in the emails directory. Only the HTML is rendered; the MJML is
+// kept for re-editing (optional, but checked when named).
+type EmailFiles struct {
+	MJML string `json:"mjml,omitempty"`
+	HTML string `json:"html"`
+	// Key is the config path of the files ("auth.email.layout",
+	// "auth.email.templates.invite"); Line, Column locate the html key's
+	// value (and MJMLLine, MJMLColumn the mjml key's).
+	Key                  string `json:"-"`
+	Line, Column         int    `json:"-"`
+	MJMLLine, MJMLColumn int    `json:"-"`
+	// Source is the HTML file's contents, read when the config is loaded
+	// (email.LoadFiles).
+	Source string `json:"-"`
+}
+
+// emailFileRe: a plain file name in the emails directory.
+var emailFileRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// CheckEmailFileName returns the plain file name of an auth.email file
+// reference, which may be written with the directory ("emails/x.html", as
+// the admin panel writes it) or without. ext is ".mjml" or ".html".
+func CheckEmailFileName(v, ext string) (string, error) {
+	name := strings.TrimPrefix(v, "emails/")
+	if !emailFileRe.MatchString(name) || strings.Contains(name, "..") {
+		return "", fmt.Errorf("%q must be a plain file name in the emails directory (letters, digits, . _ -)", v)
+	}
+	if !strings.EqualFold(path.Ext(name), ext) {
+		return "", fmt.Errorf("%q must be a %s file", v, ext)
+	}
+	return name, nil
+}
+
+// loadEmailFiles decodes {mjml, html} under s (key: its config path); nil
+// when neither is set.
+func loadEmailFiles(s *configfile.Section, key string) (*EmailFiles, error) {
+	f := &EmailFiles{Key: key}
+	for _, k := range []struct {
+		name, ext string
+		dst       *string
+		line, col *int
+	}{{"mjml", ".mjml", &f.MJML, &f.MJMLLine, &f.MJMLColumn}, {"html", ".html", &f.HTML, &f.Line, &f.Column}} {
+		var v string
+		if err := stringKey(s, k.name, &v, nil); err != nil {
+			return nil, err
+		}
+		if v == "" {
+			continue
+		}
+		name, err := CheckEmailFileName(v, k.ext)
+		if err != nil {
+			return nil, s.Errorf(k.name, "%s", err.Error())
+		}
+		n := s.Node(k.name)
+		*k.dst, *k.line, *k.col = name, n.Line, n.Column
+	}
+	if f.HTML == "" && f.MJML == "" {
+		return nil, nil
+	}
+	if f.HTML == "" {
+		return nil, s.Errorf("mjml", "needs html too: auth renders the compiled HTML, the MJML is its source")
+	}
+	return f, nil
 }
 
 // Config keys.
 const (
 	KeyBrandingTheme = "branding.theme"
 	KeyBrandingImage = "branding.images." // + slot
-	KeyEmail         = "auth.email."      // + field / templates.<name>.subject|body
+	KeyEmail         = "auth.email."      // + field / layout.mjml|html / templates.<name>.subject|body|mjml|html
 )
 
 // CheckSubject validates an email subject (file or preview request).
@@ -402,6 +482,14 @@ func loadEmail(auth *configfile.Section) (*EmailConfig, []string, error) {
 		e.Logo = *logo
 	}
 	var unknown []string
+	if ls, err := sec.Sub("layout"); err != nil {
+		return nil, nil, err
+	} else if ls != nil {
+		if e.Layout, err = loadEmailFiles(ls, ls.Path()); err != nil {
+			return nil, nil, err
+		}
+		unknown = append(unknown, ls.Unknown("mjml", "html")...)
+	}
 	tpls, err := sec.Sub("templates")
 	if err != nil {
 		return nil, nil, err
@@ -431,15 +519,18 @@ func loadEmail(auth *configfile.Section) (*EmailConfig, []string, error) {
 				*spec.dst = &v
 			}
 		}
-		if tpl.Subject != nil || tpl.Body != nil {
+		if tpl.Files, err = loadEmailFiles(ts, ts.Path()); err != nil {
+			return nil, nil, err
+		}
+		if tpl.Subject != nil || tpl.Body != nil || tpl.Files != nil {
 			if e.Templates == nil {
 				e.Templates = map[string]EmailTemplate{}
 			}
 			e.Templates[name] = tpl
 		}
-		unknown = append(unknown, ts.Unknown("subject", "body")...)
+		unknown = append(unknown, ts.Unknown("subject", "body", "mjml", "html")...)
 	}
-	unknown = append(unknown, sec.Unknown("sender_name", "accent", "footer", "logo", "templates")...)
+	unknown = append(unknown, sec.Unknown("sender_name", "accent", "footer", "logo", "templates", "layout")...)
 	return e, unknown, nil
 }
 
@@ -456,7 +547,17 @@ func (f FileConfig) flattenBranding(m map[string]any) {
 		m[KeyEmail+"accent"] = e.Accent
 		m[KeyEmail+"footer"] = e.Footer
 		m[KeyEmail+"logo"] = e.Logo
+		files := func(prefix string, f *EmailFiles) {
+			if f != nil {
+				m[prefix+".html"] = f.HTML
+				if f.MJML != "" {
+					m[prefix+".mjml"] = f.MJML
+				}
+			}
+		}
+		files(KeyEmail+"layout", e.Layout)
 		for name, t := range e.Templates {
+			files(KeyEmail+"templates."+name, t.Files)
 			if t.Subject != nil {
 				m[KeyEmail+"templates."+name+".subject"] = *t.Subject
 			}

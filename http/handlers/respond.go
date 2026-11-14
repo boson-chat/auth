@@ -51,11 +51,16 @@ var errUnsupportedMedia = apperr.New(nethttp.StatusUnsupportedMediaType, "unsupp
 // HTML form on another site can't submit to us (it can't set that type
 // without a CORS preflight).
 func decode(w nethttp.ResponseWriter, r *nethttp.Request, dst any) error {
+	return decodeLimit(w, r, dst, maxBody)
+}
+
+// decodeLimit is decode with a body limit of limit bytes.
+func decodeLimit(w nethttp.ResponseWriter, r *nethttp.Request, dst any, limit int64) error {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "application/json" {
 		return errUnsupportedMedia
 	}
-	r.Body = nethttp.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = nethttp.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
 		var mbe *nethttp.MaxBytesError
