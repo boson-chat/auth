@@ -304,3 +304,42 @@ func AsError(err error) (*Error, bool) {
 	ok := errors.As(err, &e)
 	return e, ok
 }
+
+// Float returns key's value (an integer or a decimal number); nil when absent.
+func (s *Section) Float(key string) (*float64, error) {
+	n, err := scalar(s, key, "a number")
+	if n == nil || err != nil {
+		return nil, err
+	}
+	var v float64
+	if (n.Tag != "!!int" && n.Tag != "!!float") || n.Decode(&v) != nil {
+		return nil, s.Errorf(key, "must be a number, got %q", n.Value)
+	}
+	return &v, nil
+}
+
+// Keys lists the section's keys in file order.
+func (s *Section) Keys() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.node.Content)/2)
+	for i := 0; i+1 < len(s.node.Content); i += 2 {
+		out = append(out, s.node.Content[i].Value)
+	}
+	return out
+}
+
+// KeyNode returns the node of key itself (not its value), for errors about
+// the key (nil when absent).
+func (s *Section) KeyNode(key string) *yaml.Node {
+	if s == nil {
+		return nil
+	}
+	for i := 0; i+1 < len(s.node.Content); i += 2 {
+		if s.node.Content[i].Value == key {
+			return s.node.Content[i]
+		}
+	}
+	return nil
+}

@@ -406,3 +406,33 @@ func TestStatusHandler(t *testing.T) {
 		}
 	}
 }
+
+func TestFloatKeysAndKeyNode(t *testing.T) {
+	doc, err := Parse([]byte("s:\n  a: 1\n  b: 0.5\n  c: x\n  d: ~\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := doc.Section("s")
+	if v, err := s.Float("a"); err != nil || *v != 1 {
+		t.Fatal(v, err)
+	}
+	if v, err := s.Float("b"); err != nil || *v != 0.5 {
+		t.Fatal(v, err)
+	}
+	if _, err := s.Float("c"); err == nil {
+		t.Fatal("string is not a number")
+	}
+	if v, err := s.Float("d"); v != nil || err != nil {
+		t.Fatal("null is absent")
+	}
+	if got := s.Keys(); len(got) != 4 || got[0] != "a" || got[3] != "d" {
+		t.Fatal(got)
+	}
+	if n := s.KeyNode("c"); n == nil || n.Line != 4 || n.Column != 3 {
+		t.Fatal(n)
+	}
+	var nilSec *Section
+	if nilSec.Keys() != nil || nilSec.KeyNode("a") != nil || s.KeyNode("zz") != nil {
+		t.Fatal("absent")
+	}
+}

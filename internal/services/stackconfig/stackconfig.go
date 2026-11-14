@@ -1,6 +1,6 @@
 // Package stackconfig applies the stack config file (BOSON_CONFIG) to the
-// running service: network settings, CORS origins, SMTP and the site name
-// are reloaded live when the file changes. Without BOSON_CONFIG (or while
+// running service: network settings, CORS origins, SMTP, the site name,
+// branding (theme and images) and the email templates are reloaded live when the file changes. Without BOSON_CONFIG (or while
 // the file is missing) the env values and the database apply, as before.
 package stackconfig
 
@@ -15,6 +15,7 @@ import (
 	"github.com/boson-chat/auth/internal/logger"
 	"github.com/boson-chat/auth/internal/mailer"
 	"github.com/boson-chat/auth/internal/services/audit"
+	"github.com/boson-chat/auth/internal/services/branding"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/sso"
 )
@@ -22,15 +23,30 @@ import (
 // Actor is the audit actor of config_reloaded.
 const Actor = "config file"
 
-// SiteNamer is the email service's live site name.
-type SiteNamer interface{ SetSiteName(name string) }
+// Emailer is the email service's live configuration.
+type Emailer interface {
+	SetSiteName(name string)
+	SetConfig(c *config.EmailConfig)
+}
+
+// Brander is the branding service's live snapshot.
+type Brander interface{ Set(s *branding.Snapshot) }
+
+// loaded is a valid file: auth's sections plus the branding images read
+// from the branding directory.
+type loaded struct {
+	file     config.FileConfig
+	branding *branding.Snapshot
+}
 
 // Deps are the parts the file reconfigures.
 type Deps struct {
 	// Env is the configuration from env vars only (no file applied).
 	Env      config.Config
 	Settings settings.SettingsServiceImpl
-	Email    SiteNamer
+	Email    Emailer
+	// Branding receives the branding: section (nil: not wired).
+	Branding Brander
 	// Mailer is replaced when the smtp keys change. Nil: leave the mailer
 	// alone (a test mailer was injected).
 	Mailer   *mailer.Swappable
@@ -58,7 +74,7 @@ type StackConfigServiceImpl interface {
 
 type StackConfigService struct {
 	d    Deps
-	w    *configfile.Watcher[config.FileConfig]
+	w    *configfile.Watcher[loaded]
 	cors atomic.Pointer[[]string]
 	eff  atomic.Pointer[config.Config]
 }
@@ -71,7 +87,7 @@ func NewStackConfigService(d Deps) *StackConfigService {
 	s.setEffective(d.Env)
 	if path := d.Env.AppConfig.ConfigFile; path != "" {
 		log := logger.FromCtx(context.Background()).With().Str("component", "config").Logger()
-		s.w = configfile.New(configfile.Options[config.FileConfig]{
+		s.w = configfile.New(configfile.Options[loaded]{
 			Path:  path,
 			Load:  s.load,
 			Apply: s.apply,
@@ -83,14 +99,22 @@ func NewStackConfigService(d Deps) *StackConfigService {
 	return s
 }
 
-func (s *StackConfigService) load(doc *configfile.Document) (config.FileConfig, error) {
+func (s *StackConfigService) load(doc *configfile.Document) (loaded, error) {
 	f, err := config.LoadFileConfig(doc)
 	if err != nil {
-		return f, err
+		return loaded{}, err
 	}
 	// Whole-config checks (they name env vars; the file's own values
 	// were checked with positions above).
-	return f, s.d.Env.WithFile(f).Validate()
+	if err := s.d.Env.WithFile(f).Validate(); err != nil {
+		return loaded{}, err
+	}
+	// The images must exist and be valid, or the last good config stays.
+	snap, err := branding.Prepare(f.Branding, s.d.Env.AppConfig.BrandingDirectory(), s.d.Env.HTTPConfig.PublicURL)
+	if err != nil {
+		return loaded{}, err
+	}
+	return loaded{file: f, branding: snap}, nil
 }
 
 func (s *StackConfigService) setEffective(c config.Config) {
@@ -102,7 +126,10 @@ func (s *StackConfigService) setEffective(c config.Config) {
 	s.cors.Store(&cors)
 }
 
-func (s *StackConfigService) apply(ctx context.Context, c configfile.Change[config.FileConfig]) {
+func (s *StackConfigService) apply(ctx context.Context, lc configfile.Change[loaded]) {
+	c := configfile.Change[config.FileConfig]{Initial: lc.Initial,
+		Prev: configfile.State[config.FileConfig]{Present: lc.Prev.Present, Value: lc.Prev.Value.file},
+		Next: configfile.State[config.FileConfig]{Present: lc.Next.Present, Value: lc.Next.Value.file}}
 	log := logger.FromCtx(ctx)
 	prev := *s.eff.Load()
 	eff := s.d.Env
@@ -112,6 +139,10 @@ func (s *StackConfigService) apply(ctx context.Context, c configfile.Change[conf
 			log.Warn().Strs("keys", c.Next.Value.Unknown).Msg("config file: ignoring unknown keys")
 		}
 	}
+	// Absent file / section: no branding and Boson's built-in emails.
+	if s.d.Branding != nil {
+		s.d.Branding.Set(lc.Next.Value.branding)
+	}
 	if c.Next.Present {
 		s.d.Settings.SetFile(&eff.AccountConfig)
 	} else {
@@ -119,6 +150,7 @@ func (s *StackConfigService) apply(ctx context.Context, c configfile.Change[conf
 	}
 	if s.d.Email != nil {
 		s.d.Email.SetSiteName(eff.AppConfig.SiteName)
+		s.d.Email.SetConfig(c.Next.Value.Email)
 	}
 	s.setEffective(eff)
 	if s.d.ReturnTo != nil {

@@ -72,3 +72,15 @@ func TestGuestAccessDefault(t *testing.T) {
 		t.Fatalf("GUEST_ACCESS=false: guest_access=%v err=%v", c.AccountConfig.GuestAccess, err)
 	}
 }
+
+func TestBrandingDirectory(t *testing.T) {
+	if d := (AppConfig{ConfigFile: "/config/boson.yaml"}).BrandingDirectory(); d != "/config/branding" {
+		t.Fatal(d)
+	}
+	if d := (AppConfig{ConfigFile: "/config/boson.yaml", BrandingDir: "/srv/b"}).BrandingDirectory(); d != "/srv/b" {
+		t.Fatal(d)
+	}
+	if d := (AppConfig{}).BrandingDirectory(); d != "" {
+		t.Fatal(d)
+	}
+}

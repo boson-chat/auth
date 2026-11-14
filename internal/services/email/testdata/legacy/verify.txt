@@ -1,0 +1,8 @@
+Hi alice<b>,
+
+Confirm this email address for your Example <Net> & Co account by opening:
+
+https://app.example.com/verify-email#token=tok%2F1%2B2
+
+The link expires in 24 hours and can be used once. If you didn't create
+an account, ignore this email.

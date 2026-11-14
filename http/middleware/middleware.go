@@ -130,3 +130,36 @@ func Chain(h nethttp.Handler, mw ...func(nethttp.Handler) nethttp.Handler) netht
 	}
 	return h
 }
+
+// PublicCORS serves the paths matched by public to every origin without
+// credentials (Access-Control-Allow-Origin: *), answering their preflights
+// itself; every other request goes through credentialed. Public responses
+// are the same for everyone (the network's branding), so caches and
+// clients on any origin may share them.
+func PublicCORS(public func(path string) bool, credentialed func(nethttp.Handler) nethttp.Handler) func(nethttp.Handler) nethttp.Handler {
+	return func(next nethttp.Handler) nethttp.Handler {
+		cred := credentialed(next)
+		return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			if !public(r.URL.Path) {
+				cred.ServeHTTP(w, r)
+				return
+			}
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			h.Set("Access-Control-Expose-Headers", "ETag")
+			if r.Method == nethttp.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				h.Set("Access-Control-Allow-Methods", "GET, HEAD")
+				h.Set("Access-Control-Allow-Headers", "If-None-Match")
+				h.Set("Access-Control-Max-Age", "86400")
+				w.WriteHeader(nethttp.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// PathPrefix matches path p and everything under p + "/".
+func PathPrefix(p string) func(string) bool {
+	return func(path string) bool { return path == p || strings.HasPrefix(path, p+"/") }
+}

@@ -14,7 +14,7 @@ import (
 // The auth service's part of the stack config file (BOSON_CONFIG, see
 // internal/configfile): the `network:` and `auth:` sections. A key that is
 // set wins over the env value; an absent key falls back to env, then the
-// built-in default.
+// built-in default. The branding: section and auth.email are in branding.go.
 //
 //	network:
 //	  name: Boson                   # SITE_NAME
@@ -50,6 +50,11 @@ type FileConfig struct {
 	SMTPPort *int
 	SMTPFrom *string
 	SMTPTLS  *string
+
+	// Branding is the branding: section; nil when absent.
+	Branding *BrandingConfig
+	// Email is auth.email; nil when absent (Boson's built-in emails).
+	Email *EmailConfig
 
 	// Unknown lists keys of our sections this version doesn't know (logged).
 	Unknown []string
@@ -199,13 +204,24 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			return FileConfig{}, err
 		}
 	}
+	email, unknownEmail, err := loadEmail(auth)
+	if err != nil {
+		return FileConfig{}, err
+	}
+	branding, unknownBranding, err := loadBranding(doc)
+	if err != nil {
+		return FileConfig{}, err
+	}
+	f.Email, f.Branding = email, branding
+	f.Unknown = append(f.Unknown, unknownEmail...)
+	f.Unknown = append(f.Unknown, unknownBranding...)
 	if smtp.Has("user") || smtp.Has("password") {
 		return FileConfig{}, smtp.Errorf(firstSet(smtp, "password", "user"),
 			"SMTP credentials are secrets: set SMTP_USER / SMTP_PASSWORD in .env, not in the config file")
 	}
 	f.Unknown = append(f.Unknown, network.Unknown("name")...)
 	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "channel_creation",
-		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp")...)
+		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email")...)
 	f.Unknown = append(f.Unknown, smtp.Unknown("host", "port", "from", "tls")...)
 	return f, nil
 }
@@ -246,6 +262,7 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeySMTPPort, f.SMTPPort != nil, deref(f.SMTPPort))
 	put(KeySMTPFrom, f.SMTPFrom != nil, deref(f.SMTPFrom))
 	put(KeySMTPTLS, f.SMTPTLS != nil, deref(f.SMTPTLS))
+	f.flattenBranding(m)
 	return m
 }
 

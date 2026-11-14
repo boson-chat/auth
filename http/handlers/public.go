@@ -38,6 +38,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("DELETE /v1/sessions/{id}", h.authed(h.revokeSession))
 	mux.HandleFunc("POST /v1/voice/token", h.authed(h.voiceToken))
 
+	h.registerBranding(mux)
 	h.registerSSO(mux)
 	h.registerAdmin(mux)
 	h.registerPages(mux)
@@ -91,6 +92,13 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// The network's theme (GET /v1/branding); null without branding.
+	var brandingURL *string
+	if h.Branding != nil {
+		if u := h.Branding.URL(); u != "" {
+			brandingURL = &u
+		}
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"registration":               st.Registration,
 		"require_email_verification": st.RequireEmailVerification,
@@ -100,6 +108,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"channel_expiry_days":        st.ChannelExpiryDays,
 		"guest_access":               st.GuestAccess,
 		"sso_providers":              providers,
+		"branding_url":               brandingURL,
 	})
 }
 

@@ -4,6 +4,7 @@ package mailer
 import (
 	"context"
 	"fmt"
+	netmail "net/mail"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,8 @@ type Message struct {
 	HTML    string
 	// Link is the action link in the message; only the log mailer uses it.
 	Link string
+	// FromName replaces the display name of SMTP_FROM (auth.email.sender_name).
+	FromName string
 }
 
 type Mailer interface {
@@ -66,6 +69,15 @@ func (s *SMTPMailer) Send(ctx context.Context, m Message) error {
 	if err := msg.From(s.cfg.From); err != nil {
 		return fmt.Errorf("mailer: from: %w", err)
 	}
+	if m.FromName != "" {
+		addr, err := netmail.ParseAddress(s.cfg.From)
+		if err != nil {
+			return fmt.Errorf("mailer: from: %w", err)
+		}
+		if err := msg.FromFormat(m.FromName, addr.Address); err != nil {
+			return fmt.Errorf("mailer: from: %w", err)
+		}
+	}
 	if err := msg.To(m.To); err != nil {
 		return fmt.Errorf("mailer: to: %w", err)
 	}
@@ -86,7 +98,7 @@ func (s *SMTPMailer) Send(ctx context.Context, m Message) error {
 type LogMailer struct{}
 
 func (LogMailer) Send(ctx context.Context, m Message) error {
-	logger.FromCtx(ctx).Warn().Str("to", m.To).Str("subject", m.Subject).Str("link", m.Link).
+	logger.FromCtx(ctx).Warn().Str("to", m.To).Str("from_name", m.FromName).Str("subject", m.Subject).Str("link", m.Link).
 		Msg("SMTP_HOST not set: email not sent, logging it instead")
 	return nil
 }

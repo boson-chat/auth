@@ -59,7 +59,9 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, sso_providers: [{slug, kind, display_name, start_url}]}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on)) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, sso_providers: [{slug, kind, display_name, start_url}], branding_url}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding) |
+| `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
+| `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
 | `POST /v1/email/verify` | – | `{token}` → `{user}` |
 | `POST /v1/email/resend` | optional | `{email}` (or a bearer token) → 202, same response whether or not the account exists |
@@ -129,6 +131,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /internal/v1/roles/{id}/members?cursor=&limit=` | the admin API's members list (`{users, next_cursor}`), for RoleServ |
 | `GET /internal/v1/irc/grants` | `{version, users: [{username, oper_class, whois_line, vhost}]}`: every enabled account with an oper class or vhost; `ETag` = version, `If-None-Match` → 304 ([grants feed](docs/roles.md#get-internalv1ircgrants-live-changes)) |
 | `GET /internal/v1/irc/accounts/removed?since=&limit=` | `{accounts: [{username, reason: "deleted"\|"disabled", at}], next}`: deleted and disabled accounts in commit order after the cursor `since`, for IRC to drop; `limit` 1–1000 (500) ([removed-accounts feed](docs/roles.md#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts)) |
+| `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?}` → `{subject, html, text}` ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
+| `POST /internal/email/test` | bearer with `settings.manage`; `{template, to}` → `{status: "sent"\|"logged", to, subject}`; rate-limited, audited `email_test_sent` |
 | `/internal/v1/acting/…` | the admin roles API on behalf of `X-Acting-Account`, authenticated by `X-Internal-Token: $INTERNAL_ACTING_TOKEN` (never `INTERNAL_API_TOKEN`); 404 when that is unset ([acting API](docs/roles.md#acting-api-roleserv)) |
 
 The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-script helper does). Because the caller is authenticated by `INTERNAL_API_TOKEN`, auth trusts that value: it is recorded in the audit log and used for an extra per-IP limit (`RATE_LIMIT_IP_*` ×2), so one IRC client can't spray many accounts. Without the header only the per-account limit applies, so the IRC server's own shared address is never limited.
@@ -190,6 +194,16 @@ auth:
   channel_expiry_days: 0            # 0..3650, 0 = never
   cors_allowed_origins: [https://app.example.com]   # CORS_ALLOWED_ORIGINS ([] = none)
   smtp: { host: smtp.example.com, port: 587, from: "Boson <hi@example.com>", tls: starttls }
+  email:                            # branded emails ([details](docs/branding.md))
+    sender_name: Example Chat
+    accent: "#7c3aed"
+    footer: Example Chat · example.com
+    logo: true
+    templates:
+      verification: { subject: "Confirm your {{network}} account", body: "Hi {{username}},\n\n{{link}}" }
+branding:                           # GET /v1/branding ([details](docs/branding.md))
+  theme: { base: dark, colors: { accent: "#7c3aed" } }
+  images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
 ```
 
 `SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
@@ -398,6 +412,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `LOG_LEVEL` | `info` | zerolog level |
 | `BOSON_CONFIG` | – | path of the [stack config file](#stack-config-file); its values win over the env variables marked *file* below |
 | `BOSON_CONFIG_POLL` | `10s` | mtime poll interval for the config file (besides fsnotify) |
+| `BOSON_BRANDING_DIR` | `branding` next to `BOSON_CONFIG` | directory of the images named in `branding.images` ([branding](docs/branding.md)) |
 | `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |
@@ -539,8 +554,13 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
   only, never the attempted password or login string), reuse detections,
   resets, password changes, session revocations, admin actions (with the
   target user in `target_user_id`), settings changes (old and new values),
-  role changes (`role_created|role_updated|role_deleted`, old/new) and role
-  assignments (`user_roles_changed`, old/new role ids).
+  role changes (`role_created|role_updated|role_deleted`, old/new), role
+  assignments (`user_roles_changed`, old/new role ids) and test emails
+  (`email_test_sent`, template and recipient).
+- **Branding** is public by design. Images are only the files the config
+  names, read through `os.Root` and served from memory with their sniffed
+  type and `nosniff`; SVGs get a CSP that disables scripts. Email templates
+  are plain text: everything is escaped, only http(s) URLs become links.
 - **Roles** are checked against the database on every admin request, never
   taken from the token. The hierarchy stops anyone acting on roles or users
   at or above their own rank or granting permissions they lack; Owners bypass
@@ -584,6 +604,9 @@ internal/services/sso        SSO flow, linking, code exchange, provider admin
 internal/services/roles      roles, permissions, hierarchy, IRC oper class / vhost
 internal/services/ircaccounts removed-accounts feed for IRC (deleted / disabled)
 internal/services/stackconfig applies the stack config file live (BOSON_CONFIG)
+internal/services/branding   GET /v1/branding: theme + images from the config file
+internal/services/email      built-in and branded emails, preview / test
+internal/theme               boson-theme/1 rules (shared with directory and client)
 internal/configfile          config file parsing (line/column errors) + watcher
 internal/perm                the permission catalog
 internal/{nick,password,keycrypt,ratelimit,opaque,ids,mailer,...}
@@ -591,6 +614,7 @@ metrics/                     OpenTelemetry instruments + Prometheus exporter
 test/integration/            HTTP flows against real Postgres
 docs/sso.md                  SSO flow, linking rules, admin API, IdP setup
 docs/roles.md                roles, permissions, hierarchy, Ergo/quicvoiced contract
+docs/branding.md             network theme, branding images, email templates
 ```
 
 ## Roadmap

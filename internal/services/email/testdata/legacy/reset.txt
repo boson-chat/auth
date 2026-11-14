@@ -1,0 +1,10 @@
+Hi alice<b>,
+
+Someone asked to reset the password for your Example <Net> & Co account. To choose
+a new password, open:
+
+https://app.example.com/reset-password#token=tok%2F1%2B2
+
+The link expires in 30 minutes and can be used once. Resetting signs you
+out everywhere. If this wasn't you, ignore this email; your password has not
+changed.
