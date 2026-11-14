@@ -182,10 +182,12 @@ func (a *auditLog) Record(_ context.Context, _, event string, _ map[string]any) 
 	a.events = append(a.events, event)
 	a.mu.Unlock()
 }
-func (a *auditLog) ListByUser(context.Context, string, int) ([]*auditrepo.Entry, error) {
+func (a *auditLog) RecordTarget(ctx context.Context, actor, _, event string, meta map[string]any) {
+	a.Record(ctx, actor, event, meta)
+}
+func (a *auditLog) List(context.Context, auditrepo.Filter) ([]*auditrepo.EntryView, error) {
 	return nil, nil
 }
-func (a *auditLog) ListRecent(context.Context, int) ([]*auditrepo.Entry, error) { return nil, nil }
 
 type clock struct {
 	mu sync.Mutex

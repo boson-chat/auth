@@ -133,12 +133,52 @@ const (
 	RegistrationClosed = "closed"
 )
 
+// Who may create IRC text channels (CHANNEL_CREATION).
+const (
+	ChannelCreationRegistered = "registered"
+	ChannelCreationAdmins     = "admins"
+)
+
+// Who may create voice channels (VOICE_CHANNEL_CREATION): admins only, the
+// founder of the IRC channel the voice channel belongs to, or anyone registered.
+const (
+	VoiceChannelCreationAdmins     = "admins"
+	VoiceChannelCreationFounders   = "founders"
+	VoiceChannelCreationRegistered = "registered"
+)
+
+// ValidRegistration reports whether v is a registration mode.
+func ValidRegistration(v string) bool {
+	return v == RegistrationOpen || v == RegistrationInvite || v == RegistrationClosed
+}
+
+// ValidChannelCreation reports whether v is a channel_creation value.
+func ValidChannelCreation(v string) bool {
+	return v == ChannelCreationRegistered || v == ChannelCreationAdmins
+}
+
+// ValidVoiceChannelCreation reports whether v is a voice_channel_creation value.
+func ValidVoiceChannelCreation(v string) bool {
+	return v == VoiceChannelCreationAdmins || v == VoiceChannelCreationFounders || v == VoiceChannelCreationRegistered
+}
+
+// AccountConfig: Registration, RequireEmailVerification, ChannelCreation and
+// VoiceChannelCreation are only defaults; admins change them at runtime
+// (network_settings, PATCH /v1/admin/settings).
 type AccountConfig struct {
 	// open | invite | closed
-	Registration             string        `default:"open" env:"REGISTRATION"`
-	RequireEmailVerification bool          `default:"true" env:"REQUIRE_EMAIL_VERIFICATION"`
-	EmailVerifyTTL           time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
-	PasswordResetTTL         time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
+	Registration             string `default:"open" env:"REGISTRATION"`
+	RequireEmailVerification bool   `default:"true" env:"REQUIRE_EMAIL_VERIFICATION"`
+	// registered | admins
+	ChannelCreation string `default:"registered" env:"CHANNEL_CREATION"`
+	// admins | founders | registered
+	VoiceChannelCreation string        `default:"founders" env:"VOICE_CHANNEL_CREATION"`
+	EmailVerifyTTL       time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
+	PasswordResetTTL     time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
+	// Lifetime of the "set your password" link in admin-created account emails.
+	AccountSetupTTL time.Duration `default:"72h" env:"ACCOUNT_SETUP_TTL"`
+	// How long a replica may serve cached network settings written by another replica.
+	SettingsCacheTTL time.Duration `default:"5s" env:"SETTINGS_CACHE_TTL"`
 }
 
 // PasswordConfig holds the argon2id parameters used for new hashes. Existing
@@ -219,10 +259,18 @@ func (c *Config) ApplyDefaults() {
 
 // Validate checks settings that would otherwise fail confusingly later.
 func (c Config) Validate() error {
-	switch c.AccountConfig.Registration {
-	case RegistrationOpen, RegistrationInvite, RegistrationClosed:
-	default:
-		return fmt.Errorf("REGISTRATION must be open, invite or closed, got %q", c.AccountConfig.Registration)
+	a := c.AccountConfig
+	if !ValidRegistration(a.Registration) {
+		return fmt.Errorf("REGISTRATION must be open, invite or closed, got %q", a.Registration)
+	}
+	if !ValidChannelCreation(a.ChannelCreation) {
+		return fmt.Errorf("CHANNEL_CREATION must be registered or admins, got %q", a.ChannelCreation)
+	}
+	if !ValidVoiceChannelCreation(a.VoiceChannelCreation) {
+		return fmt.Errorf("VOICE_CHANNEL_CREATION must be admins, founders or registered, got %q", a.VoiceChannelCreation)
+	}
+	if a.AccountSetupTTL <= 0 || a.SettingsCacheTTL < 0 {
+		return errors.New("ACCOUNT_SETUP_TTL must be positive and SETTINGS_CACHE_TTL not negative")
 	}
 	switch c.SMTPConfig.TLS {
 	case "starttls", "tls", "none":

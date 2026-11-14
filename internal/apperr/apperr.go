@@ -45,4 +45,8 @@ var (
 	ErrEmailTaken         = New(http.StatusConflict, "email_taken", "that email address is already registered")
 	ErrNotFound           = New(http.StatusNotFound, "not_found", "not found")
 	ErrNoPassword         = New(http.StatusBadRequest, "no_password", "this account has no password")
+	ErrNoEmail            = New(http.StatusBadRequest, "no_email", "this account has no email address")
+	ErrAlreadyVerified    = New(http.StatusConflict, "already_verified", "the email address is already verified")
+	// ErrUserDisabled is the admin-facing conflict for acting on a disabled account.
+	ErrUserDisabled = New(http.StatusConflict, "account_disabled", "this account is disabled")
 )

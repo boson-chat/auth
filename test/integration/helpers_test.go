@@ -29,6 +29,7 @@ import (
 	"github.com/boson-chat/auth/db"
 	authhttp "github.com/boson-chat/auth/http"
 	"github.com/boson-chat/auth/internal/mailer"
+	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -299,4 +300,27 @@ func (e *env) jwksKeyfunc() jwt.Keyfunc {
 		}
 		return nil, jwt.ErrTokenUnverifiable
 	}
+}
+
+// adminToken creates an admin account and returns its access token.
+func (e *env) adminToken(username string) string {
+	e.t.Helper()
+	if _, err := e.app.Account.CreateUser(e.t.Context(), "", account.CreateUserInput{
+		Username: username, Email: username + "@example.com", Password: pw, Role: "admin", EmailVerified: true,
+	}); err != nil {
+		e.t.Fatal(err)
+	}
+	r := e.login(username, pw)
+	e.expect(r, 200, "")
+	return r.str("access_token")
+}
+
+func (r resp) list(key string) []map[string]any {
+	raw, _ := r.body[key].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, v := range raw {
+		m, _ := v.(map[string]any)
+		out = append(out, m)
+	}
+	return out
 }

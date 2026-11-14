@@ -54,9 +54,10 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 |---|---|---|
 | `GET /healthz` | – | liveness |
 | `GET /readyz` | – | DB reachable and a signing key loaded |
+| `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, sso_providers}` |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, sso_providers}` (live [network settings](#network-settings)) |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
 | `POST /v1/email/verify` | – | `{token}` → `{user}` |
 | `POST /v1/email/resend` | optional | `{email}` (or a bearer token) → 202, same response whether or not the account exists |
@@ -78,31 +79,88 @@ Admin (role `admin`, checked against the database on every request):
 | Method & path | |
 |---|---|
 | `GET /v1/admin/users?q=&limit=&offset=` | search users (username/email substring) → `{users, total}` |
+| `POST /v1/admin/users` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request` |
 | `GET /v1/admin/users/{id}` | one user |
+| `POST /v1/admin/users/{id}/password-reset` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
+| `POST /v1/admin/users/{id}/verification` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
 | `PATCH /v1/admin/users/{id}` | `{role: "user"\|"admin"}` |
 | `POST /v1/admin/users/{id}/disable` | disable and revoke every session |
 | `POST /v1/admin/users/{id}/enable` | re-enable |
 | `GET /v1/admin/users/{id}/sessions` | active sessions |
 | `DELETE /v1/admin/sessions/{id}` | revoke any session |
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | invite codes (the code is only in the create response) |
-| `GET /v1/admin/audit?user_id=&limit=` | audit log |
+| `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
+| `GET /v1/admin/settings` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` |
+| `PATCH /v1/admin/settings` | same fields, any subset → the updated object; `400 invalid_request` on unknown values; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 
 ### Internal listener (`INTERNAL_ADDR`, default `:8081`)
 
 | Method & path | |
 |---|---|
-| `GET /healthz`, `GET /readyz` | as above |
+| `GET /healthz`, `GET /readyz`, `GET /version` | as above |
 | `GET /metrics` | Prometheus exposition |
+| `GET /internal/v1/settings` | header `X-Internal-Token`; the [network settings](#network-settings) object (same as `GET /v1/admin/settings`). For Ergo and quicvoiced. |
 | `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
 
 The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-script helper does). Because the caller is authenticated by `INTERNAL_API_TOKEN`, auth trusts that value: it is recorded in the audit log and used for an extra per-IP limit (`RATE_LIMIT_IP_*` ×2), so one IRC client can't spray many accounts. Without the header only the per-account limit applies, so the IRC server's own shared address is never limited.
 
+### Network settings
+
+Four settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
+and are stored in `network_settings`. Until an admin sets one, it follows its
+env variable, so env values are the defaults:
+
+| Field | Values | Env default | Enforced by |
+|---|---|---|---|
+| `registration` | `open` \| `invite` \| `closed` | `REGISTRATION` | auth (`/v1/register`, SSO sign-up) |
+| `require_email_verification` | bool | `REQUIRE_EMAIL_VERIFICATION` | auth (password login and `/internal/v1/verify-password`) |
+| `channel_creation` | `registered` \| `admins` | `CHANNEL_CREATION` (`registered`) | IRC (Ergo): who may create text channels |
+| `voice_channel_creation` | `admins` \| `founders` \| `registered` | `VOICE_CHANNEL_CREATION` (`founders`) | quicvoiced: admins only; the founder of an IRC channel may create voice channels under it; or any registered user |
+
+```json
+{"registration":"open","require_email_verification":true,"channel_creation":"registered",
+ "voice_channel_creation":"founders","updated_at":"2026-11-13T21:04:05.123456Z","updated_by":"usr_01J…"}
+```
+
+`updated_at` / `updated_by` are `null` until the first change. Each replica
+caches the row for `SETTINGS_CACHE_TTL` (5 s); the replica that handled the
+PATCH sees it at once. auth only enforces the first two; the channel settings
+are published for the IRC and voice services (`GET /internal/v1/settings`,
+cache them a few seconds too) and for clients (`GET /v1/config`).
+
+### Audit log API
+
+`GET /v1/admin/audit` returns `{"entries": [...], "next_cursor": "…" | null}`,
+newest first, `limit` 1–200 (default 50). Pass `next_cursor` back as `cursor`
+for the next page (keyset pagination on `(at, id)`, stable while new events
+arrive). Filters, all optional and combinable:
+
+| Param | |
+|---|---|
+| `event` | event name, or several comma-separated (`login,login_failed`) |
+| `actor` | user id or username: who did it (`user_id` column) |
+| `target` | user id or username: whom an admin action was about |
+| `user_id` | user id or username: either of the two (everything about one user) |
+| `since`, `until` | RFC 3339 timestamps, `since <= at < until` |
+
+An unknown username matches nothing (empty page, not an error). Each entry:
+
+```json
+{"id":"aud_…","event":"admin_user_disabled","at":"…","ip":"203.0.113.9","meta":{"user_id":"usr_B","sessions_revoked":2},
+ "user_id":"usr_A","actor_user_id":"usr_A","actor_username":"alice","target_user_id":"usr_B","target_username":"bob"}
+```
+
+`user_id` = `actor_user_id` (kept for 1.2 clients). For self-service events
+(login, register, password change) the actor is the user and the target is
+`null`; failed logins for an existing account carry that account as the actor.
+Usernames are `null` when the user was deleted or unknown.
+
 ### Errors and status codes
 
-`400 invalid_request|invalid_username|weak_password|invalid_token`,
+`400 invalid_request|invalid_username|weak_password|invalid_token|no_email`,
 `401 invalid_credentials|unauthenticated|invalid_refresh_token`,
 `403 email_not_verified|account_disabled|forbidden|csrf|registration_closed|invite_required|invalid_password`,
-`409 username_taken|email_taken`, `415 unsupported_media_type`,
+`409 username_taken|email_taken|already_verified|account_disabled` (admin actions on a disabled account), `415 unsupported_media_type`,
 `429 rate_limited` (with `Retry-After`).
 
 `account_disabled` and `email_not_verified` are only returned after the
@@ -229,8 +287,12 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `KEY_ROTATION` | `720h` | signing-key lifetime |
 | `KEY_PUBLISH_LEAD` | `15m` | publish new keys this long before they sign (keep above JWKS cache time) |
 | `AUTH_KEY_ENCRYPTION_KEY` | **required** | 32 random bytes, base64 (`auth keys gen-kek`) |
-| `REGISTRATION` | `open` | `open` \| `invite` \| `closed` |
-| `REQUIRE_EMAIL_VERIFICATION` | `true` | block login (and SASL) until the email is verified |
+| `REGISTRATION` | `open` | default for the `registration` network setting: `open` \| `invite` \| `closed` |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` | default for `require_email_verification`: block password login (and SASL) until the email is verified |
+| `CHANNEL_CREATION` | `registered` | default for `channel_creation`: `registered` \| `admins` |
+| `VOICE_CHANNEL_CREATION` | `founders` | default for `voice_channel_creation`: `admins` \| `founders` \| `registered` |
+| `SETTINGS_CACHE_TTL` | `5s` | how long a replica caches the network settings |
+| `ACCOUNT_SETUP_TTL` | `72h` | lifetime of the "choose your password" link for admin-created accounts |
 | `EMAIL_VERIFY_TTL` | `24h` | |
 | `PASSWORD_RESET_TTL` | `30m` | |
 | `ARGON2_MEMORY_KIB` / `ARGON2_ITERATIONS` / `ARGON2_PARALLELISM` | `65536` / `3` / `2` | argon2id cost for new hashes; old hashes upgrade on next login |
@@ -250,6 +312,21 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 
 Rate-limited endpoint groups: login (and password change), register,
 forgot, reset, verify/resend, internal verify-password.
+
+### Per-account login limit (for admins)
+
+Every login is checked against two token buckets: one per client IP and one
+per account (the lower-cased email or RFC 1459-folded username that was
+typed). The account bucket allows `RATE_LIMIT_ACCOUNT_BURST` (5) attempts at
+once, refilling at `RATE_LIMIT_ACCOUNT_PER_MINUTE` (2) per minute, and counts
+attempts whether or not the password was right. A user who sees
+`429 rate_limited` waits the `Retry-After` seconds (at most about 30 s with the
+defaults); nothing is stored, there is no lockout to clear, and restarting
+the service resets every bucket. Admin actions (password reset, disable)
+don't touch the buckets. Because anyone can spend a known account's bucket,
+an attacker can slow that user's logins down but never lock them out for
+longer than the refill time. The IRC SASL check (`/internal/v1/verify-password`)
+has its own bucket with twice the limits.
 
 ## CLI
 
@@ -311,7 +388,15 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
   separate listener; don't publish `INTERNAL_ADDR`.
 - **Audit log** (`audit_log`): registrations, logins, failed logins (reason
   only, never the attempted password or login string), reuse detections,
-  resets, password changes, session revocations, admin actions.
+  resets, password changes, session revocations, admin actions (with the
+  target user in `target_user_id`), settings changes (old and new values).
+- **Network settings** are only writable by admins, validated against fixed
+  value sets, and audit-logged. A stale replica serves the old value for at
+  most `SETTINGS_CACHE_TTL`.
+- **Admin-created accounts** get a verified email (the admin vouches for it).
+  The "choose your password" email is an ordinary single-use reset token
+  (`ACCOUNT_SETUP_TTL`), so passwords never travel by email, and the admin
+  never learns one unless they set it.
 
 ## Layout
 

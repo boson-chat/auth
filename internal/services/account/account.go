@@ -27,6 +27,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/session"
+	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/textutil"
 	"github.com/boson-chat/auth/metrics"
 )
@@ -66,6 +67,13 @@ type AccountServiceImpl interface {
 	// ForgotPassword emails a reset link to the stored address of the account
 	// with that email. It always returns nil to clients.
 	ForgotPassword(ctx context.Context, emailAddr string) error
+	// SendPasswordReset emails userID a reset link (admin action). setup
+	// words it as "choose your password" for a new account and uses
+	// ACCOUNT_SETUP_TTL. Errors: not_found, no_email, account_disabled.
+	SendPasswordReset(ctx context.Context, userID string, setup bool) error
+	// SendVerification emails userID a new verification link (admin action).
+	// Errors: not_found, no_email, already_verified, account_disabled.
+	SendVerification(ctx context.Context, userID string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
 	ChangePassword(ctx context.Context, userID, keepSessionID, current, newPassword string) error
 	Get(ctx context.Context, userID string) (*user.User, error)
@@ -83,6 +91,7 @@ type Deps struct {
 	Sessions    session.SessionServiceImpl
 	Email       email.EmailServiceImpl
 	Audit       audit.AuditServiceImpl
+	Settings    settings.SettingsServiceImpl
 	Hasher      *password.Hasher
 	Metrics     *metrics.Metrics
 	Config      config.AccountConfig
@@ -178,7 +187,11 @@ func (s *AccountService) newEmailToken(ctx context.Context, userID, purpose stri
 }
 
 func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*user.User, error) {
-	switch s.Config.Registration {
+	st, err := s.Settings.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	switch st.Registration {
 	case config.RegistrationClosed:
 		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
 		return nil, apperr.ErrRegistrationClosed
@@ -204,7 +217,7 @@ func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*user.
 	}
 	var verifyToken string
 	err = s.Tx.WithTx(ctx, func(ctx context.Context) error {
-		if s.Config.Registration == config.RegistrationInvite {
+		if st.Registration == config.RegistrationInvite {
 			if err := s.Invites.Redeem(ctx, in.InviteCode); err != nil {
 				return err
 			}
@@ -273,7 +286,7 @@ func (s *AccountService) CreateUser(ctx context.Context, actorID string, in Crea
 	if err != nil {
 		return nil, err
 	}
-	s.Audit.Record(ctx, actorID, audit.EventAdminUserCreated, map[string]any{"user_id": u.ID, "role": role})
+	s.Audit.RecordTarget(ctx, actorID, u.ID, audit.EventAdminUserCreated, map[string]any{"user_id": u.ID, "role": role})
 	return u, nil
 }
 
@@ -391,6 +404,66 @@ func (s *AccountService) ForgotPassword(ctx context.Context, emailAddr string) e
 	// Sent to the address stored on the account, never one from the request.
 	s.Email.SendPasswordReset(ctx, u, tok, s.Config.PasswordResetTTL)
 	s.Audit.Record(ctx, u.ID, audit.EventPasswordResetRequest, nil)
+	return nil
+}
+
+// adminTarget loads a user an admin wants to email.
+func (s *AccountService) adminTarget(ctx context.Context, userID string) (*user.User, error) {
+	u, err := s.Get(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u.Email == nil {
+		return nil, apperr.ErrNoEmail
+	}
+	if u.Disabled() {
+		return nil, apperr.ErrUserDisabled
+	}
+	return u, nil
+}
+
+func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, setup bool) error {
+	u, err := s.adminTarget(ctx, userID)
+	if err != nil {
+		return err
+	}
+	ttl := s.Config.PasswordResetTTL
+	if setup {
+		ttl = s.Config.AccountSetupTTL
+	}
+	var tok string
+	err = s.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.EmailTokens.ConsumeAllForUser(ctx, u.ID, emailtoken.PurposeResetPassword, s.now()); err != nil {
+			return err
+		}
+		var err error
+		tok, err = s.newEmailToken(ctx, u.ID, emailtoken.PurposeResetPassword, ttl)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if setup {
+		s.Email.SendAccountSetup(ctx, u, tok, ttl)
+	} else {
+		s.Email.SendPasswordReset(ctx, u, tok, ttl)
+	}
+	return nil
+}
+
+func (s *AccountService) SendVerification(ctx context.Context, userID string) error {
+	u, err := s.adminTarget(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u.EmailVerified() {
+		return apperr.ErrAlreadyVerified
+	}
+	tok, err := s.newEmailToken(ctx, u.ID, emailtoken.PurposeVerifyEmail, s.Config.EmailVerifyTTL)
+	if err != nil {
+		return err
+	}
+	s.Email.SendVerification(ctx, u, tok, s.Config.EmailVerifyTTL)
 	return nil
 }
 

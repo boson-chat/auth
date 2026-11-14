@@ -3,7 +3,9 @@ package admin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/boson-chat/auth/internal/apperr"
@@ -13,7 +15,9 @@ import (
 	inviterepo "github.com/boson-chat/auth/internal/db/repositories/invite"
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
+	"github.com/boson-chat/auth/internal/ids"
 	"github.com/boson-chat/auth/internal/nick"
+	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/session"
@@ -22,7 +26,40 @@ import (
 
 const MaxPageSize = 200
 
+// CreateUserInput is POST /v1/admin/users. The email (if any) is marked
+// verified. Password and SendSetupEmail are mutually exclusive; with neither
+// the account has no password until a reset (or SSO).
+type CreateUserInput struct {
+	Username       string
+	Email          string
+	Role           string
+	Password       string
+	SendSetupEmail bool
+}
+
+// AuditQuery filters GET /v1/admin/audit. Actor and Target take a user id
+// or a username. Cursor is the next_cursor of the previous page.
+type AuditQuery struct {
+	Events []string
+	Actor  string
+	Target string
+	UserID string // actor or target (legacy ?user_id=)
+	Since  *time.Time
+	Until  *time.Time
+	Cursor string
+	Limit  int
+}
+
+var errBadCursor = apperr.Invalid("invalid cursor")
+
 type AdminServiceImpl interface {
+	// CreateUser creates an account (email verified) and optionally emails a
+	// "choose your password" link. Returns whether that email was queued.
+	CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, bool, error)
+	// SendPasswordReset emails the user a reset link (same flow as forgot).
+	SendPasswordReset(ctx context.Context, actorID, userID string) error
+	// SendVerification emails the user a new verification link.
+	SendVerification(ctx context.Context, actorID, userID string) error
 	ListUsers(ctx context.Context, query string, limit, offset int) ([]*user.User, int64, error)
 	GetUser(ctx context.Context, id string) (*user.User, error)
 	// FindUser resolves a user id or username (CLI convenience).
@@ -35,10 +72,13 @@ type AdminServiceImpl interface {
 	CreateInvite(ctx context.Context, actorID string, maxUses int, ttl time.Duration, note string) (string, *inviterepo.Invite, error)
 	ListInvites(ctx context.Context, limit int) ([]*inviterepo.Invite, error)
 	RevokeInvite(ctx context.Context, actorID, id string) error
-	ListAudit(ctx context.Context, userID string, limit int) ([]*auditrepo.Entry, error)
+	// ListAudit returns one page, newest first, and the cursor of the next
+	// page ("" on the last page).
+	ListAudit(ctx context.Context, q AuditQuery) ([]*auditrepo.EntryView, string, error)
 }
 
 type AdminService struct {
+	Account  account.AccountServiceImpl
 	Users    user.UserRepositoryImpl
 	Tx       db.TxManagerImpl
 	Sessions session.SessionServiceImpl
@@ -47,12 +87,12 @@ type AdminService struct {
 	Now      func() time.Time
 }
 
-func NewAdminService(users user.UserRepositoryImpl, tx db.TxManagerImpl, sessions session.SessionServiceImpl,
+func NewAdminService(acct account.AccountServiceImpl, users user.UserRepositoryImpl, tx db.TxManagerImpl, sessions session.SessionServiceImpl,
 	invites invite.InviteServiceImpl, auditSvc audit.AuditServiceImpl, now func() time.Time) AdminServiceImpl {
 	if now == nil {
 		now = time.Now
 	}
-	return &AdminService{Users: users, Tx: tx, Sessions: sessions, Invites: invites, Audit: auditSvc, Now: now}
+	return &AdminService{Account: acct, Users: users, Tx: tx, Sessions: sessions, Invites: invites, Audit: auditSvc, Now: now}
 }
 
 func clampLimit(limit int) int {
@@ -117,7 +157,7 @@ func (s *AdminService) SetDisabled(ctx context.Context, actorID, userID string, 
 	if disabled {
 		ev = audit.EventAdminUserDisabled
 	}
-	s.Audit.Record(ctx, actorID, ev, map[string]any{"user_id": userID, "sessions_revoked": revoked})
+	s.Audit.RecordTarget(ctx, actorID, userID, ev, map[string]any{"user_id": userID, "sessions_revoked": revoked})
 	return s.GetUser(ctx, userID)
 }
 
@@ -128,7 +168,7 @@ func (s *AdminService) SetRole(ctx context.Context, actorID, userID, role string
 	if err := s.Users.SetRole(ctx, userID, role); err != nil {
 		return nil, notFound(err)
 	}
-	s.Audit.Record(ctx, actorID, audit.EventAdminRoleChanged, map[string]any{"user_id": userID, "role": role})
+	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminRoleChanged, map[string]any{"user_id": userID, "role": role})
 	return s.GetUser(ctx, userID)
 }
 
@@ -144,7 +184,7 @@ func (s *AdminService) RevokeSession(ctx context.Context, actorID, sessionID str
 	if err := s.Sessions.Revoke(ctx, "", sessionID); err != nil {
 		return err
 	}
-	s.Audit.Record(ctx, actorID, audit.EventAdminSessionRevoked, map[string]any{"session_id": sessionID, "user_id": sess.UserID})
+	s.Audit.RecordTarget(ctx, actorID, sess.UserID, audit.EventAdminSessionRevoked, map[string]any{"session_id": sessionID, "user_id": sess.UserID})
 	return nil
 }
 
@@ -169,9 +209,129 @@ func (s *AdminService) RevokeInvite(ctx context.Context, actorID, id string) err
 	return nil
 }
 
-func (s *AdminService) ListAudit(ctx context.Context, userID string, limit int) ([]*auditrepo.Entry, error) {
-	if userID != "" {
-		return s.Audit.ListByUser(ctx, userID, clampLimit(limit))
+func (s *AdminService) CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, bool, error) {
+	if in.Password != "" && in.SendSetupEmail {
+		return nil, false, apperr.Invalid("give either password or send_invite_email, not both")
 	}
-	return s.Audit.ListRecent(ctx, clampLimit(limit))
+	if in.SendSetupEmail && strings.TrimSpace(in.Email) == "" {
+		return nil, false, apperr.Invalid("send_invite_email needs an email address")
+	}
+	u, err := s.Account.CreateUser(ctx, actorID, account.CreateUserInput{
+		Username: in.Username, Email: in.Email, Password: in.Password, Role: in.Role, EmailVerified: true,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !in.SendSetupEmail {
+		return u, false, nil
+	}
+	if err := s.Account.SendPasswordReset(ctx, u.ID, true); err != nil {
+		return u, false, err
+	}
+	return u, true, nil
+}
+
+func (s *AdminService) SendPasswordReset(ctx context.Context, actorID, userID string) error {
+	if err := s.Account.SendPasswordReset(ctx, userID, false); err != nil {
+		return err
+	}
+	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminResetSent, map[string]any{"user_id": userID})
+	return nil
+}
+
+func (s *AdminService) SendVerification(ctx context.Context, actorID, userID string) error {
+	if err := s.Account.SendVerification(ctx, userID); err != nil {
+		return err
+	}
+	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminVerifySent, map[string]any{"user_id": userID})
+	return nil
+}
+
+// EncodeCursor and DecodeCursor make the opaque next_cursor of audit pages.
+func EncodeCursor(c auditrepo.Cursor) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(c.At.UTC().Format(time.RFC3339Nano) + "|" + c.ID))
+}
+
+func DecodeCursor(s string) (auditrepo.Cursor, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return auditrepo.Cursor{}, errBadCursor
+	}
+	at, id, ok := strings.Cut(string(b), "|")
+	if !ok || !ids.HasPrefix(id, ids.Audit) {
+		return auditrepo.Cursor{}, errBadCursor
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return auditrepo.Cursor{}, errBadCursor
+	}
+	return auditrepo.Cursor{At: t, ID: id}, nil
+}
+
+// resolveUser maps a user id or username to an id. ok is false when no such
+// user exists (the filter then matches nothing).
+func (s *AdminService) resolveUser(ctx context.Context, v string) (string, bool, error) {
+	if !textutil.Storable(v) || len(v) > 64 {
+		return "", false, apperr.Invalid("invalid user filter")
+	}
+	if ids.HasPrefix(v, ids.User) {
+		return v, true, nil
+	}
+	u, err := s.Users.FindByUsernameFolded(ctx, nick.Fold(v))
+	if errors.Is(err, repositories.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return u.ID, true, nil
+}
+
+func (s *AdminService) ListAudit(ctx context.Context, q AuditQuery) ([]*auditrepo.EntryView, string, error) {
+	f := auditrepo.Filter{Since: q.Since, Until: q.Until, Limit: clampLimit(q.Limit)}
+	for _, ev := range q.Events {
+		if ev = strings.TrimSpace(ev); ev != "" {
+			if !textutil.Storable(ev) || len(ev) > 64 {
+				return nil, "", apperr.Invalid("invalid event filter")
+			}
+			f.Events = append(f.Events, ev)
+		}
+	}
+	for _, p := range []struct {
+		in  string
+		out *string
+	}{{q.Actor, &f.ActorID}, {q.Target, &f.TargetID}, {q.UserID, &f.AnyUserID}} {
+		if p.in == "" {
+			continue
+		}
+		id, ok, err := s.resolveUser(ctx, p.in)
+		if err != nil {
+			return nil, "", err
+		}
+		if !ok {
+			return []*auditrepo.EntryView{}, "", nil
+		}
+		*p.out = id
+	}
+	if q.Cursor != "" {
+		c, err := DecodeCursor(q.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		f.After = &c
+	}
+	// Fetch one extra row to know whether another page exists.
+	want := f.Limit
+	f.Limit++
+	list, err := s.Audit.List(ctx, f)
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(list) > want {
+		list = list[:want]
+		last := list[want-1]
+		next = EncodeCursor(auditrepo.Cursor{At: last.At, ID: last.ID})
+	}
+	return list, next, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/idp"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/session"
+	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/textutil"
 )
 
@@ -36,6 +37,7 @@ type Handlers struct {
 	Admin    admin.AdminServiceImpl
 	Keys     keys.KeyServiceImpl
 	IdP      idp.IdPServiceImpl
+	Settings settings.SettingsServiceImpl
 	Limits   *Limits
 	Config   config.Config
 	// Ready reports whether dependencies (database) are reachable.
@@ -110,6 +112,12 @@ func (h *Handlers) adminOnly(next nethttp.HandlerFunc) nethttp.HandlerFunc {
 		}
 		next(w, r)
 	})
+}
+
+// version serves GET /version (both listeners): the build version as plain text.
+func (h *Handlers) version(w nethttp.ResponseWriter, _ *nethttp.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(h.Config.AppConfig.Version + "\n"))
 }
 
 func (h *Handlers) setCookie(w nethttp.ResponseWriter, name, value, path string, expires time.Time) {
