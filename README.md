@@ -59,7 +59,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, sso_providers: [{slug, kind, display_name, start_url}]}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on)) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, sso_providers: [{slug, kind, display_name, start_url}]}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on)) |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
 | `POST /v1/email/verify` | – | `{token}` → `{user}` |
 | `POST /v1/email/resend` | optional | `{email}` (or a bearer token) → 202, same response whether or not the account exists |
@@ -106,8 +106,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
 | `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` |
-| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, updated_at, updated_by}` |
+| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 | `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
 | `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
 | `POST /v1/admin/roles`, `PATCH /v1/admin/roles/{id}` | `roles.manage` | `{name, color?, position?, permissions?, irc?: {whois_line?, vhost?, oper?}, hoist?, mentionable?}` → 201 / 200 `{role}` |
@@ -133,7 +133,7 @@ The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-
 
 ### Network settings
 
-Four settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
+Six settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
 and are stored in `network_settings`. Until an admin sets one, it follows its
 env variable, so env values are the defaults:
 
@@ -143,10 +143,13 @@ env variable, so env values are the defaults:
 | `require_email_verification` | bool | `REQUIRE_EMAIL_VERIFICATION` | auth (password login and `/internal/v1/verify-password`) |
 | `channel_creation` | `registered` \| `admins` | `CHANNEL_CREATION` (`registered`) | IRC (Ergo): who may create text channels: `registered` = holders of `channel.create` (Member has it), `admins` = holders of `admin.panel` |
 | `voice_channel_creation` | `admins` \| `founders` \| `registered` | `VOICE_CHANNEL_CREATION` (`founders`) | quicvoiced: `admins` = holders of `voice.manage_any`; `founders` = the IRC channel's founder (with `voice.create`) or `voice.manage_any`; `registered` = holders of `voice.create` (Member has it) |
+| `channel_auto_register` | bool | `CHANNEL_AUTO_REGISTER` (`true`) | IRC (Ergo): a logged-in user who creates a new channel by joining it gets it registered to their account |
+| `channel_expiry_days` | integer 0–3650 | `CHANNEL_EXPIRY_DAYS` (`0`) | IRC (Ergo): registered channels with no joins or messages for this many days are unregistered; `0` = never expire |
 
 ```json
 {"registration":"open","require_email_verification":true,"channel_creation":"registered",
- "voice_channel_creation":"founders","updated_at":"2026-11-13T21:04:05.123456Z","updated_by":"usr_01J…"}
+ "voice_channel_creation":"founders","channel_auto_register":true,"channel_expiry_days":0,
+ "updated_at":"2026-11-13T21:04:05.123456Z","updated_by":"usr_01J…"}
 ```
 
 `updated_at` / `updated_by` are `null` until the first change. Each replica
@@ -362,6 +365,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `REQUIRE_EMAIL_VERIFICATION` | `true` | default for `require_email_verification`: block password login (and SASL) until the email is verified |
 | `CHANNEL_CREATION` | `registered` | default for `channel_creation`: `registered` \| `admins` |
 | `VOICE_CHANNEL_CREATION` | `founders` | default for `voice_channel_creation`: `admins` \| `founders` \| `registered` |
+| `CHANNEL_AUTO_REGISTER` | `true` | default for `channel_auto_register`: IRC registers new channels to their creator |
+| `CHANNEL_EXPIRY_DAYS` | `0` | default for `channel_expiry_days`: 0–3650, days of inactivity before IRC unregisters a channel (`0` = never) |
 | `SETTINGS_CACHE_TTL` | `5s` | how long a replica caches the network settings |
 | `ACCOUNT_SETUP_TTL` | `72h` | lifetime of the "choose your password" link for admin-created accounts |
 | `EMAIL_VERIFY_TTL` | `24h` | |

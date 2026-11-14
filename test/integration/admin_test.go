@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -92,6 +93,72 @@ func TestNetworkSettings(t *testing.T) {
 	meta := entries[0]["meta"].(map[string]any)
 	if fmt.Sprint(meta["old"]) != "map[require_email_verification:false]" || fmt.Sprint(meta["new"]) != "map[require_email_verification:true]" {
 		t.Fatalf("audit meta: %v", meta)
+	}
+}
+
+func TestChannelLifecycleSettings(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.AccountConfig.ChannelAutoRegister = true
+		c.AccountConfig.ChannelExpiryDays = 0
+		c.AccountConfig.SettingsCacheTTL = 0
+	})
+	adminAT := e.adminToken("netadmin")
+	tok := header("X-Internal-Token", e.cfg.InternalConfig.APIToken)
+	check := func(name string, r resp, auto bool, days float64) {
+		t.Helper()
+		e.expect(r, 200, "")
+		if r.body["channel_auto_register"] != auto || r.body["channel_expiry_days"] != days {
+			t.Fatalf("%s: %s", name, r.raw)
+		}
+	}
+	all := func(auto bool, days float64) {
+		t.Helper()
+		check("admin", e.api("GET", "/v1/admin/settings", nil, bearer(adminAT)), auto, days)
+		check("internal", e.do(e.internal, "GET", "/internal/v1/settings", nil, tok), auto, days)
+		check("config", e.api("GET", "/v1/config", nil), auto, days)
+	}
+	all(true, 0)
+
+	for bad, msg := range map[string]string{
+		`{"channel_expiry_days": -1}`:     "channel_expiry_days must be between 0 and 3650 (0 = never expire)",
+		`{"channel_expiry_days": 3651}`:   "channel_expiry_days must be between 0 and 3650 (0 = never expire)",
+		`{"channel_expiry_days": 1.5}`:    "channel_expiry_days must be an integer",
+		`{"channel_expiry_days": "30"}`:   "channel_expiry_days must be an integer",
+		`{"channel_auto_register": "no"}`: "channel_auto_register must be a boolean",
+		`{"channel_auto_register": 0}`:    "channel_auto_register must be a boolean",
+		`{"channel_auto_register": null}`: "nothing to update",
+	} {
+		r := e.api("PATCH", "/v1/admin/settings", json.RawMessage(bad), bearer(adminAT))
+		e.expect(r, 400, "invalid_request")
+		if r.str("message") != msg {
+			t.Errorf("%s: message %q, want %q", bad, r.str("message"), msg)
+		}
+	}
+	all(true, 0)
+
+	r := e.api("PATCH", "/v1/admin/settings", map[string]any{"channel_auto_register": false, "channel_expiry_days": 90}, bearer(adminAT))
+	check("patch", r, false, 90)
+	if r.str("channel_creation") != "registered" {
+		t.Fatalf("partial patch touched other fields: %s", r.raw)
+	}
+	all(false, 90)
+	check("upper bound", e.api("PATCH", "/v1/admin/settings", map[string]any{"channel_expiry_days": 3650}, bearer(adminAT)), false, 3650)
+	check("never", e.api("PATCH", "/v1/admin/settings", map[string]any{"channel_expiry_days": 0}, bearer(adminAT)), false, 0)
+
+	a := e.api("GET", "/v1/admin/audit?event=settings_updated&limit=3", nil, bearer(adminAT))
+	e.expect(a, 200, "")
+	entries := a.list("entries")
+	if len(entries) != 3 {
+		t.Fatalf("audit: %s", a.raw)
+	}
+	first := entries[2]["meta"].(map[string]any)
+	if fmt.Sprint(first["old"]) != "map[channel_auto_register:true channel_expiry_days:0]" ||
+		fmt.Sprint(first["new"]) != "map[channel_auto_register:false channel_expiry_days:90]" {
+		t.Fatalf("audit meta: %v", first)
+	}
+	last := entries[0]["meta"].(map[string]any)
+	if fmt.Sprint(last["old"]) != "map[channel_expiry_days:3650]" || fmt.Sprint(last["new"]) != "map[channel_expiry_days:0]" {
+		t.Fatalf("audit meta: %v", last)
 	}
 }
 

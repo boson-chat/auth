@@ -96,6 +96,8 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"require_email_verification": st.RequireEmailVerification,
 		"channel_creation":           st.ChannelCreation,
 		"voice_channel_creation":     st.VoiceChannelCreation,
+		"channel_auto_register":      st.ChannelAutoRegister,
+		"channel_expiry_days":        st.ChannelExpiryDays,
 		"sso_providers":              providers,
 	})
 }

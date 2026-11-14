@@ -17,6 +17,8 @@ type Row struct {
 	RequireEmailVerification *bool
 	ChannelCreation          *string
 	VoiceChannelCreation     *string
+	ChannelAutoRegister      *bool
+	ChannelExpiryDays        *int
 	UpdatedAt                *time.Time
 	UpdatedBy                *string
 }

@@ -10,7 +10,7 @@ ranks managed by ChanServ (AMODE) and are not roles.
 - [Model](#model) · [Built-in roles](#built-in-roles) · [Permissions](#permissions)
 - [Hierarchy](#hierarchy) · [Admin API](#admin-api) · [Public API](#public-api)
 - [Tokens](#tokens) · [Ergo integration](#ergo-integration) · [quicvoiced](#quicvoiced)
-- [Channel creation settings](#channel-creation-settings) · [Migrating from 1.x](#migrating-from-1x)
+- [Channel creation settings](#channel-creation-settings) · [Channel lifecycle settings](#channel-lifecycle-settings) · [Migrating from 1.x](#migrating-from-1x)
 
 ## Model
 
@@ -374,6 +374,16 @@ qualifies:
 | `voice_channel_creation` | `registered` | users with `voice.create` (Member has it) |
 | | `founders` | the IRC channel's founder, if they have `voice.create`; plus anyone with `voice.manage_any` |
 | | `admins` | users with `voice.manage_any` |
+
+## Channel lifecycle settings
+
+Two more network settings, also published on `GET /internal/v1/settings`
+and `GET /v1/config` and enforced by IRC (Ergo):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `channel_auto_register` | `true` (`CHANNEL_AUTO_REGISTER`) | a logged-in user who creates a new channel by joining it gets it registered to their account (subject to `channel_creation`) |
+| `channel_expiry_days` | `0` (`CHANNEL_EXPIRY_DAYS`) | registered channels with no joins or messages for this many days are unregistered; 0–3650, `0` = never |
 
 ## Migrating from 1.x
 
