@@ -20,6 +20,8 @@ const maxBody = 64 << 10
 type errorBody struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	// Code repeats Error for clients that read the code from "code".
+	Code string `json:"code"`
 }
 
 func writeJSON(w nethttp.ResponseWriter, status int, v any) {
@@ -33,11 +35,11 @@ func writeJSON(w nethttp.ResponseWriter, status int, v any) {
 // writeError renders apperr errors as-is and everything else as a generic 500.
 func writeError(w nethttp.ResponseWriter, r *nethttp.Request, err error) {
 	if e, ok := apperr.As(err); ok {
-		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message})
+		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message, Code: e.Code})
 		return
 	}
 	logger.FromCtx(r.Context()).Error().Err(err).Str("path", r.URL.Path).Msg("internal error")
-	writeJSON(w, nethttp.StatusInternalServerError, errorBody{Error: "internal_error", Message: "internal error"})
+	writeJSON(w, nethttp.StatusInternalServerError, errorBody{Error: "internal_error", Message: "internal error", Code: "internal_error"})
 }
 
 var errUnsupportedMedia = apperr.New(nethttp.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")

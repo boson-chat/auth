@@ -205,6 +205,10 @@ type SMTPConfig struct {
 type InternalConfig struct {
 	// Shared secret for /internal/v1/*, sent as X-Internal-Token. Empty disables the internal API.
 	APIToken string `env:"INTERNAL_API_TOKEN"`
+	// Separate secret for /internal/v1/acting/* (RoleServ acting as an
+	// account), sent as X-Internal-Token. INTERNAL_API_TOKEN is never
+	// accepted there. Empty disables the acting API (404).
+	ActingToken string `env:"INTERNAL_ACTING_TOKEN"`
 }
 
 // RateLimitConfig: token buckets per client IP and per account identifier,
@@ -309,6 +313,9 @@ func (c Config) Validate() error {
 	}
 	if t.KeyPublishLead < 0 {
 		return errors.New("KEY_PUBLISH_LEAD must not be negative")
+	}
+	if i := c.InternalConfig; i.ActingToken != "" && i.ActingToken == i.APIToken {
+		return errors.New("INTERNAL_ACTING_TOKEN must differ from INTERNAL_API_TOKEN")
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
 		return errors.New("SSO_STATE_TTL, SSO_CODE_TTL and SSO_HTTP_TIMEOUT must be positive")

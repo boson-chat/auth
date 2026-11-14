@@ -1,7 +1,9 @@
 package roles
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -243,5 +245,69 @@ func TestCursor(t *testing.T) {
 		if _, err := decodeCursor(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// grantsRepo serves Grants from memory (other methods are unused).
+type grantsRepo struct {
+	role.RoleRepositoryImpl
+	roles []*role.Role
+	users []*role.UserRoles
+	asked [][]string
+}
+
+func (g *grantsRepo) List(context.Context) ([]*role.Role, error)   { return g.roles, nil }
+func (g *grantsRepo) GrantsVersion(context.Context) (int64, error) { return 7, nil }
+func (g *grantsRepo) EnabledUsersWithRoles(_ context.Context, anyOf []string) ([]*role.UserRoles, error) {
+	g.asked = append(g.asked, anyOf)
+	var out []*role.UserRoles
+	for _, u := range g.users {
+		if anyOf == nil || slices.ContainsFunc(u.RoleIDs, func(id string) bool { return slices.Contains(anyOf, id) }) {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func TestGrants(t *testing.T) {
+	dj := mk("rol_dj", "DJ", 10, "", perm.VoiceCreate)
+	dj.IRCVhost = ptr("dj/{username}")
+	mem := *member
+	repo := &grantsRepo{roles: []*role.Role{owner, admin, mod, helper, dj, &mem}, users: []*role.UserRoles{
+		{Username: "alice", RoleIDs: []string{role.AdminID}},
+		{Username: "Bob[x]", RoleIDs: []string{role.ModeratorID, "rol_dj"}},
+		{Username: "carl", RoleIDs: []string{"rol_helper"}},
+		{Username: "dave"},
+	}}
+	s := &RolesService{Roles: repo}
+	version, gs, err := s.Grants(context.Background())
+	if err != nil || version != "7" {
+		t.Fatal(version, err)
+	}
+	str := func(gs []Grant) string {
+		var out []string
+		for _, g := range gs {
+			v := func(p *string) string {
+				if p == nil {
+					return "-"
+				}
+				return *p
+			}
+			out = append(out, g.Username+":"+v(g.OperClass)+":"+v(g.WhoisLine)+":"+v(g.Vhost))
+		}
+		return strings.Join(out, " ")
+	}
+	// Only oper or vhost roles are asked for; helper (no irc) isn't.
+	if got := str(gs); got != "alice:admin:is an Admin:- Bob[x]:moderator:is a Moderator:dj/bob-x-" {
+		t.Fatalf("grants: %s", got)
+	}
+	if fmt.Sprint(repo.asked[0]) != "[rol_00000000000000000000000001 rol_00000000000000000000000002 rol_00000000000000000000000003 rol_dj]" {
+		t.Fatalf("asked for %v", repo.asked[0])
+	}
+	// A vhost on Member: every enabled account.
+	mem.IRCVhost = ptr("users/{username}")
+	_, gs, _ = s.Grants(context.Background())
+	if repo.asked[1] != nil || str(gs) != "alice:admin:is an Admin:users/alice Bob[x]:moderator:is a Moderator:dj/bob-x- carl:-:-:users/carl dave:-:-:users/dave" {
+		t.Fatalf("member vhost: %s (asked %v)", str(gs), repo.asked[1])
 	}
 }

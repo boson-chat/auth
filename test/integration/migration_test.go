@@ -64,9 +64,7 @@ func TestMigrationMapsAdminsToRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqldb.Close()
-	if err := db.MigrateDown(dsn, 1); err != nil {
-		t.Fatalf("down: %v", err)
-	}
+	migrateDownTo(t, sqldb, dsn, 3)
 	for _, u := range []struct{ id, name, role, at string }{
 		{"usr_01", "first", "admin", "2025-01-01"},
 		{"usr_02", "second", "admin", "2025-02-01"},
@@ -110,9 +108,7 @@ func TestMigrationMapsAdminsToRoles(t *testing.T) {
 		t.Fatalf("builtin roles = %d (%v)", n, err)
 	}
 	// Down drops the tables but keeps the 1.x role column; up again re-seeds.
-	if err := db.MigrateDown(dsn, 1); err != nil {
-		t.Fatalf("down again: %v", err)
-	}
+	migrateDownTo(t, sqldb, dsn, 3)
 	if legacy("usr_03") != "admin" {
 		t.Fatal("down must keep users.role")
 	}
@@ -124,5 +120,17 @@ func TestMigrationMapsAdminsToRoles(t *testing.T) {
 	}
 	if rolesOf("usr_01") != "owner" || rolesOf("usr_03") != "owner" {
 		t.Fatal("re-applied migration must map the same owners")
+	}
+}
+
+// migrateDownTo rolls the schema back to version target.
+func migrateDownTo(t *testing.T, sqldb *sql.DB, dsn string, target int) {
+	t.Helper()
+	var version int
+	if err := sqldb.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MigrateDown(dsn, version-target); err != nil {
+		t.Fatalf("down to %d: %v", target, err)
 	}
 }

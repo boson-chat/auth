@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/boson-chat/auth/internal/apperr"
@@ -73,6 +74,9 @@ type Input struct {
 	IRC         *IRCInput        `json:"irc"`
 	Hoist       *bool            `json:"hoist"`
 	Mentionable *bool            `json:"mentionable"`
+	// IfMatch (PATCH only, from the If-Match header): fail with 412 unless
+	// the role's updated_at is still this.
+	IfMatch *time.Time `json:"-"`
 }
 
 func (in Input) empty() bool {

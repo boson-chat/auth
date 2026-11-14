@@ -125,6 +125,9 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `POST /internal/v1/verify-password` | header `X-Internal-Token: $INTERNAL_API_TOKEN`; `{username, password}` → `{ok, user_id?, username?, reason?, irc?: {oper_class, whois_line, vhost}, roles?, permissions?}` (`reason`: `invalid_credentials` \| `account_disabled` \| `email_not_verified`; `irc`/`roles`/`permissions` on success). For IRC SASL PLAIN. Disabled (503) when `INTERNAL_API_TOKEN` is empty. |
 | `GET /internal/v1/roles` | every role with its Ergo oper class, WHOIS line, vhost template and capabilities → `{version, roles}`; `ETag` = version, `If-None-Match` → 304 ([Ergo integration](docs/roles.md#ergo-integration)) |
 | `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
+| `GET /internal/v1/roles/{id}/members?cursor=&limit=` | the admin API's members list (`{users, next_cursor}`), for RoleServ |
+| `GET /internal/v1/irc/grants` | `{version, users: [{username, oper_class, whois_line, vhost}]}`: every enabled account with an oper class or vhost; `ETag` = version, `If-None-Match` → 304 ([grants feed](docs/roles.md#get-internalv1ircgrants-live-changes)) |
+| `/internal/v1/acting/…` | the admin roles API on behalf of `X-Acting-Account`, authenticated by `X-Internal-Token: $INTERNAL_ACTING_TOKEN` (never `INTERNAL_API_TOKEN`); 404 when that is unset ([acting API](docs/roles.md#acting-api-roleserv)) |
 
 The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-script helper does). Because the caller is authenticated by `INTERNAL_API_TOKEN`, auth trusts that value: it is recorded in the audit log and used for an extra per-IP limit (`RATE_LIMIT_IP_*` ×2), so one IRC client can't spray many accounts. Without the header only the per-account limit applies, so the IRC server's own shared address is never limited.
 
@@ -221,8 +224,11 @@ Keycloak, Okta and Entra ID.
 `403 email_not_verified|account_disabled|forbidden|csrf|registration_closed|invite_required|invalid_password`,
 `403 role_hierarchy|permission_not_held` (roles),
 `409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account),
-`409 role_name_taken|builtin_role|last_owner` (roles), `415 unsupported_media_type`,
-`429 rate_limited` (with `Retry-After`).
+`409 role_name_taken|builtin_role|last_owner` (roles), `412 precondition_failed` (`If-Match` on a role edit),
+`415 unsupported_media_type`, `429 rate_limited` (with `Retry-After`).
+
+Error bodies are `{"error": code, "message": text, "code": code}` (`code`
+repeats `error` for clients that read it from there).
 
 `account_disabled` and `email_not_verified` are only returned after the
 password has been checked, so they reveal nothing to someone guessing.
@@ -367,6 +373,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `SMTP_FROM` | `boson <no-reply@localhost>` | |
 | `SMTP_TLS` | `starttls` | `starttls` (required) \| `tls` (implicit, 465) \| `none` (dev, e.g. Mailpit) |
 | `INTERNAL_API_TOKEN` | – | shared secret for `/internal/v1/*`; empty disables it |
+| `INTERNAL_ACTING_TOKEN` | – | separate secret for `/internal/v1/acting/*` (RoleServ acting as an account); must differ from `INTERNAL_API_TOKEN`; empty = the acting API doesn't exist (404) |
 | `SSO_RETURN_TO_ALLOWED` | `http://127.0.0.1:*,http://[::1]:*,boson://` | extra SSO `return_to` targets (code mode), besides this site's web origins. Patterns `scheme://host[:port\|:*][/path-prefix]`; `boson://` = any URL of that scheme |
 | `SSO_STATE_TTL` | `10m` | lifetime of the encrypted SSO state cookie (time allowed at the IdP) |
 | `SSO_CODE_TTL` | `1m` | lifetime of one-time codes for native clients |

@@ -141,6 +141,11 @@ func (h *Handlers) adminUpdateRole(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeError(w, r, err)
 		return
 	}
+	var err error
+	if in.IfMatch, err = ifMatch(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
 	v, err := h.Roles.Update(r.Context(), principalFrom(r).UserID, r.PathValue("id"), in)
 	if err != nil {
 		writeError(w, r, err)
@@ -223,6 +228,22 @@ func (h *Handlers) adminSetUserRoles(w nethttp.ResponseWriter, r *nethttp.Reques
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{"roles": toRoleSummaries(rs)})
+}
+
+var errBadIfMatch = apperr.Invalid("If-Match must be the role's updated_at (RFC 3339)")
+
+// ifMatch parses an optional If-Match: <updated_at> (quotes allowed).
+func ifMatch(r *nethttp.Request) (*time.Time, error) {
+	v := strings.TrimSpace(r.Header.Get("If-Match"))
+	if v == "" || v == "*" {
+		return nil, nil
+	}
+	v = strings.Trim(strings.TrimPrefix(v, "W/"), `"`)
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return nil, errBadIfMatch
+	}
+	return &t, nil
 }
 
 // notModified sets the ETag and reports (after writing 304) whether the
@@ -351,4 +372,35 @@ func (h *Handlers) internalUserIRC(w nethttp.ResponseWriter, r *nethttp.Request)
 		"user_id": u.ID, "username": u.Username, "disabled": u.Disabled(),
 		"irc": irc, "roles": a.RoleNames(roles.MaxTokenRoles), "permissions": a.Permissions,
 	})
+}
+
+type ircGrantJSON struct {
+	Username string `json:"username"`
+	roles.IRCInfo
+}
+
+// internalIRCGrants: GET /internal/v1/irc/grants, every enabled account with
+// an oper class or a vhost, so Ergo can apply admin-panel changes live.
+func (h *Handlers) internalIRCGrants(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if r.Header.Get("If-None-Match") != "" {
+		version, err := h.Roles.GrantsVersion(r.Context())
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if notModified(w, r, version) {
+			return
+		}
+	}
+	version, gs, err := h.Roles.Grants(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", `"`+version+`"`)
+	out := make([]ircGrantJSON, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, ircGrantJSON{Username: g.Username, IRCInfo: g.IRCInfo})
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{"version": version, "users": out})
 }

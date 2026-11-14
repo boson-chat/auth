@@ -1,5 +1,6 @@
 // Package reqmeta carries the client IP and user agent of the current
-// request through the context, for sessions and the audit log.
+// request (and, for the acting API, the service acting on a user's behalf)
+// through the context, for sessions and the audit log.
 package reqmeta
 
 import "context"
@@ -7,6 +8,9 @@ import "context"
 type Meta struct {
 	IP        string
 	UserAgent string
+	// Via names the internal service acting on the user's behalf (e.g.
+	// "roleserv"); audit events record it as meta.via.
+	Via string
 }
 
 type ctxKey struct{}
