@@ -6,12 +6,14 @@
 package branding
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"io/fs"
 	"net/url"
@@ -49,7 +51,14 @@ type Document struct {
 type Snapshot struct {
 	doc       Document
 	assets    map[string]*Asset
-	emailLogo string
+	emailLogo EmailLogo
+}
+
+// EmailLogo is the logo emails show: its URL and, for rasters, its size in
+// pixels (0 when unknown, e.g. SVG).
+type EmailLogo struct {
+	URL           string
+	Width, Height int
 }
 
 // Prepare loads b's images from dir and renders the document with absolute
@@ -103,16 +112,26 @@ func Prepare(b *config.BrandingConfig, dir, publicURL string) (*Snapshot, error)
 		}
 		slotURL[img.Slot] = u
 	}
-	// Emails: the wordmark, else the mark; raster before SVG (many mail
-	// clients don't show SVG).
-	for _, svgOK := range []bool{false, true} {
+	// Emails: the wordmark, else the mark; PNG / JPEG / GIF before WebP
+	// (Outlook for Windows shows no WebP) before SVG (many mail clients
+	// show no SVG).
+	tier := func(mt string) int {
+		switch mt {
+		case "image/svg+xml":
+			return 2
+		case "image/webp":
+			return 1
+		}
+		return 0
+	}
+	for want := 0; want <= 2 && s.emailLogo.URL == ""; want++ {
 		for _, slot := range []string{theme.SlotLogoWide, theme.SlotLogo} {
-			if s.emailLogo != "" {
-				break
-			}
 			for _, img := range b.Images {
-				if img.Slot == slot && (svgOK || s.assets[img.File].MediaType != "image/svg+xml") {
-					s.emailLogo = slotURL[slot]
+				if a := s.assets[img.File]; s.emailLogo.URL == "" && img.Slot == slot && tier(a.MediaType) == want {
+					s.emailLogo = EmailLogo{URL: slotURL[slot]}
+					if cfg, _, err := image.DecodeConfig(bytes.NewReader(a.Data)); err == nil {
+						s.emailLogo.Width, s.emailLogo.Height = cfg.Width, cfg.Height
+					}
 				}
 			}
 		}
@@ -157,6 +176,8 @@ type BrandingServiceImpl interface {
 	URL() string
 	// EmailLogoURL is the logo for emails ("" when there is none).
 	EmailLogoURL() string
+	// EmailLogo is the logo for emails with its size (zero when none).
+	EmailLogo() EmailLogo
 }
 
 type BrandingService struct {
@@ -194,9 +215,11 @@ func (s *BrandingService) URL() string {
 	return s.publicURL + DocumentPath
 }
 
-func (s *BrandingService) EmailLogoURL() string {
+func (s *BrandingService) EmailLogoURL() string { return s.EmailLogo().URL }
+
+func (s *BrandingService) EmailLogo() EmailLogo {
 	if snap := s.cur.Load(); snap != nil {
 		return snap.emailLogo
 	}
-	return ""
+	return EmailLogo{}
 }

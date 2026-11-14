@@ -23,6 +23,8 @@ type errorBody struct {
 	Message string `json:"message"`
 	// Code repeats Error for clients that read the code from "code".
 	Code string `json:"code"`
+	// Field is the request field a 400 is about, when there is one.
+	Field string `json:"field,omitempty"`
 }
 
 func writeJSON(w nethttp.ResponseWriter, status int, v any) {
@@ -36,7 +38,7 @@ func writeJSON(w nethttp.ResponseWriter, status int, v any) {
 // writeError renders apperr errors as-is and everything else as a generic 500.
 func writeError(w nethttp.ResponseWriter, r *nethttp.Request, err error) {
 	if e, ok := apperr.As(err); ok {
-		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message, Code: e.Code})
+		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message, Code: e.Code, Field: e.Field})
 		return
 	}
 	logger.FromCtx(r.Context()).Error().Err(err).Str("path", r.URL.Path).Msg("internal error")

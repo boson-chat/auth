@@ -1,0 +1,61 @@
+{{/*
+  The branded email layout. Compiled to HTML once per process (layout.go),
+  then filled for every email. Nothing user-supplied goes into this file:
+  the BXSLOT_* tokens and the two sentinel colours are replaced after
+  compiling, each with its own escaping (see slotTokens in layout.go).
+  The <!--bx:...--> comments cut the body into the repeatable paragraph
+  and button rows.
+*/ -}}
+<mjml lang="en" dir="ltr">
+  <mj-head>
+    <mj-title>BXSLOT_TITLE</mj-title>
+    <mj-preview>BXSLOT_PREVIEW</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" />
+      <mj-text font-size="15px" line-height="1.6" color="{{.Light.Text}}" padding="0 32px" />
+      <mj-section padding="0" />
+    </mj-attributes>
+    <mj-raw>
+      <meta name="color-scheme" content="light dark">
+      <meta name="supported-color-schemes" content="light dark">
+    </mj-raw>
+    <mj-style>
+      :root { color-scheme: light dark; supported-color-schemes: light dark; }
+      .bx-text a { word-break: break-all; }
+      @media (prefers-color-scheme: dark) {
+        body, .bx-page { background-color: {{.Dark.Page}} !important; }
+        .bx-card, .bx-card > table { background: {{.Dark.Card}} !important; background-color: {{.Dark.Card}} !important; }
+        .bx-head div, .bx-head span { color: {{.Dark.Heading}} !important; }
+        .bx-text div, .bx-text p { color: {{.Dark.Text}} !important; }
+        .bx-foot div { color: {{.Dark.Muted}} !important; }
+        .bx-text p a, .bx-foot a { color: inherit !important; text-decoration: underline !important; }
+      }
+      [data-ogsb] .bx-page { background-color: {{.Dark.Page}} !important; }
+      [data-ogsb] .bx-card, [data-ogsb] .bx-card > table { background-color: {{.Dark.Card}} !important; }
+      [data-ogsc] .bx-head div, [data-ogsc] .bx-head span { color: {{.Dark.Heading}} !important; }
+      [data-ogsc] .bx-text div, [data-ogsc] .bx-text p { color: {{.Dark.Text}} !important; }
+      [data-ogsc] .bx-foot div { color: {{.Dark.Muted}} !important; }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="{{.Light.Page}}" width="600px" css-class="bx-page">
+    <mj-wrapper padding="32px 16px">
+      <mj-section background-color="{{.Light.Card}}" border-top="4px solid #0b05e1" border-radius="0 0 8px 8px" css-class="bx-card" padding="28px 0 12px 0">
+        <mj-column>
+          <mj-text css-class="bx-head" color="{{.Light.Heading}}" padding="0 32px 20px 32px">BXSLOT_HEADER</mj-text>
+          <mj-raw><!--bx:para--></mj-raw>
+          <mj-text css-class="bx-text">BXSLOT_PARA</mj-text>
+          <mj-raw><!--bx:button--></mj-raw>
+          <mj-button href="BXSLOT_HREF" align="left" background-color="#0b05e1" color="#0b05e2" font-size="15px" font-weight="600" line-height="20px" border-radius="6px" inner-padding="12px 24px" padding="4px 32px 20px 32px" css-class="bx-btn">BXSLOT_LABEL</mj-button>
+          <mj-raw><!--bx:end--></mj-raw>
+        </mj-column>
+      </mj-section>
+      {{- if .Footer}}
+      <mj-section padding="16px 0 0 0">
+        <mj-column>
+          <mj-text css-class="bx-foot" font-size="12px" line-height="1.5" color="{{.Light.Muted}}" align="center" padding="0 32px">BXSLOT_FOOTER</mj-text>
+        </mj-column>
+      </mj-section>
+      {{- end}}
+    </mj-wrapper>
+  </mj-body>
+</mjml>

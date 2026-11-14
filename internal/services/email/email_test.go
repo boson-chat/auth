@@ -63,7 +63,7 @@ func (a *auditSpy) List(context.Context, auditrepo.Filter) ([]*auditrepo.EntryVi
 const site = "Example <Net> & Co"
 
 func newSvc(m mailer.Mailer, logo string, a *auditSpy) *EmailService {
-	opts := Options{AppURL: "https://app.example.com", SiteName: site, Logo: func() string { return logo },
+	opts := Options{AppURL: "https://app.example.com", SiteName: site, Logo: func() Logo { return Logo{URL: logo} },
 		VerifyTTL: 24 * time.Hour, ResetTTL: 30 * time.Minute, SetupTTL: 72 * time.Hour, InviteTTL: 168 * time.Hour}
 	if a != nil {
 		opts.Audit = a
@@ -125,8 +125,9 @@ func TestBrandedLayoutUsesBrandingAndDefaultWording(t *testing.T) {
 		`<img src="https://auth.example.com/v1/branding/assets/wide.png?v=abc" alt="Example Chat"`,
 		`Hi alice&lt;b&gt;,`,
 		`your Example &lt;Net&gt; &amp; Co account`,
-		`<a href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="display:inline-block;padding:.6rem 1.2rem;background:#7c3aed;`,
-		`>Verify email</a>`,
+		`href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="display:inline-block;background:#7c3aed;color:#ffffff;`,
+		`bgcolor="#7c3aed"`,
+		"Verify email\n",
 		`Example Chat · <a href="https://example.com" style="color:#7c3aed`,
 		`The link expires in 24 hours`,
 	} {
@@ -145,15 +146,15 @@ func TestBrandedLayoutUsesBrandingAndDefaultWording(t *testing.T) {
 	}
 	// logo: false → the sender name as text, no image.
 	s.SetConfig(&config.EmailConfig{SenderName: "Example Chat"})
-	r, _ := s.Preview(context.Background(), config.EmailPasswordReset, "bob", nil)
-	if strings.Contains(r.HTML, "<img") || !strings.Contains(r.HTML, `font-weight:700;color:#111">Example Chat</span>`) ||
+	r, _ := s.Preview(context.Background(), "bob", PreviewInput{Template: config.EmailPasswordReset})
+	if strings.Contains(r.HTML, "<img") || !strings.Contains(r.HTML, `color:#111118">Example Chat</span>`) ||
 		!strings.Contains(r.HTML, "background:"+DefaultAccent) || strings.Contains(r.Text, "-- \n") {
 		t.Fatal(r.HTML, r.Text)
 	}
 	// No sender name: the network name.
 	s.SetConfig(&config.EmailConfig{})
-	r, _ = s.Preview(context.Background(), config.EmailAccountSetup, "bob", nil)
-	if !strings.Contains(r.HTML, `color:#111">Example &lt;Net&gt; &amp; Co</span>`) {
+	r, _ = s.Preview(context.Background(), "bob", PreviewInput{Template: config.EmailAccountSetup})
+	if !strings.Contains(r.HTML, `color:#111118">Example &lt;Net&gt; &amp; Co</span>`) {
 		t.Fatal(r.HTML)
 	}
 }
@@ -177,7 +178,7 @@ func TestTemplateOverridesVariablesAndEscaping(t *testing.T) {
 		`Hi alice&lt;b&gt; &lt;script&gt;alert(1)&lt;/script&gt;,`,
 		`Click <a href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="color:#3b5bdb;word-break:break-all">https://app.example.com/verify-email#token=tok%2F1%2B2</a> now.<br>`,
 		`Or read <a href="https://example.com/help?a=1&amp;b=2" style="color:#3b5bdb;word-break:break-all">https://example.com/help?a=1&amp;b=2</a>. Thanks!`,
-		`>Verify email</a></p>`,
+		"Verify email\n",
 		` says hi; expires in 24 hours; keep {{unknown}} and {{ network}x}} and {{Network}}.`,
 	} {
 		if !strings.Contains(h, want) {
@@ -187,15 +188,15 @@ func TestTemplateOverridesVariablesAndEscaping(t *testing.T) {
 	if strings.Contains(h, "<script>") {
 		t.Fatal("template text must be escaped")
 	}
-	if strings.Count(h, "<p style=") != 4 {
-		t.Fatalf("blank lines split paragraphs (4): %s", h)
+	if strings.Count(h, "<p style=") != 3 || strings.Count(h, `class="bx-btn"`) != 1 {
+		t.Fatalf("blank lines split paragraphs (3 + the button): %s", h)
 	}
 	if !strings.Contains(msg.Text, "Hi alice<b> <script>alert(1)</script>,\n\nClick https://app.example.com/verify-email#token=tok%2F1%2B2 now.\nOr read") ||
 		!strings.Contains(msg.Text, "keep {{unknown}} and") {
 		t.Fatalf("text %q", msg.Text)
 	}
 	// Other templates keep Boson's wording in the branded layout.
-	if r := m.bySubject("Reset your "); !strings.Contains(r.HTML, "Choose a new password") || !strings.Contains(r.HTML, "<!doctype html>\n<html lang=\"en\">") {
+	if r := m.bySubject("Reset your "); !strings.Contains(r.HTML, "Choose a new password") || !strings.Contains(r.HTML, `xmlns:v="urn:schemas-microsoft-com:vml"`) {
 		t.Fatal(r.HTML)
 	}
 }
@@ -217,7 +218,7 @@ func TestPreview(t *testing.T) {
 	s := newSvc(&capture{}, "", nil)
 	ctx := context.Background()
 	// Nothing configured: the built-in email, exactly as it would be sent.
-	r, err := s.Preview(ctx, config.EmailVerification, "admin", nil)
+	r, err := s.Preview(ctx, "admin", PreviewInput{Template: config.EmailVerification})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestPreview(t *testing.T) {
 	}
 	// Unsaved wording.
 	sub, body := "Hello {{username}}", "Welcome to {{network}}.\n\n{{link}}"
-	r, err = s.Preview(ctx, config.EmailInvite, "admin", &config.EmailTemplate{Subject: &sub, Body: &body})
+	r, err = s.Preview(ctx, "admin", previewIn(config.EmailInvite, &config.EmailTemplate{Subject: &sub, Body: &body}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,23 +237,23 @@ func TestPreview(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	// Invite default (no legacy template): branded even without auth.email.
-	r, _ = s.Preview(ctx, config.EmailInvite, "admin", nil)
+	r, _ = s.Preview(ctx, "admin", PreviewInput{Template: config.EmailInvite})
 	if r.Subject != "admin invited you to "+site || !strings.Contains(r.Text, "expires in 7 days") {
 		t.Fatalf("%+v", r)
 	}
 	// Empty override = none.
-	r, _ = s.Preview(ctx, config.EmailPasswordReset, "admin", &config.EmailTemplate{})
+	r, _ = s.Preview(ctx, "admin", previewIn(config.EmailPasswordReset, &config.EmailTemplate{}))
 	if !strings.HasPrefix(r.HTML, "<!doctype html>\n<html><body") || !strings.Contains(r.Text, "30 minutes") {
 		t.Fatal(r.HTML)
 	}
 	bad := "two\nlines"
 	empty := " "
 	for _, over := range []*config.EmailTemplate{{Subject: &bad}, {Body: &empty}} {
-		if _, err := s.Preview(ctx, config.EmailVerification, "admin", over); !isInvalid(err) {
+		if _, err := s.Preview(ctx, "admin", previewIn(config.EmailVerification, over)); !isInvalid(err) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.Preview(ctx, "welcome", "admin", nil); !errors.Is(err, ErrUnknownTemplate) {
+	if _, err := s.Preview(ctx, "admin", PreviewInput{Template: "welcome"}); !errors.Is(err, ErrUnknownTemplate) {
 		t.Fatal(err)
 	}
 }
@@ -310,7 +311,7 @@ func TestReloadSwitchesBackToDefaults(t *testing.T) {
 	s := newSvc(m, "", nil)
 	sub := "Custom"
 	s.SetConfig(&config.EmailConfig{Templates: map[string]config.EmailTemplate{config.EmailVerification: {Subject: &sub}}})
-	r, _ := s.Preview(context.Background(), config.EmailVerification, "x", nil)
+	r, _ := s.Preview(context.Background(), "x", PreviewInput{Template: config.EmailVerification})
 	if r.Subject != "Custom" {
 		t.Fatal(r.Subject)
 	}
@@ -320,4 +321,8 @@ func TestReloadSwitchesBackToDefaults(t *testing.T) {
 	if m.bySubject("Verify").HTML != string(want) {
 		t.Fatal("removing auth.email restores the built-in emails")
 	}
+}
+
+func previewIn(name string, over *config.EmailTemplate) PreviewInput {
+	return PreviewInput{Template: name, Subject: over.Subject, Body: over.Body}
 }

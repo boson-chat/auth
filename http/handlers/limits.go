@@ -36,12 +36,21 @@ const (
 	BucketPublic = "public"
 	// BucketEmailTest limits POST /internal/email/test per admin.
 	BucketEmailTest = "email_test"
+	// BucketEmailPreview limits POST /internal/email/preview per admin.
+	BucketEmailPreview = "email_preview"
 )
 
 // Test emails per admin: a burst of 5, then one every 6 minutes.
 const (
 	emailTestBurst     = 5
 	emailTestPerMinute = 1.0 / 6
+)
+
+// Previews per admin: the panel previews on every (debounced) keystroke,
+// so a burst of 60, refilled at 5 a second.
+const (
+	emailPreviewBurst     = 60
+	emailPreviewPerMinute = 300
 )
 
 type bucketPair struct {
@@ -74,6 +83,7 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	}
 	l.buckets[BucketPublic] = bucketPair{ip: ratelimit.New(pubBurst, pubRate)}
 	l.buckets[BucketEmailTest] = bucketPair{account: ratelimit.New(emailTestBurst, emailTestPerMinute)}
+	l.buckets[BucketEmailPreview] = bucketPair{account: ratelimit.New(emailPreviewBurst, emailPreviewPerMinute)}
 	return l
 }
 

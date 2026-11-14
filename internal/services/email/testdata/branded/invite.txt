@@ -1,0 +1,11 @@
+Hi,
+
+alice invited you to join Example <Net> & Co. To create your account, open:
+
+https://app.example.com/#invite=inv_example
+
+The invite expires in 7 days. If you weren't expecting this, you can ignore this email.
+
+-- 
+Example Chat · https://example.com
+You get this because you have an account.

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"io"
 	nethttp "net/http"
 	"os"
@@ -104,7 +105,25 @@ auth:
 		!strings.Contains(p.str("text"), "<b>Example Chat</b>") || !strings.Contains(p.str("html"), "Choose a new password") {
 		t.Fatalf("preview: %s", p.raw)
 	}
+	if p.str("from") == "" || !strings.HasPrefix(p.str("from"), `"Example Chat" <`) || !strings.Contains(p.str("html"), `bgcolor="#7c3aed"`) {
+		t.Fatalf("preview from / accent: %s", p.raw)
+	}
 	e.expect(e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "nope"}, bearer(adminAT)), 400, "invalid_request")
+	// Unsaved email settings on top of the saved ones (live preview).
+	live := map[string]any{"template": "verification", "email": map[string]any{"sender_name": "Typed Name", "accent": "#0EA5E9", "logo": false}}
+	p = e.do(e.internal, "POST", "/internal/email/preview", live, bearer(adminAT))
+	e.expect(p, 200, "")
+	if !strings.HasPrefix(p.str("from"), `"Typed Name" <`) || !strings.Contains(p.str("html"), `bgcolor="#0ea5e9"`) ||
+		strings.Contains(p.str("html"), "<img") || !strings.Contains(p.str("html"), ">Typed Name</span>") ||
+		p.str("subject") != "Confirm your Example Chat account" || !strings.Contains(p.str("text"), "Example Chat · example.com") {
+		t.Fatalf("live preview: %s", p.raw)
+	}
+	bad := e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "email": map[string]any{"accent": "blue"}}, bearer(adminAT))
+	e.expect(bad, 400, "invalid_request")
+	if bad.str("field") != "email.accent" || !strings.HasPrefix(bad.str("message"), "email.accent must be") {
+		t.Fatalf("field-level error: %s", bad.raw)
+	}
+	e.expect(e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "verification", "email": map[string]any{"logo": "yes"}}, bearer(adminAT)), 400, "invalid_request")
 
 	e.expect(e.do(e.internal, "POST", "/internal/email/test", map[string]any{"template": "verification", "to": "x"}, bearer(adminAT)), 400, "invalid_request")
 	tr := e.do(e.internal, "POST", "/internal/email/test", map[string]any{"template": "verification", "to": "me@example.com"}, bearer(adminAT))
@@ -137,6 +156,23 @@ auth:
 	}
 	if !limited {
 		t.Fatal("test emails must be rate-limited")
+	}
+	// Previews are limited too, but generously (a burst of 60 per admin):
+	// a typing admin is never stopped; a runaway loop is.
+	limited = false
+	for i := range 100 {
+		r := e.do(e.internal, "POST", "/internal/email/preview", map[string]any{"template": "invite", "body": fmt.Sprintf("draft %d", i)}, bearer(adminAT))
+		if r.status == 429 {
+			if i < 40 {
+				t.Fatalf("preview limited after %d", i)
+			}
+			limited = r.header.Get("Retry-After") != ""
+			break
+		}
+		e.expect(r, 200, "")
+	}
+	if !limited {
+		t.Fatal("previews must be rate-limited")
 	}
 
 	// Live reload: branding removed → no document, built-in emails again.

@@ -3,6 +3,7 @@ module github.com/boson-chat/auth
 go 1.27.1
 
 require (
+	github.com/Boostport/mjml-go v0.16.0
 	github.com/beevik/etree v1.8.1
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/crewjam/saml v0.6.3
@@ -37,6 +38,7 @@ require (
 
 require (
 	github.com/BurntSushi/toml v1.2.0 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -62,6 +64,7 @@ require (
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/tetratelabs/wazero v1.9.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
