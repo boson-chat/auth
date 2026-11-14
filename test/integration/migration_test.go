@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/boson-chat/auth/config"
 	"github.com/boson-chat/auth/db"
 )
 
@@ -170,5 +171,34 @@ func TestMigrationChannelSettingsDownUp(t *testing.T) {
 	}
 	if r := e.api("GET", "/v1/config", nil); r.body["channel_expiry_days"] != float64(0) || r.body["channel_auto_register"] != true {
 		t.Fatalf("env defaults: %s", r.raw)
+	}
+}
+
+func TestMigrationGuestAccessDownUp(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.AccountConfig.SettingsCacheTTL = 0 })
+	dsn := e.cfg.DBConfig.URL
+	sqldb, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqldb.Close()
+	if _, err := sqldb.Exec(`UPDATE network_settings SET guest_access = false`); err != nil {
+		t.Fatal(err)
+	}
+	migrateDownTo(t, sqldb, dsn, 7)
+	var n int
+	if err := sqldb.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'network_settings'
+		AND column_name = 'guest_access'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("columns after down = %d (%v)", n, err)
+	}
+	if err := db.MigrateUp(dsn); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	var guest sql.NullBool
+	if err := sqldb.QueryRow(`SELECT guest_access FROM network_settings`).Scan(&guest); err != nil || guest.Valid {
+		t.Fatalf("after up = %v (%v), want NULL (env default)", guest, err)
+	}
+	if r := e.api("GET", "/v1/config", nil); r.body["guest_access"] != true {
+		t.Fatalf("env default: %s", r.raw)
 	}
 }

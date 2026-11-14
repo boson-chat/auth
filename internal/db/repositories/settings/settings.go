@@ -19,6 +19,7 @@ type Row struct {
 	VoiceChannelCreation     *string
 	ChannelAutoRegister      *bool
 	ChannelExpiryDays        *int
+	GuestAccess              *bool
 	UpdatedAt                *time.Time
 	UpdatedBy                *string
 }

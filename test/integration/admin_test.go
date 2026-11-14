@@ -369,3 +369,60 @@ func TestAdminAuditFiltersAndPagination(t *testing.T) {
 	e.expect(e.api("GET", "/v1/admin/audit?cursor=garbage", nil, bearer(adminAT)), 400, "invalid_request")
 	e.expect(e.api("GET", "/v1/admin/audit?since=yesterday", nil, bearer(adminAT)), 400, "invalid_request")
 }
+
+func TestGuestAccessSetting(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) {
+		c.AccountConfig.GuestAccess = true
+		c.AccountConfig.SettingsCacheTTL = 0
+	})
+	adminAT := e.adminToken("netadmin")
+	tok := header("X-Internal-Token", e.cfg.InternalConfig.APIToken)
+	all := func(want bool) {
+		t.Helper()
+		for name, r := range map[string]resp{
+			"admin":    e.api("GET", "/v1/admin/settings", nil, bearer(adminAT)),
+			"internal": e.do(e.internal, "GET", "/internal/v1/settings", nil, tok),
+			"config":   e.api("GET", "/v1/config", nil),
+		} {
+			e.expect(r, 200, "")
+			if r.body["guest_access"] != want {
+				t.Fatalf("%s: guest_access want %v: %s", name, want, r.raw)
+			}
+		}
+	}
+	all(true)
+
+	for bad, msg := range map[string]string{
+		`{"guest_access": "no"}`: "guest_access must be a boolean",
+		`{"guest_access": 1}`:    "guest_access must be a boolean",
+		`{"guest_access": null}`: "nothing to update",
+	} {
+		r := e.api("PATCH", "/v1/admin/settings", json.RawMessage(bad), bearer(adminAT))
+		e.expect(r, 400, "invalid_request")
+		if r.str("message") != msg {
+			t.Errorf("%s: message %q, want %q", bad, r.str("message"), msg)
+		}
+	}
+	all(true)
+
+	r := e.api("PATCH", "/v1/admin/settings", map[string]any{"guest_access": false}, bearer(adminAT))
+	e.expect(r, 200, "")
+	if r.body["guest_access"] != false || r.body["channel_auto_register"] != true || r.str("registration") != "open" {
+		t.Fatalf("patch: %s", r.raw)
+	}
+	all(false)
+
+	a := e.api("GET", "/v1/admin/audit?event=settings_updated&limit=1", nil, bearer(adminAT))
+	e.expect(a, 200, "")
+	entries := a.list("entries")
+	if len(entries) != 1 {
+		t.Fatalf("audit: %s", a.raw)
+	}
+	meta := entries[0]["meta"].(map[string]any)
+	if fmt.Sprint(meta["old"]) != "map[guest_access:true]" || fmt.Sprint(meta["new"]) != "map[guest_access:false]" {
+		t.Fatalf("audit meta: %v", meta)
+	}
+
+	e.expect(e.api("PATCH", "/v1/admin/settings", map[string]any{"guest_access": true}, bearer(adminAT)), 200, "")
+	all(true)
+}

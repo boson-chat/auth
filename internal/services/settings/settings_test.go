@@ -57,7 +57,7 @@ func newSvc(ttl time.Duration) (*SettingsService, *memRepo, *auditSpy, *time.Tim
 	repo, spy := &memRepo{}, &auditSpy{}
 	defaults := config.AccountConfig{
 		Registration: "invite", RequireEmailVerification: true,
-		ChannelCreation: "registered", VoiceChannelCreation: "founders", ChannelAutoRegister: true, ChannelExpiryDays: 0,
+		ChannelCreation: "registered", VoiceChannelCreation: "founders", ChannelAutoRegister: true, ChannelExpiryDays: 0, GuestAccess: true,
 		SettingsCacheTTL: ttl,
 	}
 	s := NewSettingsService(repo, db.NoTx{}, spy, defaults, func() time.Time { return now }).(*SettingsService)
@@ -174,5 +174,30 @@ func TestCacheTTL(t *testing.T) {
 	}
 	if got, _ := s.Get(t.Context()); got.Registration != "open" || got.UpdatedBy != nil {
 		t.Fatalf("after local update: %+v", got)
+	}
+}
+
+func TestGuestAccessSetting(t *testing.T) {
+	s, repo, spy, _ := newSvc(0)
+	got, err := s.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GuestAccess {
+		t.Fatalf("default: %+v", got)
+	}
+	got, err = s.Update(t.Context(), "usr_admin", Patch{GuestAccess: ptr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GuestAccess || !got.ChannelAutoRegister || got.Registration != "invite" {
+		t.Fatalf("after patch: %+v", got)
+	}
+	if repo.row.GuestAccess == nil || *repo.row.GuestAccess || repo.row.ChannelAutoRegister != nil {
+		t.Fatalf("stored: %+v", repo.row)
+	}
+	oldV, newV := spy.metas[0]["old"].(map[string]any), spy.metas[0]["new"].(map[string]any)
+	if len(oldV) != 1 || oldV["guest_access"] != true || newV["guest_access"] != false {
+		t.Fatalf("audit diff: old=%v new=%v", oldV, newV)
 	}
 }
