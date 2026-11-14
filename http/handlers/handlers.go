@@ -12,6 +12,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/admin"
 	"github.com/boson-chat/auth/internal/services/authn"
+	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
@@ -40,8 +41,10 @@ type Handlers struct {
 	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
 	Roles    roles.RolesServiceImpl
-	Limits   *Limits
-	Config   config.Config
+	// IRCAccounts serves the removed-accounts feed.
+	IRCAccounts ircaccounts.IRCAccountsServiceImpl
+	Limits      *Limits
+	Config      config.Config
 	// Ready reports whether dependencies (database) are reachable.
 	Ready func(ctx context.Context) error
 }
