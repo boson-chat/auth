@@ -2,10 +2,10 @@
 
 The account and token service for [boson](https://github.com/boson-chat/stack):
 registration, email verification, password login, sessions with rotating
-refresh tokens, password reset, an admin API, and Ed25519-signed JWTs that
-other boson services (voice, later video and the admin panel) verify through
-a public JWKS. It is ready for SSO (OIDC/SAML tables and interfaces) and for
-IRC SASL (internal password-check API).
+refresh tokens, password reset, sign-in through OIDC and SAML identity
+providers, runtime network settings, an admin API, and Ed25519-signed JWTs
+that other boson services (voice, later video and the admin panel) verify
+through a public JWKS. IRC SASL uses the internal password-check API.
 
 - Go 1.27, plain REST/JSON on `net/http`, Postgres via GORM, embedded
   golang-migrate migrations, zerolog, OpenTelemetry metrics (Prometheus).
@@ -34,6 +34,7 @@ Tests:
 ```sh
 make test                                  # unit tests (integration tests skip)
 make test-pg-up test-integration test-pg-down   # + full HTTP flows on a throwaway Postgres
+make test-dex-up                           # optional: a real OIDC IdP (Dex) for TestOIDCAgainstDex
 ```
 
 The integration suite needs `TEST_DATABASE_URL` pointing at a Postgres
@@ -57,7 +58,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, sso_providers}` (live [network settings](#network-settings)) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, sso_providers: [{slug, kind, display_name, start_url}]}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on)) |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
 | `POST /v1/email/verify` | – | `{token}` → `{user}` |
 | `POST /v1/email/resend` | optional | `{email}` (or a bearer token) → 202, same response whether or not the account exists |
@@ -71,6 +72,13 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `PATCH /v1/me` | bearer | `{display_name}` → `{user}` |
 | `GET /v1/sessions` | bearer | `{sessions: [{id, auth_method, ip, user_agent, created_at, last_seen_at, expires_at, current}]}` |
 | `DELETE /v1/sessions/{id}` | bearer | revoke one of your sessions → 204 (other users' ids are 404) |
+| `GET /v1/me/identities` | bearer | `{identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` |
+| `DELETE /v1/me/identities/{id}` | bearer | unlink → 204; `409 last_login_method` if it's the only way to sign in |
+| `GET /v1/sso/{slug}/start` | – | `?return_to=&mode=&invite_code=&code_challenge=&code_challenge_method=S256` → 302 to the IdP ([SSO](#single-sign-on)) |
+| `GET /v1/sso/{slug}/callback` | state cookie | OIDC redirect URI → 303 to `return_to` (cookies, `?code=` or `?error=`) |
+| `POST /v1/sso/{slug}/saml/acs` | state cookie | SAML assertion consumer (HTTP-POST) → 303 as above |
+| `GET /v1/sso/{slug}/saml/metadata` | – | SP metadata XML (`application/samlmetadata+xml`) |
+| `POST /v1/sso/exchange` | – | `{code, code_verifier?, cookie?}` → same as `/v1/login`; `400 invalid_code` |
 | `POST /v1/voice/token` | bearer | `{rooms?: [string]}` → `{token, expires_in, audience: "quicvoice"}` |
 | `GET /verify-email`, `GET /reset-password` | – | built-in pages for the email links (used when `APP_URL` = `PUBLIC_URL`) |
 
@@ -80,7 +88,7 @@ Admin (role `admin`, checked against the database on every request):
 |---|---|
 | `GET /v1/admin/users?q=&limit=&offset=` | search users (username/email substring) → `{users, total}` |
 | `POST /v1/admin/users` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request` |
-| `GET /v1/admin/users/{id}` | one user |
+| `GET /v1/admin/users/{id}` | `{user, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` |
 | `POST /v1/admin/users/{id}/password-reset` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
 | `POST /v1/admin/users/{id}/verification` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
 | `PATCH /v1/admin/users/{id}` | `{role: "user"\|"admin"}` |
@@ -90,6 +98,7 @@ Admin (role `admin`, checked against the database on every request):
 | `DELETE /v1/admin/sessions/{id}` | revoke any session |
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
+| `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
 | `GET /v1/admin/settings` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, updated_at, updated_by}` |
 | `PATCH /v1/admin/settings` | same fields, any subset → the updated object; `400 invalid_request` on unknown values; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 
@@ -155,12 +164,36 @@ An unknown username matches nothing (empty page, not an error). Each entry:
 `null`; failed logins for an existing account carry that account as the actor.
 Usernames are `null` when the user was deleted or unknown.
 
+### Single sign-on
+
+Admins add OIDC and SAML providers at runtime (`/v1/admin/sso/providers`);
+enabled ones appear in `GET /v1/config` with their `start_url`. A login
+starts at `GET /v1/sso/{slug}/start?return_to=…`:
+
+- **Browser apps** on this site's origins (`APP_URL`, `PUBLIC_URL`,
+  `CORS_ALLOWED_ORIGINS`) get the usual `boson_at`/`boson_rt` cookies and a
+  303 back to `return_to`.
+- **Desktop/native apps** use a loopback (`http://127.0.0.1:<port>/…`) or
+  `boson://…` `return_to` (`SSO_RETURN_TO_ALLOWED`), get `?code=bsc_…` and
+  exchange it once, within 60 s, at `POST /v1/sso/exchange {code, code_verifier}`
+  for the normal login response. Send `code_challenge` (S256) at start.
+- Failures come back as `?error=<code>&error_description=…` on `return_to`.
+
+Accounts are matched by provider + subject; by email only for providers with
+`trust_email` whose IdP asserts the email verified (and the existing
+account's email is verified); new accounts only with `allow_signup` and when
+the `registration` setting allows (invite codes pass through `start`).
+[docs/sso.md](docs/sso.md) has the flow, linking rules, admin API shapes, and
+setup notes for Google, GitHub (not OIDC; needs a broker), Authentik, Zitadel,
+Keycloak, Okta and Entra ID.
+
 ### Errors and status codes
 
 `400 invalid_request|invalid_username|weak_password|invalid_token|no_email`,
+`400 invalid_return_to|invalid_code|invalid_state` (SSO),
 `401 invalid_credentials|unauthenticated|invalid_refresh_token`,
 `403 email_not_verified|account_disabled|forbidden|csrf|registration_closed|invite_required|invalid_password`,
-`409 username_taken|email_taken|already_verified|account_disabled` (admin actions on a disabled account), `415 unsupported_media_type`,
+`409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account), `415 unsupported_media_type`,
 `429 rate_limited` (with `Retry-After`).
 
 `account_disabled` and `email_not_verified` are only returned after the
@@ -302,6 +335,11 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `SMTP_FROM` | `boson <no-reply@localhost>` | |
 | `SMTP_TLS` | `starttls` | `starttls` (required) \| `tls` (implicit, 465) \| `none` (dev, e.g. Mailpit) |
 | `INTERNAL_API_TOKEN` | – | shared secret for `/internal/v1/*`; empty disables it |
+| `SSO_RETURN_TO_ALLOWED` | `http://127.0.0.1:*,http://[::1]:*,boson://` | extra SSO `return_to` targets (code mode), besides this site's web origins. Patterns `scheme://host[:port\|:*][/path-prefix]`; `boson://` = any URL of that scheme |
+| `SSO_STATE_TTL` | `10m` | lifetime of the encrypted SSO state cookie (time allowed at the IdP) |
+| `SSO_CODE_TTL` | `1m` | lifetime of one-time codes for native clients |
+| `SSO_HTTP_TIMEOUT` | `10s` | timeout for calls to IdPs |
+| `SSO_ALLOW_HTTP` | `false` | accept `http://` issuers / metadata URLs on non-loopback hosts (dev only) |
 | `RATE_LIMIT_ENABLED` | `true` | |
 | `RATE_LIMIT_IP_BURST` / `RATE_LIMIT_IP_PER_MINUTE` | `20` / `10` | per client IP, per endpoint group |
 | `RATE_LIMIT_ACCOUNT_BURST` / `RATE_LIMIT_ACCOUNT_PER_MINUTE` | `5` / `2` | per username/email, per endpoint group (internal API: double) |
@@ -309,9 +347,11 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | or `grpc` |
 | `OTEL_METRICS_EXPORTER` | – | `none` disables OTLP push |
 | `TEST_DATABASE_URL` | – | tests only: enables the integration suite |
+| `TEST_DEX_ISSUER` | – | tests only: run the OIDC flow against a real Dex (`make test-dex-up`) |
 
 Rate-limited endpoint groups: login (and password change), register,
-forgot, reset, verify/resend, internal verify-password.
+forgot, reset, verify/resend, internal verify-password, SSO browser
+endpoints (start/callback/ACS, per IP), SSO code exchange (per IP).
 
 ### Per-account login limit (for admins)
 
@@ -347,7 +387,7 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 
 | Metric | Labels |
 |---|---|
-| `auth_login_attempts_total` | `method` (`password`, `internal`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`) |
+| `auth_login_attempts_total` | `method` (`password`, `internal`, `oidc`, `saml`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`, `rejected`) |
 | `auth_registrations_total` | `outcome` (`success`, `rejected`, `error`) |
 | `auth_token_refreshes_total` | `outcome` (`success`, `invalid`, `expired`, `reuse`, `disabled`, `error`) |
 | `auth_token_refresh_reuse_total` | – |
@@ -393,6 +433,21 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 - **Network settings** are only writable by admins, validated against fixed
   value sets, and audit-logged. A stale replica serves the old value for at
   most `SETTINGS_CACHE_TTL`.
+- **SSO state** lives in an AES-256-GCM-sealed cookie (key derived from
+  `AUTH_KEY_ENCRYPTION_KEY` with HKDF), bound to the browser, single use and
+  short-lived; `state` is compared in constant time. OIDC uses PKCE (S256)
+  and a nonce; SAML responses must be signed, answer our request id, and
+  match our ACS, audience and time window; IdP-initiated SAML is refused.
+- **Provider secrets** (OIDC client secrets, SAML SP private keys) are
+  encrypted at rest like signing keys and never returned by the API.
+- **No tokens in URLs:** native clients get a 60-second single-use code
+  (stored hashed, optionally PKCE-bound) and exchange it over POST.
+  `return_to` must be one of our origins or match `SSO_RETURN_TO_ALLOWED`;
+  userinfo, protocol-relative and opaque URLs are refused.
+- **Account linking by email** needs `trust_email` on the provider, a
+  verified email from the IdP *and* a verified email on the existing account,
+  so an unverified pre-registration can't capture a later SSO user.
+  Transient SAML NameIDs are refused (they'd mint a new account per login).
 - **Admin-created accounts** get a verified email (the admin vouches for it).
   The "choose your password" email is an ordinary single-use reset token
   (`ACCOUNT_SETUP_TTL`), so passwords never travel by email, and the admin
@@ -408,16 +463,18 @@ http/server.go               dependency wiring + listeners
 http/handlers, http/middleware
 internal/services/*          business logic (*ServiceImpl interfaces)
 internal/db/repositories/*   data access (*RepositoryImpl), used only by services
+internal/services/idp/*      SSO provider kinds (oidc, saml) and registry
+internal/services/sso        SSO flow, linking, code exchange, provider admin
 internal/{nick,password,keycrypt,ratelimit,opaque,ids,mailer,...}
 metrics/                     OpenTelemetry instruments + Prometheus exporter
 test/integration/            HTTP flows against real Postgres
-docs/sso.md                  how OIDC / SAML / SASL plug in
+docs/sso.md                  SSO flow, linking rules, admin API, IdP setup
 ```
 
 ## Roadmap
 
-- **Phase 2, OIDC:** providers via `coreos/go-oidc/v3` + `x/oauth2`, account linking rules, `/v1/sso/{slug}/start|callback`.
-- **Phase 3, SAML:** `crewjam/saml` service provider.
+- **Done:** phase 2 (OIDC) and phase 3 (SAML), see [docs/sso.md](docs/sso.md).
+- **Next for SSO:** linking an extra provider from account settings; SAML single logout.
 - **Phase 4, IRC SASL:** Anope/UnrealIRCd bridge calling `/internal/v1/verify-password`.
 
 See [docs/sso.md](docs/sso.md).
