@@ -21,6 +21,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories/invite"
 	"github.com/boson-chat/auth/internal/db/repositories/refreshtoken"
 	"github.com/boson-chat/auth/internal/db/repositories/role"
+	"github.com/boson-chat/auth/internal/db/repositories/rolechannel"
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey"
@@ -41,6 +42,7 @@ import (
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/rolechannels"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
@@ -140,6 +142,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	ssoCodeRepo := ssocode.NewSSOCodeRepository(database)
 	roleRepo := role.NewRoleRepository(database)
 	removalRepo := accountremoval.NewAccountRemovalRepository(database)
+	roleChannelRepo := rolechannel.NewRoleChannelRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
@@ -219,12 +222,21 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		return nil, fmt.Errorf("config file %s: %w", cfg.AppConfig.ConfigFile, err)
 	}
 
+	roleChannelsService := rolechannels.NewRoleChannelsService(rolechannels.Deps{
+		Channels: roleChannelRepo, Roles: roleRepo, Users: userRepo, Access: rolesService.Access, Tx: database, Audit: auditService,
+		Settings: func() rolechannels.Settings {
+			rc := stackConfig.Effective().RolesConfig
+			return rolechannels.Settings{Autojoin: rc.ChannelsAutojoin, Rejoin: rc.ChannelsRejoin}
+		},
+		Now: opts.Now,
+	})
+
 	// 4. Handlers
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
-		Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		RoleChannels: roleChannelsService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		FilesURL: func() string { return stackConfig.Effective().FilesConfig.URL() },
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()

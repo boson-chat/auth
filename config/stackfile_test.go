@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -223,5 +224,51 @@ func TestFilesEnabledFromFile(t *testing.T) {
 	}
 	if _, err := loadFile(t, "files: { enabled: maybe }\n"); err == nil || !strings.Contains(err.Error(), "files.enabled") {
 		t.Fatalf("want a files.enabled error, got %v", err)
+	}
+}
+
+func TestRoleChannelsFromFile(t *testing.T) {
+	var env Config
+	env.RolesConfig = RolesConfig{ChannelsAutojoin: false, ChannelsRejoin: RejoinLogin}
+	f, err := loadFile(t, "roles:\n  channels:\n    autojoin: true\n    rejoin: once\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Unknown) != 0 {
+		t.Fatalf("unknown %v", f.Unknown)
+	}
+	got := env.WithFile(f).RolesConfig
+	if !got.ChannelsAutojoin || got.ChannelsRejoin != RejoinOnce {
+		t.Fatalf("%+v", got)
+	}
+	if m := f.Flatten(); m[KeyRolesChannelsAutojoin] != true || m[KeyRolesChannelsRejoin] != "once" {
+		t.Fatal(m)
+	}
+	// Absent: env / defaults (off, login).
+	if got := env.WithFile(FileConfig{}).RolesConfig; got.ChannelsAutojoin || got.ChannelsRejoin != RejoinLogin {
+		t.Fatalf("%+v", got)
+	}
+	f, err = loadFile(t, "roles:\n  channels: { autojoin: false }\n  other: 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.RolesChannelsAutojoin == nil || *f.RolesChannelsAutojoin || f.RolesChannelsRejoin != nil || !slices.Contains(f.Unknown, "roles.other") {
+		t.Fatalf("%+v", f)
+	}
+	for _, bad := range []string{"roles:\n  channels: { rejoin: always }\n", "roles:\n  channels: { autojoin: maybe }\n", "roles:\n  channels: []\n"} {
+		if _, err := loadFile(t, bad); err == nil || !strings.Contains(err.Error(), "roles.channels") {
+			t.Errorf("%q: want a roles.channels error, got %v", bad, err)
+		}
+	}
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RolesConfig.ChannelsAutojoin || c.RolesConfig.ChannelsRejoin != RejoinLogin {
+		t.Fatalf("defaults %+v", c.RolesConfig)
+	}
+	c.RolesConfig.ChannelsRejoin = "sometimes"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "ROLE_CHANNELS_REJOIN") {
+		t.Fatalf("validate: %v", err)
 	}
 }

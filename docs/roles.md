@@ -406,6 +406,74 @@ lost updates when two people edit one role, send `If-Match: <updated_at>`
 (the role's `updated_at` as last read, quoted or not) on `PATCH`: `412
 precondition_failed` if the role changed since.
 
+## Role channels (channel access and auto-join)
+
+Discord-style: admins attach IRC channels to roles, and to **everyone**
+(the built-in Member role; the API uses the role id `everyone` for it), and
+mark channels **private**. RoleServ in the stack's Ergo helper enforces it
+(stack `docs/roles.md`).
+
+- **Private**: only members of a role that lists the channel may join (plus
+  opers with `sajoin`, the channel founder and ChanServ access entries).
+  A private channel listed on everyone is open to every logged-in account
+  (RoleServ makes it `+R`), but not to guests.
+- **Public**: anyone can join; the role listing only drives auto-join.
+- **Auto-join** (`roles.channels.autojoin` in the stack config file, default
+  off): RoleServ joins members to every channel their roles list with
+  `autojoin: true`, when they log in and when they gain a role.
+  `roles.channels.rejoin: login` (default) joins at every login, even after
+  a `/part`; `once` only the first time a role gives the channel (losing and
+  regaining the role counts as a first time again).
+
+```yaml
+roles:
+  channels:
+    autojoin: false   # ROLE_CHANNELS_AUTOJOIN
+    rejoin: login     # ROLE_CHANNELS_REJOIN: login | once
+```
+
+Both keys are hot-reloaded. Channel names are stored the way Ergo
+(`casemapping: ascii`) folds them: `#` and 1–63 printable ASCII characters
+other than `,`, lower-cased.
+
+### Admin API
+
+| Method & path | Permission | |
+|---|---|---|
+| `GET /v1/admin/roles/{id}/channels` | `admin.panel` \| `roles.manage` | `{role_id, channels: [{channel, autojoin, private}]}`; `{id}` may be `everyone` (`role_id` is then `everyone`) |
+| `PUT /v1/admin/roles/{id}/channels` | `roles.manage` + [hierarchy](#hierarchy) (the role must be below the caller's highest) | `{channels: [{channel, autojoin?}]}` (or a bare list; `autojoin` defaults to `true`) replaces the role's channels (≤ 100) → same as GET; audit `role_channels_updated` (`role_id, name, old, new, added, removed`) |
+| `GET /v1/admin/channel-access` | `admin.panel` \| `roles.manage` | `{channels: [{channel, private, roles: [{id, name, autojoin}]}]}`: every channel listed on a role or marked private, by name; roles most senior first, Member as `{id: "everyone", name: "Everyone"}` |
+| `PUT /v1/admin/channel-access` | `roles.manage` | `{channels: [{channel, private}]}` (or a bare list) replaces the whole list: the `private: true` entries become the private channels (≤ 500), every other channel is public → same as GET (public channels no role lists are omitted); audit `channel_access_updated` (`private, made_private, made_public`) |
+
+`400 invalid_request` for a bad or duplicate channel name; `404` for an
+unknown role. Deleting a role drops its channels.
+
+### Public API
+
+`GET /v1/me/channels` (Bearer) → `{channels: [{channel, private, autojoin,
+via: [role names]}]}`: the channels the caller's roles give, `via` most
+senior first (`Everyone` for Member), e.g. for "joined because of role X".
+
+### Internal API (RoleServ)
+
+All with `X-Internal-Token: $INTERNAL_API_TOKEN`.
+
+- `GET /internal/v1/irc/channel-access` → `{version, autojoin, rejoin,
+  channels: [{channel, private, everyone, accounts}]}`. `accounts` are the
+  lower-cased names of the enabled accounts that may join a private channel
+  (empty for public ones, and when `everyone` is true). `ETag` = version,
+  `If-None-Match` → 304. The version is the [grants
+  version](#get-internalv1ircgrants-live-changes) (which also bumps on any
+  change to role channels or private channels) plus the two settings, so it
+  changes whenever the feed or any account's auto-join list may have.
+- `GET /internal/v1/irc/autojoin?account=` → `{account, enabled, rejoin,
+  channels, pending}`: `channels` are every channel the account's roles
+  (everyone's included) auto-join, `pending` those RoleServ hasn't auto-joined
+  it to yet. Disabled accounts get none; unknown ones 404.
+- `POST /internal/v1/irc/autojoin` `{account, channels}`: RoleServ joined the
+  account to `channels` (kept only if the account still gets them; entries
+  for channels it no longer gets are dropped) → the same object as the GET.
+
 ## quicvoiced
 
 Read `perms` from the voice token: `voice.create` to create channels (subject

@@ -29,6 +29,28 @@ type Config struct {
 	SSOConfig       SSOConfig
 	TelemetryConfig TelemetryConfig
 	FilesConfig     FilesConfig
+	RolesConfig     RolesConfig
+}
+
+// Role channel rejoin policies (roles.channels.rejoin).
+const (
+	// RejoinLogin auto-joins at every login, even after a /part.
+	RejoinLogin = "login"
+	// RejoinOnce auto-joins a channel only the first time a role gives it.
+	RejoinOnce = "once"
+)
+
+// ValidRejoin reports whether v is a roles.channels.rejoin value.
+func ValidRejoin(v string) bool { return v == RejoinLogin || v == RejoinOnce }
+
+// RolesConfig is the roles: section of the stack config file (role
+// channels, enforced by RoleServ in the stack's Ergo helper).
+type RolesConfig struct {
+	// Auto-join members to their roles' channels (server-side SAJOIN by
+	// RoleServ). Default off; roles.channels.autojoin in the file wins.
+	ChannelsAutojoin bool `default:"false" env:"ROLE_CHANNELS_AUTOJOIN"`
+	// login | once; roles.channels.rejoin in the file wins.
+	ChannelsRejoin string `default:"login" env:"ROLE_CHANNELS_REJOIN"`
 }
 
 // FilesConfig is the network's files (uploads) service, advertised to
@@ -372,6 +394,9 @@ func (c Config) Validate() error {
 	}
 	if a.AccountSetupTTL <= 0 || a.SettingsCacheTTL < 0 {
 		return errors.New("ACCOUNT_SETUP_TTL must be positive and SETTINGS_CACHE_TTL not negative")
+	}
+	if r := c.RolesConfig.ChannelsRejoin; r != "" && !ValidRejoin(r) { // "" = login
+		return fmt.Errorf("ROLE_CHANNELS_REJOIN must be login or once, got %q", c.RolesConfig.ChannelsRejoin)
 	}
 	switch c.SMTPConfig.TLS {
 	case "starttls", "tls", "none":

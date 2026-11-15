@@ -17,6 +17,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/rolechannels"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
@@ -44,6 +45,8 @@ type Handlers struct {
 	SSO      sso.SSOServiceImpl
 	Settings settings.SettingsServiceImpl
 	Roles    roles.RolesServiceImpl
+	// RoleChannels is role channel access and auto-join.
+	RoleChannels rolechannels.RoleChannelsServiceImpl
 	// IRCAccounts serves the removed-accounts feed.
 	IRCAccounts ircaccounts.IRCAccountsServiceImpl
 	// Branding serves GET /v1/branding (nil: no branding).

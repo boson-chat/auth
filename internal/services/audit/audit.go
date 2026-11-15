@@ -50,6 +50,12 @@ const (
 	EventRoleUpdated        = "role_updated"
 	EventRoleDeleted        = "role_deleted"
 	EventUserRolesChanged   = "user_roles_changed"
+	// EventRoleChannelsUpdated: PUT /v1/admin/roles/{id}/channels (meta:
+	// role_id, name, old, new, added, removed).
+	EventRoleChannelsUpdated = "role_channels_updated"
+	// EventChannelAccessUpdated: PUT /v1/admin/channel-access (meta:
+	// private: the private channels now, made_private, made_public).
+	EventChannelAccessUpdated = "channel_access_updated"
 	// EventEmailTestSent: POST /internal/email/test (meta: template, to,
 	// outcome, logged_only).
 	EventEmailTestSent = "email_test_sent"
