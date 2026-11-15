@@ -59,7 +59,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, sso_providers: [{slug, kind, display_name, start_url}], branding_url}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
@@ -174,8 +174,8 @@ from its `auth:` section instead (`source: "file"`, `updated_at` / `updated_by`
 ### Stack config file
 
 `BOSON_CONFIG=/config/boson.yaml` points at the boson stack's shared,
-non-secret config file. auth reads its `network:` and `auth:` sections (other
-sections are ignored) and, while the file exists, they are the source of
+non-secret config file. auth reads its `network:` and `auth:` sections and
+`files.enabled` (other sections and keys are ignored) and, while the file exists, they are the source of
 truth: **file > env > built-in default**. A key that is absent (or `null`)
 falls back to the env value, so removing a key resets it. Without
 `BOSON_CONFIG`, or while the file does not exist, auth behaves exactly as
@@ -207,6 +207,8 @@ auth:
 branding:                           # GET /v1/branding ([details](docs/branding.md))
   theme: { base: dark, colors: { accent: "#7c3aed" } }
   images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
+files:                              # the files service's section; auth reads only:
+  enabled: true                     # FILES_ENABLED: files_url in /v1/config, else null
 ```
 
 `SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
@@ -418,6 +420,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `BOSON_BRANDING_DIR` | `branding` next to `BOSON_CONFIG` | directory of the images named in `branding.images` ([branding](docs/branding.md)) |
 | `BOSON_EMAILS_DIR` | `emails` next to `BOSON_CONFIG` | directory of the MJML / HTML files named in `auth.email.layout` and `auth.email.templates.<name>` ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
+| `FILES_PUBLIC_URL` | – | the network's files (uploads) service, e.g. `https://files.example.com`; `GET /v1/config` `files_url` while uploads are on |
+| `FILES_ENABLED` | `false` | uploads are on: `files_url` is published (*file*: `files.enabled`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |
 | `PUBLIC_URL` | `http://localhost:8080` | external URL of this service; `jwks_uri` is built from it |

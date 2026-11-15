@@ -56,6 +56,9 @@ type Handlers struct {
 	Ready func(ctx context.Context) error
 	// ConfigStatus reports the stack config file (nil: not configured).
 	ConfigStatus func() configfile.Status
+	// FilesURL is files_url in GET /v1/config ("" = null). Nil: the env
+	// config's FilesConfig.
+	FilesURL func() string
 }
 
 type principalKey struct{}

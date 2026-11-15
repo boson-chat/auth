@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestActingTokenMustDifferFromInternalToken(t *testing.T) {
 	c, err := LoadConfig()
@@ -94,5 +97,31 @@ func TestEmailsDirectory(t *testing.T) {
 	}
 	if d := (AppConfig{}).EmailsDirectory(); d != "" {
 		t.Fatal(d)
+	}
+}
+
+func TestFilesConfig(t *testing.T) {
+	if u := (FilesConfig{Enabled: true}).URL(); u != "" {
+		t.Fatalf("no URL: %q", u)
+	}
+	if u := (FilesConfig{Enabled: true, PublicURL: " https://files.example.com/ "}).URL(); u != "https://files.example.com" {
+		t.Fatalf("%q", u)
+	}
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FilesConfig.Enabled || c.FilesConfig.URL() != "" {
+		t.Fatalf("files default: %+v", c.FilesConfig)
+	}
+	for _, bad := range []string{"files.example.com", "ftp://files.example.com", "https://", "https://files.example.com/?a=1"} {
+		c.FilesConfig.PublicURL = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "FILES_PUBLIC_URL") {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	c.FilesConfig.PublicURL = "https://files.example.com"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

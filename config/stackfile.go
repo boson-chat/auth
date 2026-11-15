@@ -28,6 +28,8 @@ import (
 //	  channel_expiry_days: 0
 //	  cors_allowed_origins: [https://app.example.com]   # CORS_ALLOWED_ORIGINS
 //	  smtp: { host: smtp.example.com, port: 587, from: "Boson <hi@example.com>", tls: starttls }
+//	files:
+//	  enabled: true                 # FILES_ENABLED; only this key is auth's (files_url)
 //
 // SMTP_USER / SMTP_PASSWORD and every other secret stay in the env.
 
@@ -50,6 +52,10 @@ type FileConfig struct {
 	SMTPPort *int
 	SMTPFrom *string
 	SMTPTLS  *string
+
+	// FilesEnabled is files.enabled (the rest of files: belongs to the
+	// files service).
+	FilesEnabled *bool
 
 	// Branding is the branding: section; nil when absent.
 	Branding *BrandingConfig
@@ -75,6 +81,7 @@ const (
 	KeySMTPPort                 = "auth.smtp.port"
 	KeySMTPFrom                 = "auth.smtp.from"
 	KeySMTPTLS                  = "auth.smtp.tls"
+	KeyFilesEnabled             = "files.enabled"
 )
 
 // MaxSiteNameLen bounds network.name.
@@ -93,6 +100,10 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 		return f, err
 	}
 	smtp, err := auth.Sub("smtp")
+	if err != nil {
+		return f, err
+	}
+	files, err := doc.Section("files")
 	if err != nil {
 		return f, err
 	}
@@ -196,6 +207,11 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			})
 		},
 		func() error {
+			v, err := files.Bool("enabled")
+			f.FilesEnabled = v
+			return err
+		},
+		func() error {
 			return str(smtp, "tls", &f.SMTPTLS, oneOf(func(v string) bool { return v == "starttls" || v == "tls" || v == "none" }, "starttls, tls or none"))
 		},
 	}
@@ -262,6 +278,7 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeySMTPPort, f.SMTPPort != nil, deref(f.SMTPPort))
 	put(KeySMTPFrom, f.SMTPFrom != nil, deref(f.SMTPFrom))
 	put(KeySMTPTLS, f.SMTPTLS != nil, deref(f.SMTPTLS))
+	put(KeyFilesEnabled, f.FilesEnabled != nil, deref(f.FilesEnabled))
 	f.flattenBranding(m)
 	return m
 }
@@ -305,6 +322,9 @@ func (c Config) WithFile(f FileConfig) Config {
 	set(&c.SMTPConfig.TLS, f.SMTPTLS)
 	if f.SMTPPort != nil {
 		c.SMTPConfig.Port = *f.SMTPPort
+	}
+	if f.FilesEnabled != nil {
+		c.FilesConfig.Enabled = *f.FilesEnabled
 	}
 	return c
 }

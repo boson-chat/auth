@@ -225,6 +225,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		FilesURL: func() string { return stackConfig.Effective().FilesConfig.URL() },
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {
