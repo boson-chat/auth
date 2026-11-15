@@ -1,10 +1,13 @@
+$ setup --account
+
 Hi alice,
 
-An administrator created a Example <Net> & Co account for you with the username alice. To choose your password, open:
+An administrator created an account for you on Example <Net> & Co. Your username is alice. Choose a password to sign in:
 
+Choose your password:
 https://app.example.com/reset-password#token=example-token
 
-The link expires in 3 days and can be used once. If you weren't expecting this, you can ignore this email.
+The link expires in 3 days and works once. If you weren't expecting this, you can ignore this email.
 
 -- 
 Example Chat · https://example.com

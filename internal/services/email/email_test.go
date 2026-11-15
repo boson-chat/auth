@@ -112,8 +112,8 @@ func TestBrandedLayoutUsesBrandingAndDefaultWording(t *testing.T) {
 	s := newSvc(m, "https://auth.example.com/v1/branding/assets/wide.png?v=abc", nil)
 	s.SetConfig(&config.EmailConfig{SenderName: "Example Chat", Accent: "#7c3aed", Footer: "Example Chat · https://example.com", Logo: true})
 	sendAll(s)
-	msg := m.bySubject("Verify your email for ")
-	if msg.Subject != "Verify your email for "+site {
+	msg := m.bySubject("Confirm your email for ")
+	if msg.Subject != "Confirm your email for "+site {
 		t.Fatalf("subject %q", msg.Subject)
 	}
 	if msg.FromName != "Example Chat" {
@@ -121,14 +121,17 @@ func TestBrandedLayoutUsesBrandingAndDefaultWording(t *testing.T) {
 	}
 	h := msg.HTML
 	for _, want := range []string{
-		`border-top:4px solid #7c3aed`,
+		`$&#160;verify --email`,
+		`>Confirm your email for Example &lt;Net&gt; &amp; Co</div>`,
 		`<img src="https://auth.example.com/v1/branding/assets/wide.png?v=abc" alt="Example Chat"`,
 		`Hi alice&lt;b&gt;,`,
 		`your Example &lt;Net&gt; &amp; Co account`,
 		`href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="display:inline-block;background:#7c3aed;color:#ffffff;`,
 		`bgcolor="#7c3aed"`,
-		"Verify email\n",
-		`Example Chat · <a href="https://example.com" style="color:#7c3aed`,
+		"Confirm email\n",
+		`Button not working? Paste this link into your browser:<br><a href="https://app.example.com/verify-email#token=tok%2F1%2B2"`,
+		`Example Chat · <a href="https://example.com" style="color:#8e8e9e`,
+		`Powered by <a href="https://boson.chat"`,
 		`The link expires in 24 hours`,
 	} {
 		if !strings.Contains(h, want) {
@@ -138,23 +141,23 @@ func TestBrandedLayoutUsesBrandingAndDefaultWording(t *testing.T) {
 	if strings.Contains(h, "<b>") || strings.Contains(h, "<Net>") {
 		t.Fatal("user data must be escaped")
 	}
-	wantText := "Hi alice<b>,\n\nConfirm this email address for your " + site + " account by opening:\n\n" +
-		"https://app.example.com/verify-email#token=tok%2F1%2B2\n\n" +
-		"The link expires in 24 hours and can be used once. If you didn't create an account, ignore this email.\n\n-- \nExample Chat · https://example.com\n"
+	wantText := "$ verify --email\n\nHi alice<b>,\n\nConfirm this address to finish setting up your " + site + " account.\n\n" +
+		"Confirm email:\nhttps://app.example.com/verify-email#token=tok%2F1%2B2\n\n" +
+		"The link expires in 24 hours and works once. If you didn't sign up, you can ignore this email.\n\n-- \nExample Chat · https://example.com\n"
 	if msg.Text != wantText {
 		t.Fatalf("text\n got %q\nwant %q", msg.Text, wantText)
 	}
 	// logo: false → the sender name as text, no image.
 	s.SetConfig(&config.EmailConfig{SenderName: "Example Chat"})
 	r, _ := s.Preview(context.Background(), "bob", PreviewInput{Template: config.EmailPasswordReset})
-	if strings.Contains(r.HTML, "<img") || !strings.Contains(r.HTML, `color:#111118">Example Chat</span>`) ||
+	if strings.Contains(r.HTML, "<img") || !strings.Contains(r.HTML, `color:#e2e2ea">Example Chat</span>`) ||
 		!strings.Contains(r.HTML, "background:"+DefaultAccent) || strings.Contains(r.Text, "-- \n") {
 		t.Fatal(r.HTML, r.Text)
 	}
 	// No sender name: the network name.
 	s.SetConfig(&config.EmailConfig{})
 	r, _ = s.Preview(context.Background(), "bob", PreviewInput{Template: config.EmailAccountSetup})
-	if !strings.Contains(r.HTML, `color:#111118">Example &lt;Net&gt; &amp; Co</span>`) {
+	if !strings.Contains(r.HTML, `color:#e2e2ea">Example &lt;Net&gt; &amp; Co</span>`) {
 		t.Fatal(r.HTML)
 	}
 }
@@ -176,9 +179,9 @@ func TestTemplateOverridesVariablesAndEscaping(t *testing.T) {
 	h := msg.HTML
 	for _, want := range []string{
 		`Hi alice&lt;b&gt; &lt;script&gt;alert(1)&lt;/script&gt;,`,
-		`Click <a href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="color:#3b5bdb;word-break:break-all">https://app.example.com/verify-email#token=tok%2F1%2B2</a> now.<br>`,
-		`Or read <a href="https://example.com/help?a=1&amp;b=2" style="color:#3b5bdb;word-break:break-all">https://example.com/help?a=1&amp;b=2</a>. Thanks!`,
-		"Verify email\n",
+		`Click <a href="https://app.example.com/verify-email#token=tok%2F1%2B2" style="color:#d97706;word-break:break-all">https://app.example.com/verify-email#token=tok%2F1%2B2</a> now.<br>`,
+		`Or read <a href="https://example.com/help?a=1&amp;b=2" style="color:#d97706;word-break:break-all">https://example.com/help?a=1&amp;b=2</a>. Thanks!`,
+		"Confirm email\n",
 		` says hi; expires in 24 hours; keep {{unknown}} and {{ network}x}} and {{Network}}.`,
 	} {
 		if !strings.Contains(h, want) {
@@ -188,7 +191,7 @@ func TestTemplateOverridesVariablesAndEscaping(t *testing.T) {
 	if strings.Contains(h, "<script>") {
 		t.Fatal("template text must be escaped")
 	}
-	if strings.Count(h, "<p style=") != 3 || strings.Count(h, `class="bx-btn"`) != 1 {
+	if strings.Count(h, `<p style="margin:0 0 16px 0">`) != 3 || strings.Count(h, `class="bx-btn `) != 1 || strings.Count(h, `class="bx-note `) != 1 {
 		t.Fatalf("blank lines split paragraphs (3 + the button): %s", h)
 	}
 	if !strings.Contains(msg.Text, "Hi alice<b> <script>alert(1)</script>,\n\nClick https://app.example.com/verify-email#token=tok%2F1%2B2 now.\nOr read") ||
@@ -233,7 +236,7 @@ func TestPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.Subject != "Hello admin" || !strings.Contains(r.HTML, "Welcome to Example &lt;Net&gt; &amp; Co.") ||
-		!strings.Contains(r.HTML, `href="https://app.example.com/#invite=inv_example"`) || !strings.Contains(r.HTML, "Accept the invite") {
+		!strings.Contains(r.HTML, `href="https://app.example.com/#invite=inv_example"`) || !strings.Contains(r.HTML, "Accept invite") {
 		t.Fatalf("%+v", r)
 	}
 	// Invite default (no legacy template): branded even without auth.email.
@@ -274,7 +277,7 @@ func TestSendTest(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := m.bySubject("[Test] ")
-	if msg.To != "me@example.com" || msg.Subject != "[Test] Your "+site+" account" || r.Subject != msg.Subject || msg.FromName != "Example Chat" ||
+	if msg.To != "me@example.com" || msg.Subject != "[Test] Your "+site+" account is ready" || r.Subject != msg.Subject || msg.FromName != "Example Chat" ||
 		!strings.Contains(msg.Text, "example-token") {
 		t.Fatalf("%+v", msg)
 	}

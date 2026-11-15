@@ -318,10 +318,10 @@ func TestCustomHTMLSends(t *testing.T) {
 		}})
 	sendAll(s)
 
-	v := m.bySubject("Verify")
-	for _, want := range []string{"<title>Verify your email for Example &lt;Net&gt; &amp; Co</title>", ">Example Chat</div>",
+	v := m.bySubject("Confirm")
+	for _, want := range []string{"<title>Confirm your email for Example &lt;Net&gt; &amp; Co</title>", ">Example Chat</div>",
 		`<p style="margin:0 0 16px 0">Hi alice&lt;b&gt;,</p>`, `bgcolor="#7c3aed"`, `href="https://app.example.com/verify-email#token=tok%2F1%2B2"`,
-		">Verify email</a>", "Example footer", "border-top:4px solid #7c3aed"} {
+		">Confirm email</a>", "Example footer", ".bx-text p a, .bx-note p a { color: #7c3aed;", "$&#160;mail"} {
 		if !strings.Contains(v.HTML, want) {
 			t.Errorf("layout email lacks %q", want)
 		}
@@ -335,9 +335,12 @@ func TestCustomHTMLSends(t *testing.T) {
 	if !strings.Contains(st.HTML, `href="https://app.example.com/reset-password#token=tok%2F1%2B2"`) || !strings.Contains(st.HTML, "Hi alice&lt;b&gt;,") {
 		t.Errorf("override HTML %s", st.HTML)
 	}
-	wantText := "Example Chat\n\nHi alice<b>,\n\nAn administrator created a Example <Net> & Co account for you with the username alice<b>. To choose your password, open:\n\n" +
+	wantText := "Example Chat\n\n$ setup --account\n\nYour Example <Net> & Co account is ready\n\nHi alice<b>,\n\n" +
+		"An administrator created an account for you on Example <Net> & Co. Your username is alice<b>. Choose a password to sign in:\n\n" +
 		"Choose your password (https://app.example.com/reset-password#token=tok%2F1%2B2)\n\n" +
-		"The link expires in 3 days and can be used once. If you weren't expecting this, you can ignore this email.\n\nExample footer\n"
+		"The link expires in 3 days and works once. If you weren't expecting this, you can ignore this email.\n\n" +
+		"Button not working? Paste this link into your browser:\nhttps://app.example.com/reset-password#token=tok%2F1%2B2\n\n" +
+		"Example footer\n\nPowered by Boson (https://boson.chat)\n"
 	if st.Text != wantText {
 		t.Errorf("override text\n got %q\nwant %q", st.Text, wantText)
 	}
@@ -359,7 +362,7 @@ func TestPreviewUnsavedHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.HTML, ">Verify email</a>") || !strings.Contains(r.HTML, "border-top:4px solid "+DefaultAccent) ||
+	if !strings.Contains(r.HTML, ">Confirm email</a>") || !strings.Contains(r.HTML, "{ color: "+DefaultAccent+";") ||
 		r.Warnings == nil || len(r.Warnings) != 0 || !strings.HasPrefix(r.Text, "Hi admin,") {
 		t.Fatalf("%+v", r)
 	}
@@ -448,7 +451,8 @@ func TestDefaultMJML(t *testing.T) {
 		}
 	}
 	src, _ := DefaultMJML(config.EmailVerification)
-	if !strings.Contains(src, `<p style="margin:0 0 16px 0">Hi {{username}},</p>`) || !strings.Contains(src, "didn't create") {
+	if !strings.Contains(src, `<p style="margin:0 0 16px 0">Hi {{username}},</p>`) || !strings.Contains(src, "didn't sign up") ||
+		!strings.Contains(src, "$&#160;verify --email") || !strings.Contains(src, `color:{{accent_text}}`) || !strings.Contains(src, `css-class="bx-note`) {
 		t.Error(src)
 	}
 	_, err = DefaultMJML("nope")

@@ -38,7 +38,7 @@ var placeholders = map[string]phKind{
 	"subject": phText, "network": phText, "username": phText, "inviter": phText, "expires": phText,
 	"footer": phText, "sender_name": phText,
 	"link": phURL, "logo_url": phURL,
-	"accent":  phColor,
+	"accent": phColor, "accent_text": phColor,
 	"content": phContent,
 }
 
@@ -349,7 +349,11 @@ func (d *customDoc) fill(v docValues) string {
 func fillPart(p docPart, v docValues) string {
 	switch p.kind {
 	case phColor:
-		return safeColor(v.accent, DefaultAccent) // [#0-9a-f] only: safe anywhere
+		// [#0-9a-f] only: safe anywhere.
+		if p.name == "accent_text" {
+			return onAccent(safeColor(v.accent, DefaultAccent))
+		}
+		return safeColor(v.accent, DefaultAccent)
 	case phContent:
 		return string(v.content) // ctxText only (compileDoc)
 	}
@@ -441,7 +445,12 @@ func contentHTML(blocks []block, accent string) safeHTML {
 			b.WriteString(string(bl.html))
 			continue
 		}
-		b.WriteString(buttonHTML(html.EscapeString(safeURL(bl.href)), html.EscapeString(bl.label), accent, label, "margin:4px 0 20px 0"))
+		href := html.EscapeString(safeURL(bl.href))
+		b.WriteString(buttonHTML(href, html.EscapeString(bl.label), accent, label, "margin:4px 0 12px 0"))
+		if href != "#" {
+			b.WriteString(`<p style="margin:0 0 20px 0;font-size:12px;line-height:18px">Button not working? Paste this link into your browser:<br>` +
+				`<a href="` + href + `" style="color:inherit;font-family:` + monoFonts + `;text-decoration:underline;word-break:break-all">` + href + `</a></p>`)
+		}
 		b.WriteString("\n")
 	}
 	return safeHTML(b.String())
@@ -451,9 +460,9 @@ func contentHTML(blocks []block, accent string) safeHTML {
 // label and the colours are already escaped (or placeholders).
 func buttonHTML(href, label, accent, color, margin string) string {
 	return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;line-height:100%;` + margin + `"><tr>` +
-		`<td align="center" bgcolor="` + accent + `" role="presentation" style="border:none;border-radius:6px;cursor:auto;mso-padding-alt:12px 24px;background:` + accent + `" valign="middle">` +
-		`<a href="` + href + `" style="display:inline-block;background:` + accent + `;color:` + color +
-		`;font-size:15px;font-weight:600;line-height:20px;margin:0;text-decoration:none;text-transform:none;padding:12px 24px;mso-padding-alt:0px;border-radius:6px;word-break:normal" target="_blank">` +
+		`<td align="center" bgcolor="` + accent + `" role="presentation" style="border:none;border-radius:2px;cursor:auto;mso-padding-alt:12px 20px;background:` + accent + `" valign="middle">` +
+		`<a href="` + href + `" class="bx-mono" style="display:inline-block;background:` + accent + `;color:` + color +
+		`;font-family:` + monoFonts + `;font-size:14px;font-weight:600;line-height:20px;margin:0;text-decoration:none;text-transform:none;padding:12px 20px;mso-padding-alt:0px;border-radius:2px;word-break:normal" target="_blank">` +
 		label + `</a></td></tr></table>`
 }
 
