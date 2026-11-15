@@ -22,11 +22,18 @@ branding:
       servers:  { bg: "#0b0b10" }
       channels: { bg: "#111118", dim: 0.6, blur: 0 }
       messages: { dim: 0.7, blur: 8, position: center }   # dim 0–1, blur 0–24 px
+    variants:                     # optional: a version for the other base
+      light:                      # only the base that isn't `base`
+        colors: { accent: "#6d28d9", bg: "#ffffff" }
+        nick: { saturation: 60, lightness: 38 }
+        panes:                    # field by field over the primary's panes
+          messages: { dim: 0.3 }
   images:                         # files in the branding directory
     logo: logo-3f2a.svg           # square-ish mark
     logo_wide: wordmark-91bc.png  # optional wordmark (headers, emails)
     login_background: login-77de.webp
     panes.messages.image: messages-0a1b.webp       # panes.<pane>.image
+    variants.light.panes.messages.image: messages-light-2c3d.webp  # optional, else the primary's
 auth:
   email:                          # present (even {}) = branded layout
     sender_name: "Example Chat"   # display name of SMTP_FROM; header text without a logo
@@ -62,6 +69,12 @@ keep the last good config, like every other key):
   `position` center|top|bottom|left|right.
 - unknown keys (colour tokens, panes, fields, templates) are dropped and
   logged.
+- `variants` keys are dark|light; a variant for the theme's own `base` is
+  dropped (and logged), as is a `variants.<base>.panes.<pane>.image` whose
+  variant isn't in the theme. A variant has the primary's rules for
+  `colors`, `nick` and `panes`; `radius`, `font` and the logo / sign-in
+  images are shared. An empty variant (`light: {}`) stays: Boson's built-in
+  light colours with the shared settings. Old clients ignore `variants`.
 - image URL keys in the theme (`logo`, `panes.*.image`, …) are errors: images
   are files listed in `branding.images`.
 - image file names are plain names (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 128) with

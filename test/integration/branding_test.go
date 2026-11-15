@@ -33,8 +33,11 @@ branding:
     colors: { accent: "#7c3aed" }
     panes:
       messages: { dim: 0.7, blur: 8, position: center }
+    variants:
+      light: { colors: { accent: "#6d28d9" }, panes: { messages: { dim: 0.3 } } }
   images:
     logo: logo-abc.svg
+    variants.light.panes.messages.image: logo-abc.svg
 auth:
   email:
     sender_name: Example Chat
@@ -65,6 +68,9 @@ auth:
 		t.Fatalf("branding: %s %v", b.raw, b.header)
 	}
 	e.expect(e.api("GET", "/v1/branding", nil, header("If-None-Match", b.header.Get("ETag"))), 304, "")
+	if !strings.Contains(string(b.raw), `"variants":{"light":{"colors":{"accent":"#6d28d9"},"panes":{"messages":{"image":"`+logo+`","dim":0.3}}}}`) {
+		t.Fatalf("variants: %s", b.raw)
+	}
 
 	// The asset.
 	res, err := nethttp.Get(e.public.URL + strings.TrimPrefix(logo, "http://auth.integration.test"))
