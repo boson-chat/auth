@@ -57,6 +57,11 @@ type FileConfig struct {
 	// files service).
 	FilesEnabled *bool
 
+	// RolesChannelsAutojoin / RolesChannelsRejoin are roles.channels.autojoin
+	// and roles.channels.rejoin.
+	RolesChannelsAutojoin *bool
+	RolesChannelsRejoin   *string
+
 	// Branding is the branding: section; nil when absent.
 	Branding *BrandingConfig
 	// Email is auth.email; nil when absent (Boson's built-in emails).
@@ -82,6 +87,8 @@ const (
 	KeySMTPFrom                 = "auth.smtp.from"
 	KeySMTPTLS                  = "auth.smtp.tls"
 	KeyFilesEnabled             = "files.enabled"
+	KeyRolesChannelsAutojoin    = "roles.channels.autojoin"
+	KeyRolesChannelsRejoin      = "roles.channels.rejoin"
 )
 
 // MaxSiteNameLen bounds network.name.
@@ -104,6 +111,14 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 		return f, err
 	}
 	files, err := doc.Section("files")
+	if err != nil {
+		return f, err
+	}
+	rolesSection, err := doc.Section("roles")
+	if err != nil {
+		return f, err
+	}
+	roleChannels, err := rolesSection.Sub("channels")
 	if err != nil {
 		return f, err
 	}
@@ -212,6 +227,14 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			return err
 		},
 		func() error {
+			v, err := roleChannels.Bool("autojoin")
+			f.RolesChannelsAutojoin = v
+			return err
+		},
+		func() error {
+			return str(roleChannels, "rejoin", &f.RolesChannelsRejoin, oneOf(ValidRejoin, "login or once"))
+		},
+		func() error {
 			return str(smtp, "tls", &f.SMTPTLS, oneOf(func(v string) bool { return v == "starttls" || v == "tls" || v == "none" }, "starttls, tls or none"))
 		},
 	}
@@ -239,6 +262,8 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "channel_creation",
 		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email")...)
 	f.Unknown = append(f.Unknown, smtp.Unknown("host", "port", "from", "tls")...)
+	f.Unknown = append(f.Unknown, rolesSection.Unknown("channels")...)
+	f.Unknown = append(f.Unknown, roleChannels.Unknown("autojoin", "rejoin")...)
 	return f, nil
 }
 
@@ -279,6 +304,8 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeySMTPFrom, f.SMTPFrom != nil, deref(f.SMTPFrom))
 	put(KeySMTPTLS, f.SMTPTLS != nil, deref(f.SMTPTLS))
 	put(KeyFilesEnabled, f.FilesEnabled != nil, deref(f.FilesEnabled))
+	put(KeyRolesChannelsAutojoin, f.RolesChannelsAutojoin != nil, deref(f.RolesChannelsAutojoin))
+	put(KeyRolesChannelsRejoin, f.RolesChannelsRejoin != nil, deref(f.RolesChannelsRejoin))
 	f.flattenBranding(m)
 	return m
 }
@@ -326,6 +353,10 @@ func (c Config) WithFile(f FileConfig) Config {
 	if f.FilesEnabled != nil {
 		c.FilesConfig.Enabled = *f.FilesEnabled
 	}
+	if f.RolesChannelsAutojoin != nil {
+		c.RolesConfig.ChannelsAutojoin = *f.RolesChannelsAutojoin
+	}
+	set(&c.RolesConfig.ChannelsRejoin, f.RolesChannelsRejoin)
 	return c
 }
 

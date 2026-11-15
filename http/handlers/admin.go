@@ -36,6 +36,7 @@ func (h *Handlers) registerAdmin(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/settings", h.allow(perm.AdminPanel, perm.SettingsManage)(h.adminGetSettings))
 	mux.HandleFunc("PATCH /v1/admin/settings", h.allow(perm.SettingsManage)(h.adminUpdateSettings))
 	h.registerRoles(mux)
+	h.registerRoleChannels(mux)
 }
 
 func intParam(r *nethttp.Request, name string) int {

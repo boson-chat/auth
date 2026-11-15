@@ -76,6 +76,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/sessions` | bearer | `{sessions: [{id, auth_method, ip, user_agent, created_at, last_seen_at, expires_at, current}]}` |
 | `DELETE /v1/sessions/{id}` | bearer | revoke one of your sessions → 204 (other users' ids are 404) |
 | `GET /v1/me/identities` | bearer | `{identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password}` |
+| `GET /v1/me/channels` | bearer | `{channels: [{channel, private, autojoin, via: [role names]}]}`: the channels the caller's roles give ([role channels](docs/roles.md#public-api-1)) |
 | `DELETE /v1/me/identities/{id}` | bearer | unlink → 204; `409 last_login_method` if it's the only way to sign in |
 | `GET /v1/sso/{slug}/start` | – | `?return_to=&mode=&invite_code=&code_challenge=&code_challenge_method=S256` → 302 to the IdP ([SSO](#single-sign-on)) |
 | `GET /v1/sso/{slug}/callback` | state cookie | OIDC redirect URI → 303 to `return_to` (cookies, `?code=` or `?error=`) |
@@ -116,6 +117,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `DELETE /v1/admin/roles/{id}` | `roles.manage` | → 204; `409 builtin_role` |
 | `POST /v1/admin/roles/reorder` | `roles.manage` | `{order: [id]}` (most senior first) → `{roles}` |
 | `GET /v1/admin/roles/{id}/members?cursor=&limit=` | `admin.panel` | `{users: [{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}` |
+| `GET`, `PUT /v1/admin/roles/{id}/channels` | `admin.panel` \| `roles.manage` / `roles.manage` | a role's channels `{channels: [{channel, autojoin, private}]}` (`{id}` may be `everyone`) ([role channels](docs/roles.md#role-channels-channel-access-and-auto-join)) |
+| `GET`, `PUT /v1/admin/channel-access` | `admin.panel` \| `roles.manage` / `roles.manage` | private channels `{channels: [{channel, private, roles}]}`; PUT replaces the list ([role channels](docs/roles.md#role-channels-channel-access-and-auto-join)) |
 
 ### Internal listener (`INTERNAL_ADDR`, default `:8081`)
 
@@ -130,6 +133,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
 | `GET /internal/v1/roles/{id}/members?cursor=&limit=` | the admin API's members list (`{users, next_cursor}`), for RoleServ |
 | `GET /internal/v1/irc/grants` | `{version, users: [{username, oper_class, whois_line, vhost}]}`: every enabled account with an oper class or vhost; `ETag` = version, `If-None-Match` → 304 ([grants feed](docs/roles.md#get-internalv1ircgrants-live-changes)) |
+| `GET /internal/v1/irc/channel-access` | `{version, autojoin, rejoin, channels: [{channel, private, everyone, accounts}]}` for RoleServ; `ETag`/`If-None-Match` ([role channels](docs/roles.md#internal-api-roleserv)) |
+| `GET /internal/v1/irc/autojoin?account=`, `POST /internal/v1/irc/autojoin` `{account, channels}` | one account's auto-join channels `{account, enabled, rejoin, channels, pending}` / record what RoleServ joined (`rejoin: once`) |
 | `GET /internal/v1/irc/accounts/removed?since=&limit=` | `{accounts: [{username, reason: "deleted"\|"disabled", at}], next}`: deleted and disabled accounts in commit order after the cursor `since`, for IRC to drop; `limit` 1–1000 (500) ([removed-accounts feed](docs/roles.md#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts)) |
 | `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}, layout_html?, html?}` → `{subject, html, text, from, warnings}`, live preview with unsaved settings and unsaved compiled MJML (`layout_html` with `{{content}}`, `html` with `{{link}}`, ≤ 512 KB each; field-tagged 400s) ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
 | `GET /internal/email/default-mjml?part=layout\|verification\|password_reset\|account_setup\|invite` | bearer with `settings.manage`; `{mjml}`: Boson's default MJML source (the layout, or a whole email built on it) for the admin panel's MJML editor ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
@@ -209,6 +214,10 @@ branding:                           # GET /v1/branding ([details](docs/branding.
   images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
 files:                              # the files service's section; auth reads only:
   enabled: true                     # FILES_ENABLED: files_url in /v1/config, else null
+roles:
+  channels:                         # role channels ([details](docs/roles.md#role-channels-channel-access-and-auto-join))
+    autojoin: false                 # ROLE_CHANNELS_AUTOJOIN: RoleServ auto-joins members
+    rejoin: login                   # ROLE_CHANNELS_REJOIN: login | once
 ```
 
 `SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
@@ -421,6 +430,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `BOSON_EMAILS_DIR` | `emails` next to `BOSON_CONFIG` | directory of the MJML / HTML files named in `auth.email.layout` and `auth.email.templates.<name>` ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
 | `FILES_PUBLIC_URL` | – | the network's files (uploads) service, e.g. `https://files.example.com`; `GET /v1/config` `files_url` while uploads are on |
+| `ROLE_CHANNELS_AUTOJOIN` | `false` | RoleServ auto-joins members to their roles' channels (*file*: `roles.channels.autojoin`) |
+| `ROLE_CHANNELS_REJOIN` | `login` | `login` \| `once` (*file*: `roles.channels.rejoin`) |
 | `FILES_ENABLED` | `false` | uploads are on: `files_url` is published (*file*: `files.enabled`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |
