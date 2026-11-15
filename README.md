@@ -644,3 +644,11 @@ docs/branding.md             network theme, branding images, email templates
 - **Phase 4, IRC SASL:** Anope/UnrealIRCd bridge calling `/internal/v1/verify-password`.
 
 See [docs/sso.md](docs/sso.md).
+
+## License
+
+Copyright (C) 2026 bludot / the boson authors
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) only (`AGPL-3.0-only`).
+
+In plain English: if you run a modified version of this software as a network service, you must offer its source code to the people who use that service.
