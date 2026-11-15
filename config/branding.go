@@ -24,10 +24,17 @@ import (
 //	    font: boson
 //	    panes:
 //	      messages: { dim: 0.7, blur: 8, position: center }
+//	    variants:                   # optional: the other base's version
+//	      light:
+//	        colors: { accent: "#6d28d9" }
+//	        nick: { saturation: 60, lightness: 38 }
+//	        panes:
+//	          messages: { dim: 0.3 }  # overrides the primary pane's fields
 //	  images:                       # files in <config dir>/branding/
 //	    logo: logo.svg
 //	    login_background: login.webp
 //	    panes.messages.image: messages.webp
+//	    variants.light.panes.messages.image: messages-light.webp
 //	auth:
 //	  email:
 //	    sender_name: "Example Chat"
@@ -317,82 +324,16 @@ func loadBranding(doc *configfile.Document) (*BrandingConfig, []string, error) {
 			}
 			t.Radius = r
 		}
-		colors, err := ts.Sub("colors")
-		if err != nil {
+		var u []string
+		if t.Colors, t.Nick, t.Panes, u, err = loadLook(ts); err != nil {
 			return nil, nil, err
 		}
-		for _, k := range colors.Keys() {
-			if !theme.ValidToken(k) {
-				unknown = append(unknown, colors.Path()+"."+k)
-				continue
-			}
-			var c string
-			if err := stringKey(colors, k, &c, checkColor); err != nil {
-				return nil, nil, err
-			}
-			if c == "" {
-				continue // null
-			}
-			if t.Colors == nil {
-				t.Colors = map[string]string{}
-			}
-			t.Colors[k] = strings.ToLower(c)
-		}
-		nick, err := ts.Sub("nick")
-		if err != nil {
+		unknown = append(unknown, u...)
+		if t.Variants, u, err = loadVariants(ts, t.Base); err != nil {
 			return nil, nil, err
 		}
-		if nick != nil {
-			n := &theme.Nick{}
-			for key, dst := range map[string]**int{"saturation": &n.Saturation, "lightness": &n.Lightness} {
-				v, err := nick.Int(key)
-				if err != nil {
-					return nil, nil, err
-				}
-				if v != nil {
-					if msg := theme.CheckNickPercent(*v); msg != "" {
-						return nil, nil, nick.Errorf(key, "%s", msg)
-					}
-					*dst = v
-				}
-			}
-			if n.Saturation != nil || n.Lightness != nil {
-				t.Nick = n
-			}
-			unknown = append(unknown, nick.Unknown("saturation", "lightness")...)
-		}
-		panes, err := ts.Sub("panes")
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, name := range panes.Keys() {
-			if !theme.ValidPane(name) {
-				unknown = append(unknown, panes.Path()+"."+name)
-				continue
-			}
-			ps, err := panes.Sub(name)
-			if err != nil {
-				return nil, nil, err
-			}
-			if ps == nil {
-				continue
-			}
-			if err := rejectImageKeys(ps); err != nil {
-				return nil, nil, err
-			}
-			p, err := loadPane(ps)
-			if err != nil {
-				return nil, nil, err
-			}
-			if *p != (theme.Pane{}) {
-				if t.Panes == nil {
-					t.Panes = map[string]*theme.Pane{}
-				}
-				t.Panes[name] = p
-			}
-			unknown = append(unknown, ps.Unknown("bg", "dim", "blur", "position")...)
-		}
-		unknown = append(unknown, ts.Unknown("version", "base", "colors", "nick", "radius", "font", "panes")...)
+		unknown = append(unknown, u...)
+		unknown = append(unknown, ts.Unknown("version", "base", "colors", "nick", "radius", "font", "panes", "variants")...)
 	}
 	imgs, err := sec.Sub("images")
 	if err != nil {
@@ -415,12 +356,135 @@ func loadBranding(doc *configfile.Document) (*BrandingConfig, []string, error) {
 		if file == "" {
 			continue
 		}
+		if v := theme.SlotVariant(slot); v != "" && t.Variants[v] == nil {
+			unknown = append(unknown, imgs.Path()+"."+slot) // no such variant: dropped
+			continue
+		}
 		n := imgs.Node(slot)
 		b.Images = append(b.Images, BrandingImage{Slot: slot, File: file, Line: n.Line, Column: n.Column})
 	}
 	slices.SortFunc(b.Images, func(a, b BrandingImage) int { return strings.Compare(a.Slot, b.Slot) })
 	unknown = append(unknown, sec.Unknown("theme", "images")...)
 	return b, unknown, nil
+}
+
+// loadLook decodes what the primary and each variant have of their own:
+// colors, nick and panes (keys of s).
+func loadLook(s *configfile.Section) (colors map[string]string, nick *theme.Nick, panes map[string]*theme.Pane, unknown []string, err error) {
+	cs, err := s.Sub("colors")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, k := range cs.Keys() {
+		if !theme.ValidToken(k) {
+			unknown = append(unknown, cs.Path()+"."+k)
+			continue
+		}
+		var c string
+		if err := stringKey(cs, k, &c, checkColor); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if c == "" {
+			continue // null
+		}
+		if colors == nil {
+			colors = map[string]string{}
+		}
+		colors[k] = strings.ToLower(c)
+	}
+	ns, err := s.Sub("nick")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if ns != nil {
+		n := &theme.Nick{}
+		for key, dst := range map[string]**int{"saturation": &n.Saturation, "lightness": &n.Lightness} {
+			v, err := ns.Int(key)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			if v != nil {
+				if msg := theme.CheckNickPercent(*v); msg != "" {
+					return nil, nil, nil, nil, ns.Errorf(key, "%s", msg)
+				}
+				*dst = v
+			}
+		}
+		if n.Saturation != nil || n.Lightness != nil {
+			nick = n
+		}
+		unknown = append(unknown, ns.Unknown("saturation", "lightness")...)
+	}
+	pss, err := s.Sub("panes")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, name := range pss.Keys() {
+		if !theme.ValidPane(name) {
+			unknown = append(unknown, pss.Path()+"."+name)
+			continue
+		}
+		ps, err := pss.Sub(name)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if ps == nil {
+			continue
+		}
+		if err := rejectImageKeys(ps); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		p, err := loadPane(ps)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if *p != (theme.Pane{}) {
+			if panes == nil {
+				panes = map[string]*theme.Pane{}
+			}
+			panes[name] = p
+		}
+		unknown = append(unknown, ps.Unknown("bg", "dim", "blur", "position")...)
+	}
+	return colors, nick, panes, unknown, nil
+}
+
+// loadVariants decodes theme.variants: only the base that isn't the
+// theme's; a variant for the theme's own base is dropped (reported with
+// the unknown keys). An empty variant ({}) is kept: Boson's built-in of
+// that base with the shared settings.
+func loadVariants(ts *configfile.Section, base string) (map[string]*theme.Variant, []string, error) {
+	vs, err := ts.Sub("variants")
+	if err != nil {
+		return nil, nil, err
+	}
+	var out map[string]*theme.Variant
+	var unknown []string
+	for _, name := range vs.Keys() {
+		if !theme.ValidBase(name) || name == base {
+			unknown = append(unknown, vs.Path()+"."+name)
+			continue
+		}
+		s, err := vs.Sub(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if s == nil {
+			continue // null
+		}
+		v := &theme.Variant{}
+		var u []string
+		if v.Colors, v.Nick, v.Panes, u, err = loadLook(s); err != nil {
+			return nil, nil, err
+		}
+		unknown = append(unknown, u...)
+		unknown = append(unknown, s.Unknown("colors", "nick", "panes")...)
+		if out == nil {
+			out = map[string]*theme.Variant{}
+		}
+		out[name] = v
+	}
+	return out, unknown, nil
 }
 
 func loadPane(ps *configfile.Section) (*theme.Pane, error) {

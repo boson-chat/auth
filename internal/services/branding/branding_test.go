@@ -207,3 +207,70 @@ func TestDocumentSizeLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPrepareVariants(t *testing.T) {
+	dir := dirWith(t, map[string][]byte{"msg.webp": webp, "msg-light.svg": svg})
+	plain := cfg("panes.messages.image", "msg.webp")
+	before, err := Prepare(plain, dir, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A config without variants renders exactly as before: no variants key.
+	if strings.Contains(string(before.doc.JSON), "variants") {
+		t.Fatalf("%s", before.doc.JSON)
+	}
+
+	withVariant := func(accent string, images ...string) *config.BrandingConfig {
+		c := cfg(append([]string{"panes.messages.image", "msg.webp"}, images...)...)
+		dim := 0.3
+		c.Theme.Variants = map[string]*theme.Variant{"light": {
+			Colors: map[string]string{"accent": accent},
+			Panes:  map[string]*theme.Pane{"messages": {Dim: &dim}},
+		}}
+		return c
+	}
+	in := withVariant("#6d28d9", "variants.light.panes.messages.image", "msg-light.svg")
+	snap, err := Prepare(in, dir, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Panes    map[string]map[string]any `json:"panes"`
+		Variants map[string]struct {
+			Colors map[string]string         `json:"colors"`
+			Panes  map[string]map[string]any `json:"panes"`
+		} `json:"variants"`
+	}
+	if err := json.Unmarshal(snap.doc.JSON, &got); err != nil {
+		t.Fatal(err)
+	}
+	light := got.Variants["light"]
+	if light.Colors["accent"] != "#6d28d9" || light.Panes["messages"]["dim"] != 0.3 ||
+		light.Panes["messages"]["image"] != pub+"/v1/branding/assets/msg-light.svg?v="+hash(svg) ||
+		got.Panes["messages"]["image"] != pub+"/v1/branding/assets/msg.webp?v="+hash(webp) {
+		t.Fatalf("%s", snap.doc.JSON)
+	}
+	if _, ok := snap.assets["msg-light.svg"]; !ok {
+		t.Fatal("the variant's image is served")
+	}
+	if in.Theme.Variants["light"].Panes["messages"].Image != "" {
+		t.Fatal("Prepare must not write into the config's variant")
+	}
+	// Without its own image the variant's pane has none: the client takes the primary's.
+	noImg, _ := Prepare(withVariant("#6d28d9"), dir, pub)
+	if strings.Contains(string(noImg.doc.JSON), "msg-light") {
+		t.Fatalf("%s", noImg.doc.JSON)
+	}
+
+	// The ETag follows the variants.
+	again, _ := Prepare(withVariant("#6d28d9", "variants.light.panes.messages.image", "msg-light.svg"), dir, pub)
+	other, _ := Prepare(withVariant("#5b21b6", "variants.light.panes.messages.image", "msg-light.svg"), dir, pub)
+	if again.doc.ETag != snap.doc.ETag {
+		t.Fatal("same variants, same ETag")
+	}
+	for name, s := range map[string]*Snapshot{"no variant": before, "variant colour": other, "variant image": noImg} {
+		if s.doc.ETag == snap.doc.ETag {
+			t.Errorf("%s: ETag unchanged", name)
+		}
+	}
+}

@@ -216,3 +216,95 @@ func TestEmailFiles(t *testing.T) {
 		t.Fatal(f.Unknown)
 	}
 }
+
+func TestBrandingVariants(t *testing.T) {
+	f, err := loadFile(t, `version: 1
+branding:
+  theme:
+    base: dark
+    colors: { accent: "#7c3aed" }
+    panes:
+      messages: { dim: 0.7, blur: 8 }
+    variants:
+      light:
+        colors: { accent: "#6D28D9", bg: "#ffffff", nope: "#000000" }
+        nick: { lightness: 38 }
+        panes:
+          messages: { dim: 0.3, glow: 1 }
+          sidebar: { bg: "#ffffff" }
+        logo: x
+      dark:
+        colors: { accent: "#000000" }
+      sepia: {}
+  images:
+    panes.messages.image: m.webp
+    variants.light.panes.messages.image: m-light.webp
+    variants.dark.panes.messages.image: m-dark.webp
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(f.Branding.Theme)
+	want := `{"version":1,"base":"dark","colors":{"accent":"#7c3aed"},"panes":{"messages":{"dim":0.7,"blur":8}},` +
+		`"variants":{"light":{"colors":{"accent":"#6d28d9","bg":"#ffffff"},"nick":{"lightness":38},"panes":{"messages":{"dim":0.3}}}}}`
+	if string(got) != want {
+		t.Fatalf("theme\n got %s\nwant %s", got, want)
+	}
+	var slots []string
+	for _, img := range f.Branding.Images {
+		slots = append(slots, img.Slot)
+	}
+	if strings.Join(slots, ",") != "panes.messages.image,variants.light.panes.messages.image" {
+		t.Fatal(slots)
+	}
+	// The variant for the theme's own base, unknown variants and keys, and
+	// images of a variant that isn't there are dropped and reported.
+	for _, k := range []string{"branding.theme.variants.dark", "branding.theme.variants.sepia",
+		"branding.theme.variants.light.colors.nope", "branding.theme.variants.light.panes.messages.glow",
+		"branding.theme.variants.light.panes.sidebar", "branding.theme.variants.light.logo",
+		"branding.images.variants.dark.panes.messages.image"} {
+		if !slices.Contains(f.Unknown, k) {
+			t.Errorf("unknown %s not reported: %v", k, f.Unknown)
+		}
+	}
+
+	// An empty variant is kept: Boson's built-in of that base.
+	f, err = loadFile(t, "branding:\n  theme:\n    base: light\n    variants: { dark: {}, light: ~ }\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(f.Branding.Theme); string(got) != `{"version":1,"base":"light","variants":{"dark":{}}}` {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestBrandingVariantValidationErrors(t *testing.T) {
+	cases := []struct {
+		name, src string
+		line, col int
+		want      string
+	}{
+		{"colour", "branding:\n  theme:\n    variants:\n      light: { colors: { bg: red } }\n", 4, 30, "#rrggbb"},
+		{"nick", "branding:\n  theme:\n    variants:\n      light: { nick: { lightness: 101 } }\n", 4, 35, "between 0 and 100"},
+		{"dim", "branding:\n  theme:\n    variants:\n      light:\n        panes: { messages: { dim: 2 } }\n", 5, 35, "between 0 and 1"},
+		{"blur", "branding:\n  theme:\n    variants:\n      light:\n        panes: { messages: { blur: 30 } }\n", 5, 36, "between 0 and 24"},
+		{"position", "branding:\n  theme:\n    variants:\n      light:\n        panes: { messages: { position: up } }\n", 5, 40, "center, top"},
+		{"pane image url", "branding:\n  theme:\n    variants:\n      light:\n        panes: { messages: { image: \"https://x/a.png\" } }\n", 5, 37, "branding.images"},
+		{"not mapping", "branding:\n  theme:\n    variants:\n      light: x\n", 4, 14, "must be a mapping"},
+		{"variants not mapping", "branding:\n  theme:\n    variants: [light]\n", 3, 15, "must be a mapping"},
+		{"variant image traversal", "branding:\n  theme: { variants: { light: {} } }\n  images:\n    variants.light.panes.messages.image: ../a.png\n", 4, 42, "plain file name"},
+		{"variant image slot", "branding:\n  images:\n    variants.light.logo: a.png\n", 3, 5, "unknown image slot"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := loadFile(t, c.src)
+			e, ok := configfile.AsError(err)
+			if !ok || !strings.Contains(e.Msg, c.want) {
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+			if e.Line != c.line || e.Column != c.col {
+				t.Fatalf("position %d:%d, want %d:%d (%v)", e.Line, e.Column, c.line, c.col, e)
+			}
+		})
+	}
+}

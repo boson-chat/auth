@@ -6,8 +6,10 @@ package theme
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Version is the document version (boson-theme/1).
@@ -72,13 +74,40 @@ const (
 // PaneImageSlot is the slot of a pane's background image.
 func PaneImageSlot(pane string) string { return "panes." + pane + ".image" }
 
+// VariantPaneImageSlot is the slot of a pane's background image in the
+// variant for base (variants.<base>.panes.<pane>.image).
+func VariantPaneImageSlot(base, pane string) string {
+	return "variants." + base + "." + PaneImageSlot(pane)
+}
+
+// Bases lists the bases, which are also the variant names.
+var Bases = []string{BaseDark, BaseLight}
+
+// ValidBase reports whether b is dark or light.
+func ValidBase(b string) bool { return slices.Contains(Bases, b) }
+
 // Slots lists every image slot.
 func Slots() []string {
 	out := []string{SlotLogo, SlotLogoWide, SlotLoginBackground}
 	for _, p := range Panes {
 		out = append(out, PaneImageSlot(p))
 	}
+	for _, b := range Bases {
+		for _, p := range Panes {
+			out = append(out, VariantPaneImageSlot(b, p))
+		}
+	}
 	return out
+}
+
+// SlotVariant is the variant a slot belongs to ("" for the primary's).
+func SlotVariant(slot string) string {
+	for _, b := range Bases {
+		if strings.HasPrefix(slot, "variants."+b+".") {
+			return b
+		}
+	}
+	return ""
 }
 
 var colorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -113,6 +142,16 @@ type Pane struct {
 	Position string   `json:"position,omitempty"`
 }
 
+// Variant is the theme for the base that is not the document's (variants.
+// <base>): its own colours, nick tuning and pane overrides. A pane's
+// fields override the primary's pane field by field; its image comes from
+// the primary pane unless it has its own.
+type Variant struct {
+	Colors map[string]string `json:"colors,omitempty"`
+	Nick   *Nick             `json:"nick,omitempty"`
+	Panes  map[string]*Pane  `json:"panes,omitempty"`
+}
+
 // Theme is a boson-theme/1 document. Empty / nil fields are omitted.
 type Theme struct {
 	Version         int               `json:"version"`
@@ -125,6 +164,9 @@ type Theme struct {
 	Logo            string            `json:"logo,omitempty"`
 	LogoWide        string            `json:"logo_wide,omitempty"`
 	LoginBackground string            `json:"login_background,omitempty"`
+	// Variants holds at most the base that isn't Base (old readers ignore
+	// it and use the primary).
+	Variants map[string]*Variant `json:"variants,omitempty"`
 }
 
 // SetImage sets the URL of an image slot.
@@ -139,14 +181,20 @@ func (t *Theme) SetImage(slot, url string) error {
 	default:
 		for _, p := range Panes {
 			if slot == PaneImageSlot(p) {
-				if t.Panes == nil {
-					t.Panes = map[string]*Pane{}
-				}
-				if t.Panes[p] == nil {
-					t.Panes[p] = &Pane{}
-				}
-				t.Panes[p].Image = url
+				t.Panes = setPaneImage(t.Panes, p, url)
 				return nil
+			}
+			for _, b := range Bases {
+				if slot == VariantPaneImageSlot(b, p) {
+					if t.Variants == nil {
+						t.Variants = map[string]*Variant{}
+					}
+					if t.Variants[b] == nil {
+						t.Variants[b] = &Variant{}
+					}
+					t.Variants[b].Panes = setPaneImage(t.Variants[b].Panes, p, url)
+					return nil
+				}
 			}
 		}
 		return fmt.Errorf("unknown image slot %q", slot)
@@ -154,27 +202,50 @@ func (t *Theme) SetImage(slot, url string) error {
 	return nil
 }
 
+func setPaneImage(panes map[string]*Pane, pane, url string) map[string]*Pane {
+	if panes == nil {
+		panes = map[string]*Pane{}
+	}
+	if panes[pane] == nil {
+		panes[pane] = &Pane{}
+	}
+	panes[pane].Image = url
+	return panes
+}
+
 // Clone returns a deep copy.
 func (t Theme) Clone() Theme {
 	c := t
-	if t.Colors != nil {
-		c.Colors = make(map[string]string, len(t.Colors))
-		for k, v := range t.Colors {
-			c.Colors[k] = v
-		}
-	}
-	if t.Nick != nil {
-		n := *t.Nick
-		c.Nick = &n
-	}
-	if t.Panes != nil {
-		c.Panes = make(map[string]*Pane, len(t.Panes))
-		for k, v := range t.Panes {
-			p := *v
-			c.Panes[k] = &p
+	c.Colors = maps.Clone(t.Colors)
+	c.Nick = cloneNick(t.Nick)
+	c.Panes = clonePanes(t.Panes)
+	if t.Variants != nil {
+		c.Variants = make(map[string]*Variant, len(t.Variants))
+		for k, v := range t.Variants {
+			c.Variants[k] = &Variant{Colors: maps.Clone(v.Colors), Nick: cloneNick(v.Nick), Panes: clonePanes(v.Panes)}
 		}
 	}
 	return c
+}
+
+func cloneNick(n *Nick) *Nick {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	return &c
+}
+
+func clonePanes(panes map[string]*Pane) map[string]*Pane {
+	if panes == nil {
+		return nil
+	}
+	out := make(map[string]*Pane, len(panes))
+	for k, v := range panes {
+		p := *v
+		out[k] = &p
+	}
+	return out
 }
 
 // Range checks shared by every reader of the format; each returns "" when
