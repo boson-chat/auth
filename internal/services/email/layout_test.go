@@ -85,6 +85,34 @@ func TestWriteSamples(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, name+".html"), []byte(r.HTML), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(r.Text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Boson's default MJML (as the admin panel compiles it), as a layout
+	// and as whole emails.
+	s.SetConfig(brandedCases()[config.EmailVerification])
+	layout, err := os.ReadFile(filepath.Join(DefaultMJMLTestdata, "layout.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range config.EmailTemplates {
+		doc, err := os.ReadFile(filepath.Join(DefaultMJMLTestdata, name+".html"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for kind, in := range map[string]PreviewInput{
+			"mjml-layout": {Template: name, LayoutHTML: new(string(layout))},
+			"mjml":        {Template: name, HTML: new(string(doc))},
+		} {
+			r, err := s.Preview(context.Background(), "alice", in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, kind+"-"+name+".html"), []byte(r.HTML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
 
@@ -99,18 +127,23 @@ func TestLayoutStructure(t *testing.T) {
 	for _, want := range []string{
 		`<!doctype html>`,
 		`<html lang="en" dir="ltr"`,
-		`<title>Verify your email for Example &lt;Net&gt; &amp; Co</title>`,
-		`<meta name="color-scheme" content="light dark">`,
-		`@media (prefers-color-scheme: dark)`,
+		`<title>Confirm your email for Example &lt;Net&gt; &amp; Co</title>`,
+		`<meta name="color-scheme" content="dark light">`,
+		`@media (prefers-color-scheme: light)`,
+		`[data-ogsc] .bx-text div`,
+		`body style="word-spacing:normal;background-color:#070709;"`,
+		`$&#160;verify --email`,
 		`max-width:600px`,
 		`<!--[if mso | IE]>`, // Outlook tables survive (comments are not stripped)
 		// Logo: 480×120 scaled to the 40 px box, with explicit width/height for Outlook.
 		`<img src="` + strings.ReplaceAll(goldenLogo, "&", "&amp;") + `" alt="Example Chat" width="160" height="40"`,
 		`bgcolor="#7c3aed"`,
 		`color:#ffffff`,
+		`border-radius:2px`,
 		// Inbox preview line.
-		`>Hi alice, Confirm this email address for your Example &lt;Net&gt; &amp; Co account by opening: The link expires in 24 hours`,
-		`Example Chat · <a href="https://example.com" style="color:#7c3aed;word-break:break-all">https://example.com</a><br>`,
+		`>Hi alice, Confirm this address to finish setting up your Example &lt;Net&gt; &amp; Co account. The link expires in 24 hours`,
+		`Example Chat · <a href="https://example.com" style="color:#8e8e9e;word-break:break-all">https://example.com</a><br>`,
+		`Powered by <a href="https://boson.chat"`,
 	} {
 		if !strings.Contains(h, want) {
 			t.Errorf("HTML lacks %q", want)
@@ -217,7 +250,7 @@ func TestSkeletonFillGuards(t *testing.T) {
 func TestOnAccent(t *testing.T) {
 	for accent, want := range map[string]string{
 		"#3b5bdb": "#ffffff", "#7c3aed": "#ffffff", "#000000": "#ffffff",
-		"#ffff00": "#111118", "#ffffff": "#111118", "#7dd3fc": "#111118", "bad": "#ffffff",
+		"#ffff00": "#070709", "#ffffff": "#070709", "#7dd3fc": "#070709", "#d97706": "#070709", "bad": "#ffffff",
 	} {
 		if got := onAccent(accent); got != want {
 			t.Errorf("onAccent(%s) = %s, want %s", accent, got, want)
@@ -238,6 +271,65 @@ func TestHeaderLogoSizing(t *testing.T) {
 	} {
 		if got := string(headerHTML(c.logo, "N")); !strings.Contains(got, c.want) {
 			t.Errorf("%+v: %s", c.logo, got)
+		}
+	}
+}
+
+// Every text colour of both palettes reads at 4.5:1 or better on the page
+// and the card; the default accent's label and links do too.
+func TestPaletteContrast(t *testing.T) {
+	for name, p := range map[string]palette{"dark": darkPalette, "light": lightPalette} {
+		for _, bg := range []string{p.Page, p.Card} {
+			for _, fg := range []string{p.Heading, p.Text, p.Muted} {
+				if c := contrast(fg, bg); c < 4.5 {
+					t.Errorf("%s: %s on %s is %.2f:1", name, fg, bg, c)
+				}
+			}
+		}
+	}
+	if c := contrast(onAccent(DefaultAccent), DefaultAccent); c < 4.5 {
+		t.Errorf("button label on the default accent: %.2f:1", c)
+	}
+	if linkColor(DefaultAccent) != DefaultAccent || linkColor("#1e1e8c") != darkPalette.Heading || linkColor("bad") != darkPalette.Heading {
+		t.Error("linkColor: the accent only when it reads on the dark card")
+	}
+}
+
+// The accent is only on the button and links: no decorative bar. Notes
+// follow the button; the fallback link row is there only with a button.
+func TestLayoutAccentAndRows(t *testing.T) {
+	s := goldenSvc()
+	s.SetConfig(&config.EmailConfig{Accent: "#7c3aed"})
+	r, err := s.Preview(context.Background(), "alice", PreviewInput{Template: config.EmailPasswordReset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regexp.MustCompile(`border-(top|left|bottom|right):[^;"]*#7c3aed`).MatchString(r.HTML) {
+		t.Fatal("accent used as a border")
+	}
+	if strings.Count(r.HTML, `class="bx-note `) != 1 || strings.Count(r.HTML, "Button not working?") != 1 || !strings.Contains(r.HTML, "Powered by") {
+		t.Fatal(r.HTML)
+	}
+	body := "No link here.\n\nStill none."
+	r, _ = s.Preview(context.Background(), "alice", PreviewInput{Template: config.EmailPasswordReset, Body: &body})
+	if strings.Contains(r.HTML, "Button not working?") || strings.Contains(r.HTML, `class="bx-note `) || strings.Contains(r.HTML, `class="bx-rule `) {
+		t.Fatal("no button: no notes and no fallback link row")
+	}
+	if r.Text != "$ reset --password\n\nNo link here.\n\nStill none.\n" {
+		t.Fatalf("%q", r.Text)
+	}
+}
+
+// {{accent_text}} is the label colour for {{accent}}.
+func TestAccentTextPlaceholder(t *testing.T) {
+	d, err := compileDoc(`<a href="{{link}}" style="background:{{accent}};color:{{ accent_text }}">go</a>`, false)
+	if err != nil || len(d.warnings) != 0 {
+		t.Fatal(err, d.warnings)
+	}
+	for accent, want := range map[string]string{"#d97706": "#070709", "#3b5bdb": "#ffffff", "": "#070709"} {
+		got := d.fill(docValues{link: "https://x.example/", accent: accent})
+		if !strings.Contains(got, "color:"+want+`"`) {
+			t.Errorf("%s: %s", accent, got)
 		}
 	}
 }

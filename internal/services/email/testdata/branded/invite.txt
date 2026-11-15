@@ -1,10 +1,13 @@
+$ join --invite
+
 Hi,
 
-alice invited you to join Example <Net> & Co. To create your account, open:
+alice invited you to join Example <Net> & Co. Create your account to accept:
 
+Accept invite:
 https://app.example.com/#invite=inv_example
 
-The invite expires in 7 days. If you weren't expecting this, you can ignore this email.
+The invite expires in 7 days. If you weren't expecting it, you can ignore this email.
 
 -- 
 Example Chat · https://example.com

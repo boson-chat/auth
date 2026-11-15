@@ -58,38 +58,39 @@ type template struct {
 	subject string // default subject
 	body    string // default body (plain text with variables)
 	button  string // label of the action link when it stands alone in a paragraph
+	prompt  string // the layout's prompt line, after "$ " (not configurable)
 }
 
 var catalog = map[string]template{
 	config.EmailVerification: {
-		name: config.EmailVerification, legacy: "verify", purpose: PurposeVerify,
-		subject: "Verify your email for {{network}}",
-		body: "Hi {{username}},\n\nConfirm this email address for your {{network}} account by opening:\n\n{{link}}\n\n" +
-			"The link expires in {{expires}} and can be used once. If you didn't create an account, ignore this email.",
-		button: "Verify email",
+		name: config.EmailVerification, legacy: "verify", purpose: PurposeVerify, prompt: "verify --email",
+		subject: "Confirm your email for {{network}}",
+		body: "Hi {{username}},\n\nConfirm this address to finish setting up your {{network}} account.\n\n{{link}}\n\n" +
+			"The link expires in {{expires}} and works once. If you didn't sign up, you can ignore this email.",
+		button: "Confirm email",
 	},
 	config.EmailPasswordReset: {
-		name: config.EmailPasswordReset, legacy: "reset", purpose: PurposeReset,
+		name: config.EmailPasswordReset, legacy: "reset", purpose: PurposeReset, prompt: "reset --password",
 		subject: "Reset your {{network}} password",
-		body: "Hi {{username}},\n\nSomeone asked to reset the password for your {{network}} account. To choose a new password, open:\n\n{{link}}\n\n" +
-			"The link expires in {{expires}} and can be used once. Resetting signs you out everywhere. " +
-			"If this wasn't you, ignore this email; your password has not changed.",
+		body: "Hi {{username}},\n\nSomeone asked to reset the password for your {{network}} account. If that was you, choose a new one:\n\n{{link}}\n\n" +
+			"The link expires in {{expires}} and works once. A new password signs you out everywhere. " +
+			"If you didn't ask, ignore this email; your password stays the same.",
 		button: "Choose a new password",
 	},
 	config.EmailAccountSetup: {
-		name: config.EmailAccountSetup, legacy: "setup", purpose: PurposeSetup,
-		subject: "Your {{network}} account",
-		body: "Hi {{username}},\n\nAn administrator created a {{network}} account for you with the username {{username}}. " +
-			"To choose your password, open:\n\n{{link}}\n\n" +
-			"The link expires in {{expires}} and can be used once. If you weren't expecting this, you can ignore this email.",
+		name: config.EmailAccountSetup, legacy: "setup", purpose: PurposeSetup, prompt: "setup --account",
+		subject: "Your {{network}} account is ready",
+		body: "Hi {{username}},\n\nAn administrator created an account for you on {{network}}. Your username is {{username}}. " +
+			"Choose a password to sign in:\n\n{{link}}\n\n" +
+			"The link expires in {{expires}} and works once. If you weren't expecting this, you can ignore this email.",
 		button: "Choose your password",
 	},
 	config.EmailInvite: {
-		name: config.EmailInvite, purpose: PurposeInvite,
+		name: config.EmailInvite, purpose: PurposeInvite, prompt: "join --invite",
 		subject: "{{inviter}} invited you to {{network}}",
-		body: "Hi,\n\n{{inviter}} invited you to join {{network}}. To create your account, open:\n\n{{link}}\n\n" +
-			"The invite expires in {{expires}}. If you weren't expecting this, you can ignore this email.",
-		button: "Accept the invite",
+		body: "Hi,\n\n{{inviter}} invited you to join {{network}}. Create your account to accept:\n\n{{link}}\n\n" +
+			"The invite expires in {{expires}}. If you weren't expecting it, you can ignore this email.",
+		button: "Accept invite",
 	},
 }
 
@@ -194,8 +195,9 @@ func textHTML(s, accent string) string {
 	return strings.Join(lines, "<br>\n")
 }
 
-// DefaultAccent is the button colour of Boson's built-in emails.
-const DefaultAccent = "#3b5bdb"
+// DefaultAccent is the button colour of the branded layout without
+// auth.email.accent: Boson's amber.
+const DefaultAccent = "#d97706"
 
 // Logo is the branding logo for emails: URL "" = none; Width and Height
 // are its pixel size (0 when unknown, e.g. SVG).
@@ -213,7 +215,7 @@ const (
 // headerHTML is the logo, or the sender name as text.
 func headerHTML(logo Logo, name string) safeHTML {
 	if !isHTTP(logo.URL) {
-		return safeHTML(`<span style="font-size:18px;font-weight:700;line-height:1.3;color:` + lightPalette.Heading + `">` + html.EscapeString(name) + `</span>`)
+		return safeHTML(`<span style="color:` + darkPalette.Heading + `">` + html.EscapeString(name) + `</span>`)
 	}
 	img := `<img src="` + html.EscapeString(logo.URL) + `" alt="` + html.EscapeString(name) + `"`
 	if logo.Width > 0 && logo.Height > 0 {
@@ -288,12 +290,7 @@ func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, 
 	}
 	accent = safeColor(accent, DefaultAccent)
 	r := Rendered{Subject: strings.Join(strings.Fields(substitute(subject, v)), " ")}
-	// Plain-text part: the body with the variables filled in.
-	text := strings.Join(paragraphs(substitute(body, v)), "\n\n") + "\n"
-	r.Text = text
-	if footer != "" {
-		r.Text += "\n-- \n" + footer + "\n"
-	}
+	r.Text = textPart(tpl, body, v, footer, cu.empty())
 	if !cu.empty() {
 		vals := docValues{
 			text: map[string]string{"subject": r.Subject, "network": v.get("network"), "username": v.get("username"),
@@ -316,13 +313,36 @@ func branded(tpl template, cfg *config.EmailConfig, over *config.EmailTemplate, 
 		return r, nil
 	}
 	p := page{
-		title: r.Subject, preview: previewLine(body, v), header: headerHTML(logo, name),
-		blocks: bodyBlocks(body, v, tpl.button, accent), accent: accent, onAccent: onAccent(accent),
+		title: r.Subject, prompt: tpl.prompt, preview: previewLine(body, v), header: headerHTML(logo, name),
+		blocks: bodyBlocks(body, v, tpl.button, linkColor(accent)), accent: accent, onAccent: onAccent(accent),
 	}
 	sk := sks[0]
 	if footer != "" {
-		sk, p.footer = sks[1], safeHTML(textHTML(footer, accent))
+		sk, p.footer = sks[1], safeHTML(textHTML(footer, darkPalette.Muted))
 	}
 	r.HTML = sk.fill(p)
 	return r, nil
+}
+
+// textPart is the plain-text part: the body with the variables filled in,
+// then "-- " and the footer. In Boson's layout (boson) it opens with the
+// prompt line, and the action link alone in its paragraph comes under the
+// button's label.
+func textPart(tpl template, body string, v Vars, footer string, boson bool) string {
+	var out []string
+	if boson && tpl.prompt != "" {
+		out = append(out, "$ "+tpl.prompt)
+	}
+	for _, p := range paragraphs(body) {
+		if m := varRe.FindStringSubmatch(p); boson && m != nil && m[0] == p && m[1] == "link" && isHTTP(v.get("link")) && tpl.button != "" {
+			out = append(out, tpl.button+":\n"+v.get("link"))
+			continue
+		}
+		out = append(out, substitute(p, v))
+	}
+	text := strings.Join(out, "\n\n") + "\n"
+	if footer != "" {
+		text += "\n-- \n" + footer + "\n"
+	}
+	return text
 }

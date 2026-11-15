@@ -5,57 +5,89 @@
   compiling, each with its own escaping (see slotTokens in layout.go).
   The <!--bx:...--> comments cut the body into the repeatable paragraph
   and button rows.
+
+  Dark first (Boson's Terminal theme): the inline colours are the dark
+  palette, which is what clients without media queries show (Gmail,
+  Outlook for Windows). prefers-color-scheme: light switches to the
+  Daylight palette (Apple Mail, iOS Mail, Outlook for Mac); the
+  [data-ogsc] / [data-ogsb] rules pin the dark colours when Outlook.com
+  recolours the email for its dark mode. The accent is used only where it
+  means something: the button and links.
 */ -}}
 <mjml lang="en" dir="ltr">
   <mj-head>
     <mj-title>BXSLOT_TITLE</mj-title>
     <mj-preview>BXSLOT_PREVIEW</mj-preview>
     <mj-attributes>
-      <mj-all font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" />
-      <mj-text font-size="15px" line-height="1.6" color="{{.Light.Text}}" padding="0 32px" />
+      <mj-all font-family="{{.Sans}}" />
+      <mj-text font-size="15px" line-height="24px" color="{{.Dark.Text}}" padding="0 32px" />
       <mj-section padding="0" />
     </mj-attributes>
     <mj-raw>
-      <meta name="color-scheme" content="light dark">
-      <meta name="supported-color-schemes" content="light dark">
+      <meta name="color-scheme" content="dark light">
+      <meta name="supported-color-schemes" content="dark light">
+      <meta name="x-apple-disable-message-reformatting">
+      <!--[if mso]><style type="text/css">body, table, td, div, p, a { font-family: 'Segoe UI', Arial, sans-serif !important; } .bx-mono div, .bx-mono a, a.bx-mono { font-family: Consolas, 'Courier New', monospace !important; }</style><![endif]-->
     </mj-raw>
     <mj-style>
-      :root { color-scheme: light dark; supported-color-schemes: light dark; }
-      .bx-text a { word-break: break-all; }
-      @media (prefers-color-scheme: dark) {
-        body, .bx-page { background-color: {{.Dark.Page}} !important; }
-        .bx-card, .bx-card > table { background: {{.Dark.Card}} !important; background-color: {{.Dark.Card}} !important; }
-        .bx-head div, .bx-head span { color: {{.Dark.Heading}} !important; }
-        .bx-text div, .bx-text p { color: {{.Dark.Text}} !important; }
-        .bx-foot div { color: {{.Dark.Muted}} !important; }
-        .bx-text p a, .bx-foot a { color: inherit !important; text-decoration: underline !important; }
+      :root { color-scheme: dark light; supported-color-schemes: dark light; }
+      .bx-text p a, .bx-note p a { color: #0b05e1; word-break: break-all; }
+      .bx-alt a { word-break: break-all; }
+      @media only screen and (max-width: 480px) {
+        .bx-wrap > table > tbody > tr > td { padding: 24px 12px !important; }
+        .bx-card > table > tbody > tr > td { padding-top: 24px !important; }
+        td.bx-pad { padding-left: 20px !important; padding-right: 20px !important; }
+        td.bx-h div { font-size: 17px !important; line-height: 24px !important; }
       }
-      [data-ogsb] .bx-page { background-color: {{.Dark.Page}} !important; }
+      @media (prefers-color-scheme: light) {
+        body, .bx-page { background-color: {{.Light.Page}} !important; }
+        .bx-card, .bx-card > table { background: {{.Light.Card}} !important; background-color: {{.Light.Card}} !important; }
+        .bx-card > table > tbody > tr > td { border-color: {{.Light.Border}} !important; }
+        .bx-head div, .bx-head span, .bx-h div { color: {{.Light.Heading}} !important; }
+        .bx-text div, .bx-text p { color: {{.Light.Text}} !important; }
+        .bx-prompt div, .bx-note div, .bx-note p, .bx-alt div, .bx-alt a, .bx-foot div, .bx-foot a { color: {{.Light.Muted}} !important; }
+        .bx-rule p { border-top-color: {{.Light.Border}} !important; }
+        .bx-text p a, .bx-note p a { color: {{.Light.Heading}} !important; text-decoration: underline !important; }
+      }
+      [data-ogsb] body, [data-ogsb] .bx-page { background-color: {{.Dark.Page}} !important; }
       [data-ogsb] .bx-card, [data-ogsb] .bx-card > table { background-color: {{.Dark.Card}} !important; }
-      [data-ogsc] .bx-head div, [data-ogsc] .bx-head span { color: {{.Dark.Heading}} !important; }
+      [data-ogsc] .bx-head div, [data-ogsc] .bx-head span, [data-ogsc] .bx-h div { color: {{.Dark.Heading}} !important; }
       [data-ogsc] .bx-text div, [data-ogsc] .bx-text p { color: {{.Dark.Text}} !important; }
-      [data-ogsc] .bx-foot div { color: {{.Dark.Muted}} !important; }
+      [data-ogsc] .bx-prompt div, [data-ogsc] .bx-note div, [data-ogsc] .bx-note p, [data-ogsc] .bx-alt div, [data-ogsc] .bx-alt a, [data-ogsc] .bx-foot div, [data-ogsc] .bx-foot a { color: {{.Dark.Muted}} !important; }
     </mj-style>
   </mj-head>
-  <mj-body background-color="{{.Light.Page}}" width="600px" css-class="bx-page">
-    <mj-wrapper padding="32px 16px">
-      <mj-section background-color="{{.Light.Card}}" border-top="4px solid #0b05e1" border-radius="0 0 8px 8px" css-class="bx-card" padding="28px 0 12px 0">
+  <mj-body background-color="{{.Dark.Page}}" width="600px" css-class="bx-page">
+    <mj-wrapper padding="40px 16px 32px 16px" css-class="bx-wrap">
+      <mj-section padding="0 0 16px 0">
         <mj-column>
-          <mj-text css-class="bx-head" color="{{.Light.Heading}}" padding="0 32px 20px 32px">BXSLOT_HEADER</mj-text>
+          <mj-text css-class="bx-head bx-mono" font-family="{{.Mono}}" font-size="13px" line-height="20px" font-weight="700" letter-spacing="0.08em" color="{{.Dark.Heading}}" padding="0 2px">BXSLOT_HEADER</mj-text>
+        </mj-column>
+      </mj-section>
+      <mj-section background-color="{{.Dark.Card}}" border="1px solid {{.Dark.Border}}" border-radius="2px" css-class="bx-card" padding="28px 0 8px 0">
+        <mj-column>
+          <mj-text css-class="bx-prompt bx-mono bx-pad" font-family="{{.Mono}}" font-size="13px" line-height="20px" color="{{.Dark.Muted}}" padding="0 32px 12px 32px">$&#160;BXSLOT_PROMPT</mj-text>
+          <mj-text css-class="bx-h bx-mono bx-pad" font-family="{{.Mono}}" font-size="18px" line-height="26px" font-weight="700" letter-spacing="-0.01em" color="{{.Dark.Heading}}" padding="0 32px 20px 32px">BXSLOT_TITLE</mj-text>
           <mj-raw><!--bx:para--></mj-raw>
-          <mj-text css-class="bx-text">BXSLOT_PARA</mj-text>
+          <mj-text css-class="bx-text bx-pad">BXSLOT_PARA</mj-text>
           <mj-raw><!--bx:button--></mj-raw>
-          <mj-button href="BXSLOT_HREF" align="left" background-color="#0b05e1" color="#0b05e2" font-size="15px" font-weight="600" line-height="20px" border-radius="6px" inner-padding="12px 24px" padding="4px 32px 20px 32px" css-class="bx-btn">BXSLOT_LABEL</mj-button>
+          <mj-button href="BXSLOT_HREF" align="left" background-color="#0b05e1" color="#0b05e2" font-family="{{.Mono}}" font-size="14px" font-weight="600" line-height="20px" border-radius="2px" inner-padding="12px 20px" padding="8px 32px 24px 32px" css-class="bx-btn bx-mono bx-pad">BXSLOT_LABEL</mj-button>
+          <mj-raw><!--bx:note--></mj-raw>
+          <mj-text css-class="bx-note bx-pad" font-size="13px" line-height="20px" color="{{.Dark.Muted}}">BXSLOT_PARA</mj-text>
           <mj-raw><!--bx:end--></mj-raw>
+          <mj-raw><!--bx:alt--></mj-raw>
+          <mj-divider css-class="bx-rule bx-pad" border-width="1px" border-color="{{.Dark.Border}}" padding="8px 32px 16px 32px" />
+          <mj-text css-class="bx-alt bx-pad" font-size="12px" line-height="18px" color="{{.Dark.Muted}}" padding="0 32px 24px 32px">Button not working? Paste this link into your browser:<br><a href="BXSLOT_HREF" class="bx-mono" style="color:{{.Dark.Muted}};font-family:{{.Mono}};text-decoration:underline;word-break:break-all">BXSLOT_HREF</a></mj-text>
+          <mj-raw><!--bx:altend--></mj-raw>
         </mj-column>
       </mj-section>
-      {{- if .Footer}}
-      <mj-section padding="16px 0 0 0">
+      <mj-section padding="20px 0 0 0">
         <mj-column>
-          <mj-text css-class="bx-foot" font-size="12px" line-height="1.5" color="{{.Light.Muted}}" align="center" padding="0 32px">BXSLOT_FOOTER</mj-text>
+          {{- if .Footer}}
+          <mj-text css-class="bx-foot" font-size="12px" line-height="18px" color="{{.Dark.Muted}}" padding="0 2px 12px 2px">BXSLOT_FOOTER</mj-text>
+          {{- end}}
+          <mj-text css-class="bx-foot bx-mono" font-family="{{.Mono}}" font-size="11px" line-height="16px" color="{{.Dark.Muted}}" padding="0 2px">Powered by <a href="https://boson.chat" style="color:{{.Dark.Muted}};text-decoration:underline">Boson</a></mj-text>
         </mj-column>
       </mj-section>
-      {{- end}}
     </mj-wrapper>
   </mj-body>
 </mjml>

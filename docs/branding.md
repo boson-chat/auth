@@ -30,7 +30,7 @@ branding:
 auth:
   email:                          # present (even {}) = branded layout
     sender_name: "Example Chat"   # display name of SMTP_FROM; header text without a logo
-    accent: "#7c3aed"             # top border, buttons, links (default #3b5bdb)
+    accent: "#7c3aed"             # the button and links (default #d97706, Boson amber)
     footer: "Example Chat · example.com"           # small print under the card; URLs linkified
     logo: true                    # show the branding logo (logo_wide, else logo; raster before SVG)
     templates:                    # any subset; absent = Boson's wording
@@ -129,10 +129,13 @@ braces are allowed (`{{ link }}`); anything else in braces stays as typed.
 
 The body is plain text: blank lines separate paragraphs, single line breaks
 are kept, `http(s)://` URLs become links (no other scheme is ever a link),
-and a paragraph that is only `{{link}}` becomes the action button ("Verify
-email", "Choose a new password", …). All template text and every value is
+and a paragraph that is only `{{link}}` becomes the action button ("Confirm
+email", "Choose a new password", …). Paragraphs after the button are set
+as small print (the expiry line). All template text and every value is
 HTML-escaped, so a template can't inject markup. The plain-text part is the
-body with the variables filled in, then `-- ` and the footer.
+prompt line (`$ verify --email`), the body with the variables filled in
+(the action link under the button's label, `Confirm email:` then the URL),
+then `-- ` and the footer.
 
 ### Layout (MJML)
 
@@ -152,16 +155,33 @@ After editing `layout.mjml` (or the palette in `layout.go`), run
 `go generate ./internal/services/email` and commit the compiled files with
 it.
 
-- 600 px wide card on a soft grey page; 4 px accent bar on top; logo
-  (40 px high, at most 240 px wide, with explicit `width`/`height` for
-  Outlook) or the sender name as text; the button in the accent colour,
-  its label white or near-black, whichever contrasts more; small centred
-  footer; system font stack (no web fonts); a hidden inbox preview line
-  (the start of the body, without the link).
-- Dark mode: `color-scheme: light dark`, and `prefers-color-scheme: dark`
-  rules (Apple Mail, iOS Mail; `[data-ogsc]` / `[data-ogsb]` for
-  Outlook.com) switch to a dark page and card with light text. Gmail's
-  apps invert on their own; the light colours are chosen to survive that.
+- Boson's terminal look: a 600 px card (1 px border, 2 px radius) on a
+  near-black page; above it the logo (40 px high, at most 240 px wide,
+  with explicit `width`/`height` for Outlook) or the sender name in
+  monospace; in the card a prompt line (`$ verify --email`,
+  `$ reset --password`, `$ setup --account`, `$ join --invite`; not
+  configurable), the subject as the heading, the body, the button, the
+  small print after it, and under a hairline the link as a fallback
+  ("Button not working? Paste this link into your browser"); under the
+  card the footer and a quiet "Powered by Boson" line.
+- The accent is used only where it means something: the button (its label
+  `#ffffff` or `#070709`, whichever contrasts more) and links (the accent
+  when it reads at 4.5:1 on the dark card, else the heading colour). There
+  is no decorative accent bar.
+- Fonts: JetBrains Mono for the prompt, heading, button and links' URLs,
+  Inter for the body, each followed by system fonts (`ui-monospace,
+  SFMono-Regular, Menlo, Consolas, monospace`; `-apple-system, Segoe UI,
+  Roboto, Helvetica, Arial, sans-serif`), as web fonts can't be relied on;
+  Outlook for Windows gets Consolas and Segoe UI. No web fonts are loaded.
+  A hidden inbox preview line (the start of the body, without the link).
+- Dark first: the inline colours are Boson's Terminal theme (page
+  `#070709`, card `#0d0d11`), which clients without media queries show.
+  `color-scheme: dark light` and `prefers-color-scheme: light` rules (Apple
+  Mail, iOS Mail, Outlook for Mac) switch to the Daylight theme;
+  `[data-ogsc]` / `[data-ogsb]` rules keep the dark colours when
+  Outlook.com recolours for its dark mode. Every text colour reads at
+  4.5:1 or better on its page and card in both (`TestPaletteContrast`), and
+  stays readable when a client inverts the email.
 - The logo is the wordmark, else the mark; PNG / JPEG / GIF before WebP
   (Outlook for Windows shows no WebP) before SVG (Gmail and Outlook show
   no SVG).
@@ -216,6 +236,7 @@ the HTML file) and the last good config stays.
 | `{{link}}` | anywhere; a whole email must contain it | the action URL (http(s) only, else `#`) |
 | `{{logo_url}}` | anywhere | the email logo's URL (http(s); empty without a logo or with `logo: false`) |
 | `{{accent}}` | anywhere | the accent, always `#rrggbb` |
+| `{{accent_text}}` | anywhere | text on the accent (a button label): `#ffffff` or `#070709`, whichever contrasts more |
 
 In a whole-email override the document is the admin's: it is not wrapped in
 the layout, and `{{content}}` is not available (it stays as written, with a
@@ -244,20 +265,22 @@ single pass (a value is never scanned for placeholders, so a username of
 - `{{content}}` must be in body text (not in an attribute, `<title>`,
   CSS, a script or a comment), or the file is rejected.
 
-**Plain-text part.** With a custom layout: as with Boson's (the body, then
-`-- ` and the footer). With a whole-email override: the template's body if
+**Plain-text part.** With a custom layout: the body with the variables
+filled in, then `-- ` and the footer (no prompt line). With a whole-email override: the template's body if
 one is set; otherwise text generated from the HTML (head, styles, scripts
 and hidden elements such as the preview line left out; block elements and
 `<br>` as line breaks; links as `text (url)`).
 
 **Default MJML.** `GET /internal/email/default-mjml?part=…` (below) is the
 starting point: `templates/layout.mjml` with its build-time slots as
-placeholders (`{{subject}}` title, `{{sender_name}}` header, `{{accent}}`
-top border, `{{content}}` body, `{{footer}}` footer; no inbox preview
-line, as there is no placeholder for it). For a template it is that layout
-with the template's default text in place of `{{content}}` and a raw-HTML
-`{{link}}` button (MJML's validator rejects `{{accent}}` as an
-`mj-button` colour). `go generate` compiles every default with strict
+placeholders (`{{subject}}` title and heading, `{{sender_name}}` header,
+`{{accent}}` link colour, `{{content}}` body, `{{footer}}` footer, and
+`$ mail` as the prompt line; no inbox preview line, as there is no
+placeholder for it). In `{{content}}` each button is followed by its link
+as a fallback. For a template it is that layout with the template's prompt
+line, its default text in place of `{{content}}`, a raw-HTML `{{link}}`
+button in `{{accent}}` / `{{accent_text}}` (MJML's validator rejects them
+as `mj-button` colours), the small print and the fallback link. `go generate` compiles every default with strict
 validation into `testdata/default-mjml/*.html` and checks auth accepts it;
 CI fails when they are stale.
 
@@ -300,7 +323,7 @@ to 2 MB + 64 KB (64 KB for every other endpoint).
 {
   "subject": "Confirm your Example Chat account",
   "html": "<!doctype html>…",
-  "text": "Hi alice,\n\nhttps://…\n\nExpires in 24 hours.\n\n-- \nExample Chat · https://example.com\n",
+  "text": "$ verify --email\n\nHi alice,\n\nConfirm email:\nhttps://…\n\nExpires in 24 hours.\n\n-- \nExample Chat · https://example.com\n",
   "from": "\"Example Chat\" <no-reply@example.com>",
   "warnings": []
 }
