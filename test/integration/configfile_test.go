@@ -162,3 +162,34 @@ func TestConfigStatusWithoutConfigFile(t *testing.T) {
 		t.Fatalf("settings: %s", r.raw)
 	}
 }
+
+// files_url in GET /v1/config: null until uploads are on, then
+// FILES_PUBLIC_URL; files.enabled in the file switches it live.
+func TestConfigFilesURL(t *testing.T) {
+	// Env only, no URL: null.
+	e := newEnv(t)
+	if c := e.api("GET", "/v1/config", nil); c.body["files_url"] != nil {
+		t.Fatalf("files_url without FILES_PUBLIC_URL: %s", c.raw)
+	} else if _, ok := c.body["files_url"]; !ok {
+		t.Fatalf("files_url must be present (null): %s", c.raw)
+	}
+
+	path := filepath.Join(t.TempDir(), "boson.yaml")
+	writeConfig(t, path, "version: 1\n")
+	e = newEnv(t, func(c *config.Config) {
+		c.AppConfig.ConfigFile = path
+		c.AppConfig.ConfigPoll = 200 * time.Millisecond
+		c.FilesConfig.PublicURL = "https://files.integration.test/"
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.app.StackConfig.Run(ctx)
+	filesURL := func() any { return e.api("GET", "/v1/config", nil).body["files_url"] }
+	if u := filesURL(); u != nil {
+		t.Fatalf("uploads are off by default, files_url = %v", u)
+	}
+	writeConfig(t, path, "version: 1\nfiles:\n  enabled: true\n  account: { quota: 5GB }\n")
+	eventually(t, "files_url", func() bool { return filesURL() == "https://files.integration.test" })
+	writeConfig(t, path, "version: 1\nfiles: { enabled: false }\n")
+	eventually(t, "files_url null", func() bool { return filesURL() == nil })
+}

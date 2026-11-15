@@ -28,6 +28,28 @@ type Config struct {
 	RateLimitConfig RateLimitConfig
 	SSOConfig       SSOConfig
 	TelemetryConfig TelemetryConfig
+	FilesConfig     FilesConfig
+}
+
+// FilesConfig is the network's files (uploads) service, advertised to
+// clients as files_url in GET /v1/config.
+type FilesConfig struct {
+	// Public base URL of the files service, e.g. https://files.example.com.
+	// Empty: no files service (files_url is null).
+	PublicURL string `env:"FILES_PUBLIC_URL"`
+	// Uploads are on. Default off; the stack config file's files.enabled
+	// wins, so turning uploads on or off there (the admin panel's Uploads
+	// page) also shows or hides files_url.
+	Enabled bool `default:"false" env:"FILES_ENABLED"`
+}
+
+// URL is files_url: the public URL (without a trailing slash) when uploads
+// are on and a URL is set, else "".
+func (c FilesConfig) URL() string {
+	if !c.Enabled {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(c.PublicURL), "/")
 }
 
 type AppConfig struct {
@@ -368,6 +390,11 @@ func (c Config) Validate() error {
 	}
 	if i := c.InternalConfig; i.ActingToken != "" && i.ActingToken == i.APIToken {
 		return errors.New("INTERNAL_ACTING_TOKEN must differ from INTERNAL_API_TOKEN")
+	}
+	if u := strings.TrimSpace(c.FilesConfig.PublicURL); u != "" {
+		if p, err := url.Parse(u); err != nil || (p.Scheme != "https" && p.Scheme != "http") || p.Host == "" || p.RawQuery != "" || p.Fragment != "" || p.User != nil {
+			return fmt.Errorf("FILES_PUBLIC_URL must be an http(s) URL such as https://files.example.com, got %q", u)
+		}
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
 		return errors.New("SSO_STATE_TTL, SSO_CODE_TTL and SSO_HTTP_TIMEOUT must be positive")

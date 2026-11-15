@@ -99,6 +99,16 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 			brandingURL = &u
 		}
 	}
+	// The network's files (uploads) service; null when there is none or
+	// uploads are off.
+	var filesURL *string
+	u := h.Config.FilesConfig.URL()
+	if h.FilesURL != nil {
+		u = h.FilesURL()
+	}
+	if u != "" {
+		filesURL = &u
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"registration":               st.Registration,
 		"require_email_verification": st.RequireEmailVerification,
@@ -109,6 +119,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"guest_access":               st.GuestAccess,
 		"sso_providers":              providers,
 		"branding_url":               brandingURL,
+		"files_url":                  filesURL,
 	})
 }
 

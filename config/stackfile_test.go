@@ -186,3 +186,42 @@ func TestExportFileRoundTrip(t *testing.T) {
 		t.Fatalf("%s", out)
 	}
 }
+
+func TestFilesEnabledFromFile(t *testing.T) {
+	env := envConfig()
+	env.FilesConfig = FilesConfig{PublicURL: "https://files.example.com/"}
+	if u := env.FilesConfig.URL(); u != "" {
+		t.Fatalf("off by default: %q", u)
+	}
+	// files: belongs to the files service: auth only reads enabled and
+	// doesn't report the other keys as unknown.
+	f, err := loadFile(t, "files:\n  enabled: true\n  retention: 72h\n  account: { quota: 5GB, max_file: 100MB }\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.FilesEnabled == nil || !*f.FilesEnabled || len(f.Unknown) != 0 {
+		t.Fatalf("%+v", f)
+	}
+	if got := env.WithFile(f).FilesConfig.URL(); got != "https://files.example.com" {
+		t.Fatalf("files_url = %q", got)
+	}
+	if m := f.Flatten(); m[KeyFilesEnabled] != true {
+		t.Fatal(m)
+	}
+	// enabled: false in the file wins over FILES_ENABLED=true.
+	env.FilesConfig.Enabled = true
+	f, err = loadFile(t, "files: { enabled: false }\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := env.WithFile(f).FilesConfig.URL(); got != "" {
+		t.Fatalf("files_url = %q", got)
+	}
+	// Absent: the env value.
+	if got := env.WithFile(FileConfig{}).FilesConfig.URL(); got != "https://files.example.com" {
+		t.Fatalf("files_url = %q", got)
+	}
+	if _, err := loadFile(t, "files: { enabled: maybe }\n"); err == nil || !strings.Contains(err.Error(), "files.enabled") {
+		t.Fatalf("want a files.enabled error, got %v", err)
+	}
+}
