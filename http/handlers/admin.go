@@ -45,7 +45,8 @@ func intParam(r *nethttp.Request, name string) int {
 }
 
 func (h *Handlers) adminListUsers(w nethttp.ResponseWriter, r *nethttp.Request) {
-	users, total, err := h.Admin.ListUsers(r.Context(), r.URL.Query().Get("q"), intParam(r, "limit"), intParam(r, "offset"))
+	users, total, err := h.Admin.ListUsers(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("sort"),
+		intParam(r, "limit"), intParam(r, "offset"))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -61,7 +62,7 @@ func (h *Handlers) adminListUsers(w nethttp.ResponseWriter, r *nethttp.Request) 
 	}
 	out := make([]adminUserJSON, 0, len(users))
 	for _, u := range users {
-		out = append(out, adminUserJSON{userJSON: toUser(u), Roles: toRoleSummaries(assigned[u.ID])})
+		out = append(out, adminUserJSON{adminUserBaseJSON: toAdminUser(u), Roles: toRoleSummaries(assigned[u.ID])})
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{"users": out, "total": total})
 }
@@ -88,7 +89,7 @@ func (h *Handlers) adminGetUser(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"user": toUser(u), "identities": toIdentities(idents), "has_password": hasPW,
+		"user": toAdminUser(u), "identities": toIdentities(idents), "has_password": hasPW,
 		"roles": toRoleSummaries(a.Assigned()), "permissions": a.Permissions,
 	})
 }
@@ -106,7 +107,7 @@ func (h *Handlers) adminSetDisabled(disabled bool) nethttp.HandlerFunc {
 			writeError(w, r, err)
 			return
 		}
-		writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u)})
+		writeJSON(w, nethttp.StatusOK, map[string]any{"user": toAdminUser(u)})
 	}
 }
 
@@ -135,7 +136,7 @@ func (h *Handlers) adminUpdateUser(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u)})
+	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toAdminUser(u)})
 }
 
 func (h *Handlers) adminListSessions(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -254,7 +255,7 @@ func (h *Handlers) adminCreateUser(w nethttp.ResponseWriter, r *nethttp.Request)
 		// can retry with POST /v1/admin/users/{id}/password-reset.
 		logger.FromCtx(r.Context()).Error().Err(err).Str("user_id", u.ID).Msg("account setup email")
 	}
-	writeJSON(w, nethttp.StatusCreated, map[string]any{"user": toUser(u), "invite_email_sent": sent})
+	writeJSON(w, nethttp.StatusCreated, map[string]any{"user": toAdminUser(u), "invite_email_sent": sent})
 }
 
 func (h *Handlers) adminSendPasswordReset(w nethttp.ResponseWriter, r *nethttp.Request) {

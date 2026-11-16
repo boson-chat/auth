@@ -87,7 +87,7 @@ var userListCmd = &cobra.Command{
 		}
 		limit, _ := cmd.Flags().GetInt("limit")
 		return withApp(cmd.Context(), func(ctx context.Context, app *authhttp.App) error {
-			users, total, err := app.Admin.ListUsers(ctx, q, limit, 0)
+			users, total, err := app.Admin.ListUsers(ctx, q, "", limit, 0)
 			if err != nil {
 				return err
 			}

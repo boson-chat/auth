@@ -64,7 +64,8 @@ type AdminServiceImpl interface {
 	SendPasswordReset(ctx context.Context, actorID, userID string) error
 	// SendVerification emails the user a new verification link.
 	SendVerification(ctx context.Context, actorID, userID string) error
-	ListUsers(ctx context.Context, query string, limit, offset int) ([]*user.User, int64, error)
+	// ListUsers searches users; sort is a user.Sort* value ("" = created).
+	ListUsers(ctx context.Context, query, sort string, limit, offset int) ([]*user.User, int64, error)
 	GetUser(ctx context.Context, id string) (*user.User, error)
 	// FindUser resolves a user id or username (CLI convenience).
 	FindUser(ctx context.Context, idOrUsername string) (*user.User, error)
@@ -109,11 +110,14 @@ func clampLimit(limit int) int {
 	return min(limit, MaxPageSize)
 }
 
-func (s *AdminService) ListUsers(ctx context.Context, query string, limit, offset int) ([]*user.User, int64, error) {
+func (s *AdminService) ListUsers(ctx context.Context, query, sort string, limit, offset int) ([]*user.User, int64, error) {
 	if !textutil.Storable(query) || len(query) > 254 {
 		return nil, 0, apperr.Invalid("invalid query")
 	}
-	return s.Users.List(ctx, user.ListFilter{Query: query, Limit: clampLimit(limit), Offset: max(offset, 0)})
+	if !user.ValidSort(sort) {
+		return nil, 0, apperr.Invalid("sort must be created, last_active or last_sign_in")
+	}
+	return s.Users.List(ctx, user.ListFilter{Query: query, Sort: sort, Limit: clampLimit(limit), Offset: max(offset, 0)})
 }
 
 func notFound(err error) error {

@@ -238,6 +238,7 @@ func TestMigrationIRCAccountRemovalsDownUp(t *testing.T) {
 	if err := db.MigrateUp(dsn); err != nil {
 		t.Fatalf("up: %v", err)
 	}
+	e.restart()
 	uid = e.registerVerified("up", "up@example.com")
 	if _, err := sqldb.Exec(`DELETE FROM users WHERE id = $1`, uid); err != nil {
 		t.Fatal(err)

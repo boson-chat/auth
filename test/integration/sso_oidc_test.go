@@ -56,6 +56,9 @@ func TestOIDCSignupCookieModeThenReturningLogin(t *testing.T) {
 	if len(sessions) != 1 || sessions[0]["auth_method"] != "oidc:mock" {
 		t.Fatalf("sessions: %v", sessions)
 	}
+	if si := e.adminUser(adminAT, uid); si["last_sign_in_method"] != "oidc:mock" || si["last_sign_in_at"] == nil || si["last_active_at"] == nil {
+		t.Fatalf("SSO cookie sign-in not recorded: %v", si)
+	}
 
 	// Same subject again (even with changed claims) → same account.
 	alice2 := &mockoidc.MockUser{Subject: "sub-alice", Email: "new@corp.example", EmailVerified: true, PreferredUsername: "someone-else"}
@@ -138,6 +141,9 @@ func TestOIDCCodeModeForDesktopClients(t *testing.T) {
 	}
 	e.expect(e.api("POST", "/v1/sso/exchange", map[string]string{"code": code, "code_verifier": verifier}), 400, "invalid_code") // single use
 	e.expect(e.api("GET", "/v1/me", nil, bearer(r.str("access_token"))), 200, "")
+	if si := e.adminUser(adminAT, r.str("user", "id")); si["last_sign_in_method"] != "oidc:corp" || si["last_sign_in_at"] == nil {
+		t.Fatalf("SSO code exchange sign-in not recorded: %v", si)
+	}
 	// Refresh works like any session.
 	e.expect(e.api("POST", "/v1/token/refresh", map[string]string{"refresh_token": r.str("refresh_token")}), 200, "")
 

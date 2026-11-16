@@ -159,9 +159,24 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	t.Cleanup(func() {
 		e.public.Close()
 		e.internal.Close()
-		_ = app.Close()
+		_ = e.app.Close()
 	})
 	return e
+}
+
+// restart rebuilds the app on the same database, the way a deploy starts a
+// new process after migrating: pooled connections cache query plans, which
+// break when a migration changes a table's columns under them.
+func (e *env) restart() {
+	e.t.Helper()
+	e.public.Close()
+	e.internal.Close()
+	_ = e.app.Close()
+	app, err := authhttp.Build(context.Background(), e.cfg, authhttp.Options{Mailer: e.mail})
+	if err != nil {
+		e.t.Fatalf("build: %v", err)
+	}
+	e.app, e.public, e.internal = app, httptest.NewServer(app.Public), httptest.NewServer(app.Internal)
 }
 
 func createDatabase(t *testing.T, base string) string {

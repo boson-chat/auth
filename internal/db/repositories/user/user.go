@@ -35,6 +35,13 @@ type User struct {
 	DisabledAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// Sign-in / activity history (admin-only): set on every new session and
+	// (throttled) on session refresh. Nil = never (since this was tracked).
+	// Read-only to GORM: only RecordSignIn / TouchActive write them.
+	LastSignInAt     *time.Time `gorm:"->"`
+	LastSignInMethod *string    `gorm:"->"`
+	LastSignInIP     *string    `gorm:"->"`
+	LastActiveAt     *time.Time `gorm:"->"`
 }
 
 func (User) TableName() string { return "users" }
@@ -48,9 +55,26 @@ func (u *User) EmailOrEmpty() string {
 	return *u.Email
 }
 
+// List sort orders (all newest first; users never seen sort last).
+const (
+	SortCreated    = "created"
+	SortLastActive = "last_active"
+	SortLastSignIn = "last_sign_in"
+)
+
+// ValidSort reports whether s is a ListFilter.Sort value ("" = created).
+func ValidSort(s string) bool {
+	switch s {
+	case "", SortCreated, SortLastActive, SortLastSignIn:
+		return true
+	}
+	return false
+}
+
 // ListFilter selects users for admin listings.
 type ListFilter struct {
 	Query  string // substring of username or email
+	Sort   string // SortCreated (default) | SortLastActive | SortLastSignIn
 	Limit  int
 	Offset int
 }
@@ -66,6 +90,13 @@ type UserRepositoryImpl interface {
 	SetDisplayName(ctx context.Context, id, name string) error
 	SetDisabled(ctx context.Context, id string, at *time.Time) error
 	List(ctx context.Context, f ListFilter) ([]*User, int64, error)
+	// RecordSignIn stores a successful sign-in (a new session) and counts it
+	// as activity. Doesn't touch updated_at.
+	RecordSignIn(ctx context.Context, id string, at time.Time, method, ip string) error
+	// TouchActive sets last_active_at = at unless the stored value is newer
+	// than at-minAge, so a busy user costs at most one write per minAge.
+	// Reports whether it wrote.
+	TouchActive(ctx context.Context, id string, at time.Time, minAge time.Duration) (bool, error)
 }
 
 type UserRepository struct {
@@ -164,6 +195,35 @@ func (r *UserRepository) List(ctx context.Context, f ListFilter) ([]*User, int64
 		return nil, 0, err
 	}
 	var out []*User
-	err := q.Order("created_at DESC, id DESC").Limit(f.Limit).Offset(f.Offset).Find(&out).Error
+	err := q.Order(listOrder(f.Sort)).Limit(f.Limit).Offset(f.Offset).Find(&out).Error
 	return out, total, err
+}
+
+func listOrder(sort string) string {
+	switch sort {
+	case SortLastActive:
+		return "last_active_at DESC NULLS LAST, id DESC"
+	case SortLastSignIn:
+		return "last_sign_in_at DESC NULLS LAST, id DESC"
+	default:
+		return "created_at DESC, id DESC"
+	}
+}
+
+func (r *UserRepository) RecordSignIn(ctx context.Context, id string, at time.Time, method, ip string) error {
+	res := r.db.Conn(ctx).Exec(`UPDATE users SET last_sign_in_at = ?, last_sign_in_method = ?, last_sign_in_ip = ?,
+		last_active_at = GREATEST(last_active_at, ?) WHERE id = ?`, at, method, ip, at, id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return repositories.ErrNotFound
+	}
+	return nil
+}
+
+func (r *UserRepository) TouchActive(ctx context.Context, id string, at time.Time, minAge time.Duration) (bool, error) {
+	res := r.db.Conn(ctx).Exec(`UPDATE users SET last_active_at = ?
+		WHERE id = ? AND (last_active_at IS NULL OR last_active_at <= ?)`, at, id, at.Add(-minAge))
+	return res.RowsAffected > 0, res.Error
 }

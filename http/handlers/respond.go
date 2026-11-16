@@ -121,6 +121,23 @@ func toUser(u *user.User) userJSON {
 	}
 }
 
+// adminUserBaseJSON is a user as the admin API shows it: the public fields
+// plus sign-in / activity history (null = never).
+type adminUserBaseJSON struct {
+	userJSON
+	LastSignInAt     *time.Time `json:"last_sign_in_at"`
+	LastSignInMethod *string    `json:"last_sign_in_method"`
+	LastSignInIP     *string    `json:"last_sign_in_ip"`
+	LastActiveAt     *time.Time `json:"last_active_at"`
+}
+
+func toAdminUser(u *user.User) adminUserBaseJSON {
+	return adminUserBaseJSON{
+		userJSON: toUser(u), LastSignInAt: u.LastSignInAt, LastSignInMethod: u.LastSignInMethod,
+		LastSignInIP: u.LastSignInIP, LastActiveAt: u.LastActiveAt,
+	}
+}
+
 type sessionJSON struct {
 	ID         string    `json:"id"`
 	UserID     string    `json:"user_id,omitempty"`
