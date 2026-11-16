@@ -150,6 +150,9 @@ func TestSAMLLoginAgainstTestIdP(t *testing.T) {
 	if len(ids) != 1 || ids[0]["provider_kind"] != "saml" || ids[0]["subject"] != "carol@corp.example" {
 		t.Fatalf("identities: %v", ids)
 	}
+	if si := e.adminUser(adminAT, u["id"].(string)); si["last_sign_in_method"] != "saml:corp" || si["last_sign_in_at"] == nil {
+		t.Fatalf("SAML sign-in not recorded: %v", si)
+	}
 
 	// Replaying the same response: its state cookie is gone.
 	res, body = e.postForm(e.browser(), e.local(action), form)

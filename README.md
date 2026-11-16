@@ -95,9 +95,9 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 
 | Method & path | Permission | |
 |---|---|---|
-| `GET /v1/admin/users?q=&limit=&offset=` | `users.view` | search users (username/email substring) → `{users, total}`; each user has `roles: [{id, name, color, position}]` |
+| `GET /v1/admin/users?q=&sort=&limit=&offset=` | `users.view` | search users (username/email substring) → `{users, total}`; each user has `roles: [{id, name, color, position}]` and the [sign-in / activity fields](#last-sign-in-and-last-active). `sort`: `created` (default, newest first) \| `last_active` \| `last_sign_in` (newest first, never-seen users last); anything else `400 invalid_request` |
 | `POST /v1/admin/users` | `users.manage` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. `role`: `user` (default) \| `admin` \| `owner` (gives the Admin/Owner role; needs `roles.manage` and the hierarchy, so only Owners create Admins). The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request`, `403 role_hierarchy` |
-| `GET /v1/admin/users/{id}` | `users.view` | `{user, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password, roles: [{id, name, color, position}], permissions: [id]}` |
+| `GET /v1/admin/users/{id}` | `users.view` | `{user` (with the [sign-in / activity fields](#last-sign-in-and-last-active))`, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password, roles: [{id, name, color, position}], permissions: [id]}` |
 | `POST /v1/admin/users/{id}/password-reset` | `users.manage` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
 | `POST /v1/admin/users/{id}/verification` | `users.manage` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
 | `PATCH /v1/admin/users/{id}` | `roles.manage` | 1.x `{role: "user"\|"admin"\|"owner"}`, mapped onto roles ([details](docs/roles.md#migrating-from-1x)) |
@@ -241,6 +241,24 @@ ignored.
 Moving an existing install to the file: `auth export-config` prints the
 `network:` and `auth:` sections built from the env and `network_settings`;
 merge them into `config/boson.yaml`.
+
+### Last sign-in and last active
+
+Admin user objects (list, detail, and the `user` returned by the other
+`/v1/admin/users` endpoints) carry four extra fields, `null` until the user
+first signs in. `/v1/me` doesn't show them.
+
+| Field | Set when |
+|---|---|
+| `last_sign_in_at` | a session is created: password login, SSO cookie mode, SSO code exchange (`POST /v1/sso/exchange`) |
+| `last_sign_in_method` | with it: the session's `auth_method` (`password` \| `oidc:<slug>` \| `saml:<slug>`) |
+| `last_sign_in_ip` | with it: the client IP the session records (`""` when unknown) |
+| `last_active_at` | a sign-in, and a token refresh (when the session's `last_seen_at` moves), written at most once per 5 minutes per user. Clients refresh about every `ACCESS_TOKEN_TTL`, so it is accurate to roughly that |
+
+They live on the user, so they outlast sessions (which expire and are
+deleted). Migration 10 backfilled them from the sessions and SSO identities
+still in the database at the time. IRC SASL password checks
+(`/internal/v1/verify-password`) don't create a session and don't count.
 
 ### Audit log API
 

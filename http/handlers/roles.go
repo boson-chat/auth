@@ -89,7 +89,7 @@ func toRoleSummaries(rs []*role.Role) []roleSummaryJSON {
 
 // adminUserJSON is a user in admin listings, with their assigned roles.
 type adminUserJSON struct {
-	userJSON
+	adminUserBaseJSON
 	Roles []roleSummaryJSON `json:"roles"`
 }
 

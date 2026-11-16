@@ -33,6 +33,9 @@ const RefreshTokenPrefix = "bsr_"
 const (
 	MethodPassword = "password"
 	maxUserAgent   = 512
+	// ActivityInterval throttles users.last_active_at: a refresh writes it
+	// only when the stored value is at least this old.
+	ActivityInterval = 5 * time.Minute
 )
 
 // ErrRefreshReuse is returned (wrapped in apperr.ErrInvalidRefresh for
@@ -137,6 +140,11 @@ func (s *SessionService) Create(ctx context.Context, userID, method string) (*Is
 	}
 	out := &Issued{Session: sess}
 	err := s.Tx.WithTx(ctx, func(ctx context.Context) error {
+		// User row first, then sessions: the same lock order as disabling a
+		// user (which revokes their sessions).
+		if err := s.Users.RecordSignIn(ctx, userID, now, method, ip); err != nil {
+			return err
+		}
 		if err := s.Sessions.Create(ctx, sess); err != nil {
 			return err
 		}
@@ -233,6 +241,9 @@ func (s *SessionService) Refresh(ctx context.Context, raw string) (*Issued, *use
 		return nil, nil, err
 	}
 	s.Metrics.Refresh(ctx, outcome)
+	if out != nil {
+		s.touchActive(ctx, u, out.Session.LastSeenAt)
+	}
 	switch {
 	case reuse != nil:
 		logger.FromCtx(ctx).Warn().Str("session_id", reuse.SessionID).Str("family_id", reuse.FamilyID).
@@ -249,6 +260,24 @@ func (s *SessionService) Refresh(ctx context.Context, raw string) (*Issued, *use
 		return nil, nil, apperr.ErrInvalidRefresh
 	}
 	return out, u, nil
+}
+
+// touchActive bumps users.last_active_at alongside sessions.last_seen_at,
+// at most once per ActivityInterval. It runs after the refresh transaction
+// (which holds the session row lock) so it never takes the user row lock
+// in the opposite order to disabling a user; failure only costs accuracy.
+func (s *SessionService) touchActive(ctx context.Context, u *user.User, at time.Time) {
+	if u.LastActiveAt != nil && at.Sub(*u.LastActiveAt) < ActivityInterval {
+		return // fresh enough: skip the query entirely
+	}
+	wrote, err := s.Users.TouchActive(ctx, u.ID, at, ActivityInterval)
+	if err != nil {
+		logger.FromCtx(ctx).Warn().Err(err).Str("user_id", u.ID).Msg("last_active_at update failed")
+		return
+	}
+	if wrote {
+		u.LastActiveAt = &at
+	}
 }
 
 func (s *SessionService) Validate(ctx context.Context, sessionID, userID string) (*user.User, error) {
