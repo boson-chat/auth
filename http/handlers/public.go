@@ -39,6 +39,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("POST /v1/voice/token", h.authed(h.voiceToken))
 	mux.HandleFunc("POST /v1/voice/guest-token", h.guestVoiceToken)
 
+	h.registerSocial(mux)
 	h.registerBranding(mux)
 	h.registerSSO(mux)
 	h.registerAdmin(mux)

@@ -21,6 +21,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
+	"github.com/boson-chat/auth/internal/services/social"
 	"github.com/boson-chat/auth/internal/services/sso"
 	"github.com/boson-chat/auth/internal/textutil"
 )
@@ -51,6 +52,8 @@ type Handlers struct {
 	IRCAccounts ircaccounts.IRCAccountsServiceImpl
 	// Branding serves GET /v1/branding (nil: no branding).
 	Branding branding.BrandingServiceImpl
+	// Social is friends, blocks, privacy and private calls (nil: off).
+	Social social.SocialServiceImpl
 	// Email serves the internal email preview / test endpoints.
 	Email  email.EmailServiceImpl
 	Limits *Limits

@@ -36,6 +36,8 @@ const (
 	BucketPublic = "public"
 	// BucketGuestVoice limits POST /v1/voice/guest-token per client IP.
 	BucketGuestVoice = "guest_voice"
+	// BucketSocial limits friend requests, blocks and calls per account.
+	BucketSocial = "social"
 	// BucketEmailTest limits POST /internal/email/test per admin.
 	BucketEmailTest = "email_test"
 	// BucketEmailPreview limits POST /internal/email/preview per admin.
@@ -53,6 +55,13 @@ const (
 const (
 	guestVoiceBurst     = 20
 	guestVoicePerMinute = 20
+)
+
+// Friend requests, blocks and calls per account: a burst of 30, then 30 a
+// minute (someone clearing a list of requests; nobody rings people faster).
+const (
+	socialBurst     = 30
+	socialPerMinute = 30
 )
 
 // Previews per admin: the panel previews on every (debounced) keystroke,
@@ -92,6 +101,7 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	}
 	l.buckets[BucketPublic] = bucketPair{ip: ratelimit.New(pubBurst, pubRate)}
 	l.buckets[BucketGuestVoice] = bucketPair{ip: ratelimit.New(guestVoiceBurst, guestVoicePerMinute)}
+	l.buckets[BucketSocial] = bucketPair{account: ratelimit.New(socialBurst, socialPerMinute)}
 	l.buckets[BucketEmailTest] = bucketPair{account: ratelimit.New(emailTestBurst, emailTestPerMinute)}
 	l.buckets[BucketEmailPreview] = bucketPair{account: ratelimit.New(emailPreviewBurst, emailPreviewPerMinute)}
 	return l

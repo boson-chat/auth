@@ -61,6 +61,10 @@ type AuthnServiceImpl interface {
 	Logout(ctx context.Context, p *Principal) error
 	Authenticate(ctx context.Context, accessToken string) (*Principal, error)
 	VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error)
+	// CallVoiceToken mints a voice token for one private call room
+	// (call:<id>), which VoiceToken refuses. Only the social service calls
+	// it, after checking the caller is on that call.
+	CallVoiceToken(ctx context.Context, p *Principal, room string) (string, time.Time, error)
 	// GuestVoiceToken mints a voice token for an IRC guest (no account)
 	// under its unverified nick. Errors: guest_voice_disabled (403) unless
 	// guest_access and guest_voice are on, invalid_request (400) for a bad
@@ -282,9 +286,28 @@ func cleanRooms(rooms []string) ([]string, error) {
 		if r == "" || len(r) > maxRoomLen || !utf8.ValidString(r) {
 			return nil, apperr.Invalid("room names must be 1-128 bytes of UTF-8")
 		}
+		// Private call rooms: only through the calls API.
+		if strings.HasPrefix(r, PrivateCallRoomPrefix) {
+			return nil, apperr.Invalid("call rooms can't be requested here")
+		}
 		clean = append(clean, r)
 	}
 	return clean, nil
+}
+
+// PrivateCallRoomPrefix starts a private call's voice room (quicvoice joins
+// those only with a token that names the room).
+const PrivateCallRoomPrefix = "call:"
+
+func (s *AuthnService) CallVoiceToken(ctx context.Context, p *Principal, room string) (string, time.Time, error) {
+	if !strings.HasPrefix(room, PrivateCallRoomPrefix) || len(room) > maxRoomLen {
+		return "", time.Time{}, apperr.Invalid("not a call room")
+	}
+	g, err := s.grants(ctx, p.UserID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return s.Tokens.MintVoice(ctx, p.User, p.SessionID, []string{room}, g)
 }
 
 func (s *AuthnService) VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error) {
