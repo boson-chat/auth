@@ -6,6 +6,7 @@ package authn
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -60,6 +61,12 @@ type AuthnServiceImpl interface {
 	Logout(ctx context.Context, p *Principal) error
 	Authenticate(ctx context.Context, accessToken string) (*Principal, error)
 	VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error)
+	// GuestVoiceToken mints a voice token for an IRC guest (no account)
+	// under its unverified nick. Errors: guest_voice_disabled (403) unless
+	// guest_access and guest_voice are on, invalid_request (400) for a bad
+	// nick / guest_id / rooms, nick_registered (409) when the nick belongs
+	// to an account or is reserved.
+	GuestVoiceToken(ctx context.Context, nickname, guestID string, rooms []string) (string, time.Time, error)
 	// VerifyPassword checks username + password without creating a session
 	// (IRC SASL PLAIN via the internal API).
 	VerifyPassword(ctx context.Context, username, pw string) (*user.User, error)
@@ -265,22 +272,98 @@ func (s *AuthnService) Authenticate(ctx context.Context, accessToken string) (*P
 	return &Principal{UserID: u.ID, SessionID: c.SessionID, User: u}, nil
 }
 
-func (s *AuthnService) VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error) {
+// cleanRooms validates the optional rooms of a voice token request.
+func cleanRooms(rooms []string) ([]string, error) {
 	if len(rooms) > maxRooms {
-		return "", time.Time{}, apperr.Invalid("at most 32 rooms")
+		return nil, apperr.Invalid("at most 32 rooms")
 	}
 	clean := make([]string, 0, len(rooms))
 	for _, r := range rooms {
 		if r == "" || len(r) > maxRoomLen || !utf8.ValidString(r) {
-			return "", time.Time{}, apperr.Invalid("room names must be 1-128 bytes of UTF-8")
+			return nil, apperr.Invalid("room names must be 1-128 bytes of UTF-8")
 		}
 		clean = append(clean, r)
+	}
+	return clean, nil
+}
+
+func (s *AuthnService) VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error) {
+	clean, err := cleanRooms(rooms)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	g, err := s.grants(ctx, p.UserID)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	return s.Tokens.MintVoice(ctx, p.User, p.SessionID, clean, g)
+}
+
+var (
+	ErrGuestVoiceDisabled = apperr.New(http.StatusForbidden, "guest_voice_disabled", "guests can't join voice on this network")
+	ErrNickRegistered     = apperr.New(http.StatusConflict, "nick_registered", "that name belongs to an account; sign in to use voice")
+)
+
+// Guest ids are random client-chosen ids, 16-64 chars of [A-Za-z0-9_-].
+const (
+	minGuestIDLen = 16
+	maxGuestIDLen = 64
+)
+
+func validGuestID(id string) bool {
+	if len(id) < minGuestIDLen || len(id) > maxGuestIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *AuthnService) GuestVoiceToken(ctx context.Context, nickname, guestID string, rooms []string) (string, time.Time, error) {
+	tok, exp, outcome, err := s.guestVoiceToken(ctx, nickname, guestID, rooms)
+	s.Metrics.GuestVoiceToken(ctx, outcome)
+	return tok, exp, err
+}
+
+func (s *AuthnService) guestVoiceToken(ctx context.Context, nickname, guestID string, rooms []string) (string, time.Time, string, error) {
+	fail := func(o string, err error) (string, time.Time, string, error) { return "", time.Time{}, o, err }
+	st, err := s.Settings.Get(ctx)
+	if err != nil {
+		return fail(metrics.OutcomeError, err)
+	}
+	if !st.GuestAccess || !st.GuestVoice {
+		return fail(metrics.OutcomeRejected, ErrGuestVoiceDisabled)
+	}
+	// Same rules as registration: a valid IRC nick that isn't a services
+	// name and isn't any account's username (disabled accounts included).
+	switch err := nick.Validate(nickname); {
+	case errors.Is(err, nick.ErrReserved):
+		return fail(metrics.OutcomeTaken, ErrNickRegistered)
+	case err != nil:
+		return fail(metrics.OutcomeInvalid, apperr.InvalidField("nick", "must be a valid IRC nick: 1-30 characters, a letter or []\\`_^{|} first, then letters, digits or -[]\\`_^{|}"))
+	}
+	if !validGuestID(guestID) {
+		return fail(metrics.OutcomeInvalid, apperr.InvalidField("guest_id", "must be 16-64 characters of A-Z a-z 0-9 _ -"))
+	}
+	clean, err := cleanRooms(rooms)
+	if err != nil {
+		return fail(metrics.OutcomeInvalid, err)
+	}
+	switch _, err := s.Users.FindByUsernameFolded(ctx, nick.Fold(nickname)); {
+	case err == nil:
+		return fail(metrics.OutcomeTaken, ErrNickRegistered)
+	case !errors.Is(err, repositories.ErrNotFound):
+		return fail(metrics.OutcomeError, err)
+	}
+	tok, exp, err := s.Tokens.MintGuestVoice(ctx, guestID, nickname, clean)
+	if err != nil {
+		return fail(metrics.OutcomeError, err)
+	}
+	return tok, exp, metrics.OutcomeSuccess, nil
 }
 
 func (s *AuthnService) VerifyPassword(ctx context.Context, username, pw string) (*user.User, error) {

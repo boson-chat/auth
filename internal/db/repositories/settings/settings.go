@@ -20,6 +20,7 @@ type Row struct {
 	ChannelAutoRegister      *bool
 	ChannelExpiryDays        *int
 	GuestAccess              *bool
+	GuestVoice               *bool
 	UpdatedAt                *time.Time
 	UpdatedBy                *string
 }

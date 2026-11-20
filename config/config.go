@@ -248,7 +248,7 @@ func ValidChannelExpiryDays(n int) bool { return n >= 0 && n <= MaxChannelExpiry
 
 // AccountConfig: Registration, RequireEmailVerification, ChannelCreation,
 // VoiceChannelCreation, ChannelAutoRegister, ChannelExpiryDays and
-// GuestAccess are only
+// GuestAccess and GuestVoice are only
 // defaults; admins change them at runtime (network_settings,
 // PATCH /v1/admin/settings).
 type AccountConfig struct {
@@ -266,7 +266,10 @@ type AccountConfig struct {
 	ChannelExpiryDays int `default:"0" env:"CHANNEL_EXPIRY_DAYS"`
 	// IRC lets people connect without an account (guests); false makes IRC
 	// require SASL login.
-	GuestAccess      bool          `default:"true" env:"GUEST_ACCESS"`
+	GuestAccess bool `default:"true" env:"GUEST_ACCESS"`
+	// Guests may join voice (and so video) under their unverified IRC nick
+	// (POST /v1/voice/guest-token). Only effective with GuestAccess.
+	GuestVoice       bool          `default:"false" env:"GUEST_VOICE"`
 	EmailVerifyTTL   time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
 	PasswordResetTTL time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
 	// Lifetime of the "set your password" link in admin-created account emails.

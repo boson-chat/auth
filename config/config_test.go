@@ -76,6 +76,20 @@ func TestGuestAccessDefault(t *testing.T) {
 	}
 }
 
+func TestGuestVoiceDefault(t *testing.T) {
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AccountConfig.GuestVoice {
+		t.Fatal("GUEST_VOICE should default to false")
+	}
+	t.Setenv("GUEST_VOICE", "true")
+	if c, err = LoadConfig(); err != nil || !c.AccountConfig.GuestVoice {
+		t.Fatalf("GUEST_VOICE=true: guest_voice=%v err=%v", c.AccountConfig.GuestVoice, err)
+	}
+}
+
 func TestBrandingDirectory(t *testing.T) {
 	if d := (AppConfig{ConfigFile: "/config/boson.yaml"}).BrandingDirectory(); d != "/config/branding" {
 		t.Fatal(d)

@@ -25,6 +25,7 @@ auth:
   registration: invite
   require_email_verification: false
   guest_access: false
+  guest_voice: true
   channel_creation: admins
   voice_channel_creation: registered
   channel_auto_register: false
@@ -41,7 +42,7 @@ func TestLoadFileConfigFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *f.NetworkName != "Example" || *f.Registration != "invite" || *f.RequireEmailVerification || *f.GuestAccess ||
+	if *f.NetworkName != "Example" || *f.Registration != "invite" || *f.RequireEmailVerification || *f.GuestAccess || !*f.GuestVoice ||
 		*f.ChannelCreation != "admins" || *f.VoiceChannelCreation != "registered" || *f.ChannelAutoRegister || *f.ChannelExpiryDays != 30 {
 		t.Fatalf("%+v", f)
 	}
@@ -85,6 +86,7 @@ func TestLoadFileConfigValidation(t *testing.T) {
 		{"auth:\n  channel_expiry_days: 4000\n", 2, 24, "between 0 and 3650"},
 		{"auth:\n  channel_expiry_days: soon\n", 2, 24, "integer"},
 		{"auth:\n  guest_access: yes\n", 2, 17, "true or false"},
+		{"auth:\n  guest_voice: 1\n", 2, 16, "true or false"},
 		{"auth:\n  cors_allowed_origins:\n    - https://ok.example.com\n    - https://bad.example.com/path\n", 4, 7, "not an origin"},
 		{"auth:\n  cors_allowed_origins: {a: b}\n", 2, 25, "list of strings"},
 		{"auth:\n  smtp:\n    port: 70000\n", 3, 11, "between 1 and 65535"},
@@ -134,13 +136,13 @@ func TestWithFilePrecedence(t *testing.T) {
 		got.AppConfig.SiteName != "env-site" || got.HTTPConfig.CORSAllowedOrigins != env.HTTPConfig.CORSAllowedOrigins {
 		t.Fatalf("%+v", got)
 	}
-	f, err := loadFile(t, "network: { name: File }\nauth:\n  registration: closed\n  guest_access: false\n  channel_expiry_days: 0\n  cors_allowed_origins: []\n  smtp: { port: 2525 }\n")
+	f, err := loadFile(t, "network: { name: File }\nauth:\n  registration: closed\n  guest_access: false\n  guest_voice: true\n  channel_expiry_days: 0\n  cors_allowed_origins: []\n  smtp: { port: 2525 }\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := env.WithFile(f)
 	a := got.AccountConfig
-	if got.AppConfig.SiteName != "File" || a.Registration != "closed" || a.GuestAccess || a.ChannelExpiryDays != 0 {
+	if got.AppConfig.SiteName != "File" || a.Registration != "closed" || a.GuestAccess || !a.GuestVoice || a.ChannelExpiryDays != 0 {
 		t.Fatalf("file values must win: %+v", got)
 	}
 	// Keys not in the file keep their env value.

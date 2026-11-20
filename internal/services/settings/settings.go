@@ -1,7 +1,8 @@
 // Package settings serves the runtime network settings: registration mode,
 // email verification, who may create IRC text and voice channels, and the
 // IRC channel lifecycle (auto-registration, expiry of idle channels) and
-// whether IRC lets guests (no account) connect.
+// whether IRC lets guests (no account) connect and whether guests may join
+// voice.
 // Values stored in network_settings override the env defaults; reads are
 // cached for SETTINGS_CACHE_TTL so other replicas pick up changes quickly.
 //
@@ -35,6 +36,7 @@ type Settings struct {
 	ChannelAutoRegister      bool       `json:"channel_auto_register"`
 	ChannelExpiryDays        int        `json:"channel_expiry_days"`
 	GuestAccess              bool       `json:"guest_access"`
+	GuestVoice               bool       `json:"guest_voice"`
 	UpdatedAt                *time.Time `json:"updated_at"`
 	UpdatedBy                *string    `json:"updated_by"`
 	// Source is where the values come from: "file" (stack config file,
@@ -62,11 +64,12 @@ type Patch struct {
 	ChannelAutoRegister      *bool   `json:"channel_auto_register"`
 	ChannelExpiryDays        *int    `json:"channel_expiry_days"`
 	GuestAccess              *bool   `json:"guest_access"`
+	GuestVoice               *bool   `json:"guest_voice"`
 }
 
 func (p Patch) empty() bool {
 	return p.Registration == nil && p.RequireEmailVerification == nil && p.ChannelCreation == nil && p.VoiceChannelCreation == nil &&
-		p.ChannelAutoRegister == nil && p.ChannelExpiryDays == nil && p.GuestAccess == nil
+		p.ChannelAutoRegister == nil && p.ChannelExpiryDays == nil && p.GuestAccess == nil && p.GuestVoice == nil
 }
 
 // Validate checks every set field.
@@ -131,6 +134,7 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 		ChannelAutoRegister:      s.Defaults.ChannelAutoRegister,
 		ChannelExpiryDays:        s.Defaults.ChannelExpiryDays,
 		GuestAccess:              s.Defaults.GuestAccess,
+		GuestVoice:               s.Defaults.GuestVoice,
 		UpdatedAt:                r.UpdatedAt,
 		UpdatedBy:                r.UpdatedBy,
 		Source:                   SourceDB,
@@ -156,6 +160,9 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 	if r.GuestAccess != nil {
 		out.GuestAccess = *r.GuestAccess
 	}
+	if r.GuestVoice != nil {
+		out.GuestVoice = *r.GuestVoice
+	}
 	return out
 }
 
@@ -165,7 +172,7 @@ func fromFile(a *config.AccountConfig) Settings {
 		Registration: a.Registration, RequireEmailVerification: a.RequireEmailVerification,
 		ChannelCreation: a.ChannelCreation, VoiceChannelCreation: a.VoiceChannelCreation,
 		ChannelAutoRegister: a.ChannelAutoRegister, ChannelExpiryDays: a.ChannelExpiryDays,
-		GuestAccess: a.GuestAccess, Source: SourceFile,
+		GuestAccess: a.GuestAccess, GuestVoice: a.GuestVoice, Source: SourceFile,
 	}
 }
 
@@ -244,6 +251,9 @@ func (s *SettingsService) Update(ctx context.Context, actorID string, p Patch) (
 		if p.GuestAccess != nil {
 			row.GuestAccess = p.GuestAccess
 		}
+		if p.GuestVoice != nil {
+			row.GuestVoice = p.GuestVoice
+		}
 		now := s.Now().UTC()
 		row.UpdatedAt = &now
 		row.UpdatedBy = nil
@@ -280,5 +290,6 @@ func diff(a, b Settings) (map[string]any, map[string]any) {
 	add("channel_auto_register", a.ChannelAutoRegister, b.ChannelAutoRegister)
 	add("channel_expiry_days", a.ChannelExpiryDays, b.ChannelExpiryDays)
 	add("guest_access", a.GuestAccess, b.GuestAccess)
+	add("guest_voice", a.GuestVoice, b.GuestVoice)
 	return oldV, newV
 }

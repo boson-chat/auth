@@ -59,7 +59,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url}` (live [network settings](#network-settings), enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
@@ -84,6 +84,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/sso/{slug}/saml/metadata` | – | SP metadata XML (`application/samlmetadata+xml`) |
 | `POST /v1/sso/exchange` | – | `{code, code_verifier?, cookie?}` → same as `/v1/login`; `400 invalid_code` |
 | `POST /v1/voice/token` | bearer | `{rooms?: [string]}` → `{token, expires_in, audience: "quicvoice"}` |
+| `POST /v1/voice/guest-token` | – | `{nick, guest_id, rooms?: [string]}` → `{token, expires_in, audience: "quicvoice"}`: a [guest voice token](#guest-voice-token-quicvoiced) for someone on IRC without an account, under their (unverified) IRC nick. `403 guest_voice_disabled` unless `guest_access` and `guest_voice` are both on; `400 invalid_request` (with `field`) for a nick that isn't a valid IRC nick (1–30 chars), a `guest_id` that isn't 16–64 of `[A-Za-z0-9_-]`, or bad rooms (as `/v1/voice/token`); `409 nick_registered` when the nick (RFC 1459 fold) is an account's username (disabled accounts included) or a reserved services name. 20 per client IP per minute (burst 20) |
 | `GET /v1/roles` | – | `{roles: [{id, name, color, position, hoist, mentionable}]}`; `ETag`/`If-None-Match`, cacheable, rate-limited ([roles](docs/roles.md#public-api)) |
 | `GET /v1/users/roles?username=a&username=b` | – | ≤ 100 names → `{users: {"a": ["rol_…"]}}` (visible roles only) |
 | `GET /verify-email`, `GET /reset-password` | – | built-in pages for the email links (used when `APP_URL` = `PUBLIC_URL`) |
@@ -109,7 +110,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
 | `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, updated_at, updated_by, source}`; `source` is `file` (stack config file) or `db` |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, updated_at, updated_by, source}`; `source` is `file` (stack config file) or `db` |
 | `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; `409 managed_by_config_file` while the [stack config file](#stack-config-file) is in use; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 | `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
 | `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
@@ -145,7 +146,7 @@ The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-
 
 ### Network settings
 
-Seven settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
+Eight settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
 and are stored in `network_settings`. Until an admin sets one, it follows its
 env variable, so env values are the defaults:
 
@@ -158,21 +159,22 @@ env variable, so env values are the defaults:
 | `channel_auto_register` | bool | `CHANNEL_AUTO_REGISTER` (`true`) | IRC (Ergo): a logged-in user who creates a new channel by joining it gets it registered to their account |
 | `channel_expiry_days` | integer 0–3650 | `CHANNEL_EXPIRY_DAYS` (`0`) | IRC (Ergo): registered channels with no joins or messages for this many days are unregistered; `0` = never expire |
 | `guest_access` | bool | `GUEST_ACCESS` (`true`) | IRC (Ergo): `true` = people may connect without an account (guests can chat but can't register channels or use voice or roles); `false` = IRC requires SASL login. Clients read it from `GET /v1/config`; treat a missing field (older auth) as `true` |
+| `guest_voice` | bool | `GUEST_VOICE` (`false`) | auth (`POST /v1/voice/guest-token`): guests may join voice (and so video) under their unverified IRC nick, with a guest badge; only effective with `guest_access`. `GET /v1/config` reports `guest_access && guest_voice`; treat a missing field (older auth) as `false` |
 
 ```json
 {"registration":"open","require_email_verification":true,"channel_creation":"registered",
  "voice_channel_creation":"founders","channel_auto_register":true,"channel_expiry_days":0,
- "guest_access":true,
+ "guest_access":true,"guest_voice":false,
  "updated_at":"2026-11-13T21:04:05.123456Z","updated_by":"usr_01J…"}
 ```
 
 `updated_at` / `updated_by` are `null` until the first change. Each replica
 caches the row for `SETTINGS_CACHE_TTL` (5 s); the replica that handled the
-PATCH sees it at once. auth only enforces the first two; the channel settings
+PATCH sees it at once. auth enforces the first two and `guest_voice`; the others
 are published for the IRC and voice services (`GET /internal/v1/settings`,
 cache them a few seconds too) and for clients (`GET /v1/config`).
 
-With the [stack config file](#stack-config-file) the same seven settings come
+With the [stack config file](#stack-config-file) the same eight settings come
 from its `auth:` section instead (`source: "file"`, `updated_at` / `updated_by`
 `null`), `network_settings` is ignored and `PATCH` answers `409`.
 
@@ -194,6 +196,7 @@ auth:
   registration: open                # open | invite | closed
   require_email_verification: true
   guest_access: true
+  guest_voice: false                # guests may join voice (needs guest_access)
   channel_creation: registered      # registered | admins
   voice_channel_creation: founders  # admins | founders | registered
   channel_auto_register: true
@@ -382,6 +385,25 @@ Header `{"alg":"EdDSA","kid":"key_…","typ":"JWT"}`
 | `sid`, `iat`, `nbf`, `jti` | as above |
 | `exp` | `iat` + `VOICE_TOKEN_TTL` (5 min) |
 
+### Guest voice token (quicvoiced)
+
+From `POST /v1/voice/guest-token`; same header, key, audience and lifetime
+as the voice token:
+
+| Claim | Value |
+|---|---|
+| `iss`, `aud`, `iat`, `nbf`, `exp`, `jti` | as the voice token |
+| `sub` | `"guest:" + guest_id` (never a user id) |
+| `name` | the IRC nick: **unverified**, only checked not to belong to an account |
+| `guest` | `true` |
+| `role` | `speaker` |
+| `roles`, `perms` | `[]`: always present and empty (no create / manage / bypass) |
+| `rooms` | from the request body; omitted when empty |
+
+There is no `sid`. quicvoiced must treat it as a guest (no account, no
+standing lookup) and reject a `guest: true` token whose `sub` doesn't start
+with `guest:`.
+
 ### Verifying tokens in other services
 
 quicvoiced (and anything else) must check:
@@ -478,6 +500,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `CHANNEL_AUTO_REGISTER` | `true` | default for `channel_auto_register`: IRC registers new channels to their creator (*file*: `auth.channel_auto_register`) |
 | `CHANNEL_EXPIRY_DAYS` | `0` | default for `channel_expiry_days`: 0–3650, days of inactivity before IRC unregisters a channel (`0` = never) (*file*: `auth.channel_expiry_days`) |
 | `GUEST_ACCESS` | `true` | default for `guest_access`: IRC lets people connect without an account; `false` = SASL login required (*file*: `auth.guest_access`) |
+| `GUEST_VOICE` | `false` | default for `guest_voice`: guests may get voice tokens (`POST /v1/voice/guest-token`); needs `guest_access` (*file*: `auth.guest_voice`) |
 | `SETTINGS_CACHE_TTL` | `5s` | how long a replica caches the network settings |
 | `ACCOUNT_SETUP_TTL` | `72h` | lifetime of the "choose your password" link for admin-created accounts |
 | `EMAIL_VERIFY_TTL` | `24h` | |
@@ -555,6 +578,7 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 | `auth_emails_sent_total` | `purpose` (`verify_email`, `reset_password`), `outcome` |
 | `auth_rate_limit_hits_total` | `bucket` |
 | `auth_password_resets_total` | `outcome` |
+| `auth_voice_guest_tokens_total` | `outcome` (`success`, `rejected` (disabled), `invalid`, `taken` (registered / reserved nick), `error`) |
 
 ## Security notes
 

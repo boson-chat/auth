@@ -26,6 +26,8 @@ const (
 	OutcomeReuse              = "reuse"
 	OutcomeRejected           = "rejected"
 	OutcomeError              = "error"
+	// OutcomeTaken: a guest asked for a nick that belongs to an account.
+	OutcomeTaken = "taken"
 )
 
 // Metrics holds the instruments. The zero value is not usable; use New or Noop.
@@ -37,6 +39,7 @@ type Metrics struct {
 	emailsSent     metric.Int64Counter
 	rateLimitHits  metric.Int64Counter
 	passwordResets metric.Int64Counter
+	guestVoice     metric.Int64Counter
 }
 
 // New creates the instruments on mp.
@@ -59,6 +62,7 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		emailsSent:     c("auth.emails.sent", "Emails sent by purpose and outcome."),
 		rateLimitHits:  c("auth.rate_limit.hits", "Requests rejected by the rate limiter, by bucket."),
 		passwordResets: c("auth.password.resets", "Password reset completions by outcome."),
+		guestVoice:     c("auth.voice.guest_tokens", "Guest voice token requests by outcome."),
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -101,4 +105,8 @@ func (m *Metrics) RateLimited(ctx context.Context, bucket string) {
 
 func (m *Metrics) PasswordReset(ctx context.Context, o string) {
 	m.passwordResets.Add(ctx, 1, outcome(o))
+}
+
+func (m *Metrics) GuestVoiceToken(ctx context.Context, o string) {
+	m.guestVoice.Add(ctx, 1, outcome(o))
 }

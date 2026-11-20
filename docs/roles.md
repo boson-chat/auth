@@ -515,6 +515,13 @@ use IRC without an account. Guests hold no roles, so they can chat but can't
 register channels, use voice or get role-based modes, vhosts or oper. When an
 admin sets it to `false`, IRC requires SASL login for every connection.
 
+`guest_voice` (`GUEST_VOICE`, default `false`) additionally lets guests join
+voice (and so video) under their unverified IRC nick, shown with a guest
+badge: `POST /v1/voice/guest-token` mints a voice token with `sub`
+`guest:<guest_id>`, `guest: true`, role `speaker` and empty `roles` / `perms`,
+so guests can never create, manage or bypass. Nicks that belong to an account
+(or are reserved) are refused. It has no effect while `guest_access` is off.
+
 ## Migrating from 1.x
 
 Migration `000004_roles` creates `roles` and `user_roles`, seeds the four
