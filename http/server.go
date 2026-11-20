@@ -25,6 +25,7 @@ import (
 	sessionrepo "github.com/boson-chat/auth/internal/db/repositories/session"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
 	"github.com/boson-chat/auth/internal/db/repositories/signingkey"
+	socialrepo "github.com/boson-chat/auth/internal/db/repositories/social"
 	"github.com/boson-chat/auth/internal/db/repositories/ssocode"
 	"github.com/boson-chat/auth/internal/db/repositories/user"
 	"github.com/boson-chat/auth/internal/logger"
@@ -46,6 +47,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
+	"github.com/boson-chat/auth/internal/services/social"
 	"github.com/boson-chat/auth/internal/services/sso"
 	"github.com/boson-chat/auth/internal/services/stackconfig"
 	"github.com/boson-chat/auth/internal/services/token"
@@ -83,7 +85,9 @@ type App struct {
 	StackConfig stackconfig.StackConfigServiceImpl
 	// Branding is the network theme from the config file's branding: section.
 	Branding branding.BrandingServiceImpl
-	limits   *handlers.Limits
+	// Social is friends, blocks, privacy and private calls.
+	Social social.SocialServiceImpl
+	limits *handlers.Limits
 }
 
 // Build constructs everything: database → repositories → services → handlers.
@@ -231,12 +235,18 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Now: opts.Now,
 	})
 
+	socialService := social.NewSocialService(social.Deps{
+		Repo: socialrepo.NewSocialRepository(database), Users: userRepo, Tx: database,
+		Ergo:      social.NewErgoChannels(cfg.SocialConfig.ErgoAPIURL, cfg.SocialConfig.ErgoAPIToken),
+		MintToken: authnService.CallVoiceToken, Now: opts.Now, PollWait: cfg.SocialConfig.EventsPollWait,
+	})
+
 	// 4. Handlers
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
-		RoleChannels: roleChannelsService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		FilesURL: func() string { return stackConfig.Effective().FilesConfig.URL() },
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
@@ -263,7 +273,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
-		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, limits: limits,
+		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, Social: socialService, limits: limits,
 	}, nil
 }
 
@@ -271,6 +281,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
 	go a.StackConfig.Run(ctx)
+	go a.Social.Run(ctx)
 	a.limits.RunPruner(ctx)
 	// Pick up provider changes made on other replicas.
 	go func() {

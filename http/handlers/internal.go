@@ -32,6 +32,9 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	mux.Handle("GET /internal/config/status", configfile.StatusHandler(h.ConfigStatus))
 	mux.HandleFunc("POST /internal/v1/verify-password", h.internalOnly(h.internalVerifyPassword))
 	mux.HandleFunc("GET /internal/v1/settings", h.internalOnly(h.internalSettings))
+	if h.Social != nil {
+		mux.HandleFunc("GET /internal/v1/calls/check", h.internalOnly(h.internalCanCall))
+	}
 	mux.HandleFunc("GET /internal/v1/roles", h.internalOnly(h.internalRoles))
 	mux.HandleFunc("GET /internal/v1/users/{username}/irc", h.internalOnly(h.internalUserIRC))
 	mux.HandleFunc("GET /internal/v1/roles/{id}/members", h.internalOnly(h.adminRoleMembers))

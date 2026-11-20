@@ -30,6 +30,19 @@ type Config struct {
 	TelemetryConfig TelemetryConfig
 	FilesConfig     FilesConfig
 	RolesConfig     RolesConfig
+	SocialConfig    SocialConfig
+}
+
+// SocialConfig is friends and private calls (docs/friends-calls.md).
+type SocialConfig struct {
+	// Ergo's HTTP API, for the "People in my servers" friend request
+	// setting (a shared IRC channel). Empty URL or token: that setting lets
+	// nobody through.
+	ErgoAPIURL   string `env:"ERGO_API_URL"`
+	ErgoAPIToken string `env:"ERGO_API_TOKEN"`
+	// How long GET /v1/events holds a poll open with nothing new. Keep it
+	// under the proxies' and the app's request timeouts (30 s).
+	EventsPollWait time.Duration `default:"25s" env:"EVENTS_POLL_WAIT"`
 }
 
 // Role channel rejoin policies (roles.channels.rejoin).
