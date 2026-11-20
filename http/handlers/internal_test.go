@@ -76,3 +76,28 @@ func TestPrunersTickWithoutPanicking(t *testing.T) {
 	l.runPruners(ctx, 5*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
 }
+
+// Guest voice tokens are limited per client IP (burst 20).
+func TestGuestVoiceBucketPerIP(t *testing.T) {
+	l := NewLimits(config.RateLimitConfig{Enabled: true, IPBurst: 2, IPPerMinute: 1, AccountBurst: 2, AccountPerMinute: 1}, metrics.Noop())
+	req := func(ip string) *nethttp.Request {
+		r := httptest.NewRequest("POST", "/v1/voice/guest-token", nil)
+		return r.WithContext(reqmeta.With(context.Background(), reqmeta.Meta{IP: ip}))
+	}
+	allowed := 0
+	for range 30 {
+		if l.allow(httptest.NewRecorder(), req("203.0.113.7"), BucketGuestVoice, "") {
+			allowed++
+		}
+	}
+	if allowed != guestVoiceBurst {
+		t.Fatalf("allowed %d from one IP, want burst %d", allowed, guestVoiceBurst)
+	}
+	w := httptest.NewRecorder()
+	if l.allow(w, req("203.0.113.7"), BucketGuestVoice, "") || w.Code != nethttp.StatusTooManyRequests || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("want 429 with Retry-After, got %d", w.Code)
+	}
+	if !l.allow(httptest.NewRecorder(), req("198.51.100.4"), BucketGuestVoice, "") {
+		t.Fatal("a different client IP was limited")
+	}
+}

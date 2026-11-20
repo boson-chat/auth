@@ -249,3 +249,43 @@ func TestRejects(t *testing.T) {
 		t.Error("expired token accepted")
 	}
 }
+
+func TestGuestVoiceToken(t *testing.T) {
+	ctx := context.Background()
+	ts, ks, _ := setup(t)
+	raw, exp, err := ts.MintGuestVoice(ctx, "Abcdefgh_ijklmnop-1", "Wanderer", []string{"lobby"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(exp); d < 4*time.Minute || d > 5*time.Minute {
+		t.Fatalf("guest voice exp in %v, want ~5m (VOICE_TOKEN_TTL)", d)
+	}
+	mc := verifyWithJWKS(t, ks.JWKS(ctx), raw, token.AudienceQuicvoice)
+	if mc["sub"] != "guest:Abcdefgh_ijklmnop-1" || mc["name"] != "Wanderer" || mc["guest"] != true ||
+		mc["role"] != "speaker" || mc["aud"] != "quicvoice" || mc["iss"] != issuer {
+		t.Fatalf("guest voice claims = %v", mc)
+	}
+	// roles and perms are present but empty: no create / manage / bypass.
+	for _, k := range []string{"roles", "perms"} {
+		v, ok := mc[k].([]any)
+		if !ok || len(v) != 0 {
+			t.Fatalf("%s = %#v, want present and empty", k, mc[k])
+		}
+	}
+	if _, ok := mc["sid"]; ok {
+		t.Fatal("guest tokens have no session")
+	}
+	if rooms, _ := mc["rooms"].([]any); len(rooms) != 1 || rooms[0] != "lobby" {
+		t.Fatalf("rooms = %v", mc["rooms"])
+	}
+	raw, _, _ = ts.MintGuestVoice(ctx, "Abcdefgh_ijklmnop-1", "Wanderer", nil)
+	if mc = verifyWithJWKS(t, ks.JWKS(ctx), raw, token.AudienceQuicvoice); mc["rooms"] != nil {
+		t.Fatal("rooms must be omitted when empty")
+	}
+	if _, err := ts.VerifyAccess(ctx, raw); err == nil {
+		t.Fatal("guest voice token accepted as access token")
+	}
+	if _, _, err := ts.MintGuestVoice(ctx, "", "Wanderer", nil); err == nil {
+		t.Fatal("empty guest id accepted")
+	}
+}

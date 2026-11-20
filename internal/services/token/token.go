@@ -8,6 +8,14 @@
 //
 //	iss sub aud sid name role roles? perms rooms? iat nbf exp jti
 //
+// Guest voice token (aud "quicvoice", POST /v1/voice/guest-token), for a
+// guest on IRC with no account:
+//
+//	iss sub="guest:<guest_id>" aud name=<IRC nick, unverified> guest=true
+//	role="speaker" roles=[] perms=[] rooms? iat nbf exp jti
+//
+// (no sid; roles and perms are always present and empty).
+//
 // role is the 1.x compatibility claim (admin iff admin.panel; speaker or
 // moderator on voice tokens), roles the assigned role names (most senior
 // first, at most 20, omitted when none), perms the effective permissions
@@ -79,6 +87,10 @@ type TokenServiceImpl interface {
 	MintAccess(ctx context.Context, u *user.User, sessionID string, g Grants) (string, time.Time, error)
 	VerifyAccess(ctx context.Context, raw string) (*AccessClaims, error)
 	MintVoice(ctx context.Context, u *user.User, sessionID string, rooms []string, g Grants) (string, time.Time, error)
+	// MintGuestVoice mints a voice token for a guest (no account): sub
+	// GuestSubjectPrefix+guestID, name = nick, guest = true, role speaker,
+	// empty roles and perms.
+	MintGuestVoice(ctx context.Context, guestID, nick string, rooms []string) (string, time.Time, error)
 }
 
 type Options struct {
@@ -163,6 +175,36 @@ func (s *TokenService) MintVoice(ctx context.Context, u *user.User, sessionID st
 	c, exp := s.base(u, sessionID, AudienceQuicvoice, s.opts.VoiceTTL)
 	c["role"] = VoiceRole(g)
 	addGrants(c, g.Roles, perm.Filter(g.Perms, perm.GroupNetwork))
+	if len(rooms) > 0 {
+		c["rooms"] = rooms
+	}
+	tok, err := s.sign(ctx, "JWT", c)
+	return tok, exp, err
+}
+
+// GuestSubjectPrefix starts the sub claim of guest voice tokens.
+const GuestSubjectPrefix = "guest:"
+
+func (s *TokenService) MintGuestVoice(ctx context.Context, guestID, nick string, rooms []string) (string, time.Time, error) {
+	if guestID == "" || nick == "" {
+		return "", time.Time{}, errors.New("token: missing guest id or nick")
+	}
+	now := s.opts.Now().UTC().Truncate(time.Second)
+	exp := now.Add(s.opts.VoiceTTL)
+	c := jwt.MapClaims{
+		"iss":   s.opts.Issuer,
+		"sub":   GuestSubjectPrefix + guestID,
+		"aud":   AudienceQuicvoice,
+		"name":  nick,
+		"guest": true,
+		"role":  VoiceRoleSpeaker,
+		"roles": []string{},
+		"perms": []string{},
+		"iat":   now.Unix(),
+		"nbf":   now.Unix(),
+		"exp":   exp.Unix(),
+		"jti":   ids.New(ids.TokenID),
+	}
 	if len(rooms) > 0 {
 		c["rooms"] = rooms
 	}

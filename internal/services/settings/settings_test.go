@@ -202,6 +202,36 @@ func TestGuestAccessSetting(t *testing.T) {
 	}
 }
 
+func TestGuestVoiceSetting(t *testing.T) {
+	s, repo, spy, _ := newSvc(0)
+	got, err := s.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GuestVoice {
+		t.Fatalf("default must be off: %+v", got)
+	}
+	got, err = s.Update(t.Context(), "usr_admin", Patch{GuestVoice: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GuestVoice || !got.GuestAccess {
+		t.Fatalf("after patch: %+v", got)
+	}
+	if repo.row.GuestVoice == nil || !*repo.row.GuestVoice || repo.row.GuestAccess != nil {
+		t.Fatalf("stored: %+v", repo.row)
+	}
+	oldV, newV := spy.metas[0]["old"].(map[string]any), spy.metas[0]["new"].(map[string]any)
+	if len(oldV) != 1 || oldV["guest_voice"] != false || newV["guest_voice"] != true {
+		t.Fatalf("audit diff: old=%v new=%v", oldV, newV)
+	}
+	// File mode carries it too.
+	s.SetFile(&config.AccountConfig{GuestAccess: true, GuestVoice: true})
+	if got, _ := s.Get(t.Context()); got.Source != SourceFile || !got.GuestVoice {
+		t.Fatalf("file mode: %+v", got)
+	}
+}
+
 func TestFileMode(t *testing.T) {
 	s, repo, spy, _ := newSvc(time.Hour)
 	// A database override exists from before the config file.

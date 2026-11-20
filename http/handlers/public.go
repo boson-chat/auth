@@ -37,6 +37,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /v1/sessions", h.authed(h.listSessions))
 	mux.HandleFunc("DELETE /v1/sessions/{id}", h.authed(h.revokeSession))
 	mux.HandleFunc("POST /v1/voice/token", h.authed(h.voiceToken))
+	mux.HandleFunc("POST /v1/voice/guest-token", h.guestVoiceToken)
 
 	h.registerBranding(mux)
 	h.registerSSO(mux)
@@ -117,9 +118,11 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"channel_auto_register":      st.ChannelAutoRegister,
 		"channel_expiry_days":        st.ChannelExpiryDays,
 		"guest_access":               st.GuestAccess,
-		"sso_providers":              providers,
-		"branding_url":               brandingURL,
-		"files_url":                  filesURL,
+		// Guests may join voice: only when guests may connect at all.
+		"guest_voice":   st.GuestAccess && st.GuestVoice,
+		"sso_providers": providers,
+		"branding_url":  brandingURL,
+		"files_url":     filesURL,
 	})
 }
 
@@ -448,6 +451,35 @@ func (h *Handlers) voiceToken(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	tok, exp, err := h.Authn.VoiceToken(r.Context(), principalFrom(r), req.Rooms)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"token":      tok,
+		"expires_in": int64(time.Until(exp).Seconds()),
+		"audience":   token.AudienceQuicvoice,
+	})
+}
+
+type guestVoiceReq struct {
+	Nick    string   `json:"nick"`
+	GuestID string   `json:"guest_id"`
+	Rooms   []string `json:"rooms"`
+}
+
+// guestVoiceToken: POST /v1/voice/guest-token, no auth. A voice token for an
+// IRC guest under its (unverified) nick; see authn.GuestVoiceToken.
+func (h *Handlers) guestVoiceToken(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req guestVoiceReq
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.Limits.allow(w, r, BucketGuestVoice, "") {
+		return
+	}
+	tok, exp, err := h.Authn.GuestVoiceToken(r.Context(), req.Nick, req.GuestID, req.Rooms)
 	if err != nil {
 		writeError(w, r, err)
 		return

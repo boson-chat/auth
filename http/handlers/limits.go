@@ -34,6 +34,8 @@ const (
 	// BucketPublic limits the unauthenticated, cacheable lookups
 	// (GET /v1/roles, GET /v1/users/roles) per IP.
 	BucketPublic = "public"
+	// BucketGuestVoice limits POST /v1/voice/guest-token per client IP.
+	BucketGuestVoice = "guest_voice"
 	// BucketEmailTest limits POST /internal/email/test per admin.
 	BucketEmailTest = "email_test"
 	// BucketEmailPreview limits POST /internal/email/preview per admin.
@@ -44,6 +46,13 @@ const (
 const (
 	emailTestBurst     = 5
 	emailTestPerMinute = 1.0 / 6
+)
+
+// Guest voice tokens per client IP: a burst of 20, then 20 a minute
+// (a token lasts VOICE_TOKEN_TTL; clients fetch one per join).
+const (
+	guestVoiceBurst     = 20
+	guestVoicePerMinute = 20
 )
 
 // Previews per admin: the panel previews on every (debounced) keystroke,
@@ -82,6 +91,7 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 		pubBurst, pubRate = cfg.IPBurst*3, cfg.IPPerMinute*12
 	}
 	l.buckets[BucketPublic] = bucketPair{ip: ratelimit.New(pubBurst, pubRate)}
+	l.buckets[BucketGuestVoice] = bucketPair{ip: ratelimit.New(guestVoiceBurst, guestVoicePerMinute)}
 	l.buckets[BucketEmailTest] = bucketPair{account: ratelimit.New(emailTestBurst, emailTestPerMinute)}
 	l.buckets[BucketEmailPreview] = bucketPair{account: ratelimit.New(emailPreviewBurst, emailPreviewPerMinute)}
 	return l

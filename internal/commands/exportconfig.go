@@ -36,7 +36,7 @@ output into config/boson.yaml once when moving an install to the file.`,
 			return err
 		}
 		a := &cfg.AccountConfig
-		a.Registration, a.RequireEmailVerification, a.GuestAccess = st.Registration, st.RequireEmailVerification, st.GuestAccess
+		a.Registration, a.RequireEmailVerification, a.GuestAccess, a.GuestVoice = st.Registration, st.RequireEmailVerification, st.GuestAccess, st.GuestVoice
 		a.ChannelCreation, a.VoiceChannelCreation = st.ChannelCreation, st.VoiceChannelCreation
 		a.ChannelAutoRegister, a.ChannelExpiryDays = st.ChannelAutoRegister, st.ChannelExpiryDays
 		out, err := config.ExportFile(cfg, os.Getenv("CORS_ALLOWED_ORIGINS") != "")
