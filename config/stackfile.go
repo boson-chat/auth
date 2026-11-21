@@ -31,6 +31,10 @@ import (
 //	  smtp: { host: smtp.example.com, port: 587, from: "Boson <hi@example.com>", tls: starttls }
 //	files:
 //	  enabled: true                 # FILES_ENABLED; only this key is auth's (files_url)
+//	irc:                            # only these keys are auth's (irc.go)
+//	  channels: [{name: "#lobby", topic: Welcome, autojoin: true}]
+//	  channel_founder: thelion      # IRC_CHANNEL_FOUNDER
+//	  autojoin_guests: true         # IRC_AUTOJOIN_GUESTS
 //
 // SMTP_USER / SMTP_PASSWORD and every other secret stay in the env.
 
@@ -63,6 +67,13 @@ type FileConfig struct {
 	// and roles.channels.rejoin.
 	RolesChannelsAutojoin *bool
 	RolesChannelsRejoin   *string
+
+	// IRCChannels (set: irc.channels is in the file), IRCChannelFounder and
+	// IRCAutojoinGuests are the irc: keys auth reads (irc.go).
+	IRCChannels       []NetworkChannel
+	IRCChannelsSet    bool
+	IRCChannelFounder *string
+	IRCAutojoinGuests *bool
 
 	// Branding is the branding: section; nil when absent.
 	Branding *BrandingConfig
@@ -247,6 +258,9 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			return FileConfig{}, err
 		}
 	}
+	if err := loadIRC(doc, &f); err != nil {
+		return FileConfig{}, err
+	}
 	email, unknownEmail, err := loadEmail(auth)
 	if err != nil {
 		return FileConfig{}, err
@@ -311,6 +325,7 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeyFilesEnabled, f.FilesEnabled != nil, deref(f.FilesEnabled))
 	put(KeyRolesChannelsAutojoin, f.RolesChannelsAutojoin != nil, deref(f.RolesChannelsAutojoin))
 	put(KeyRolesChannelsRejoin, f.RolesChannelsRejoin != nil, deref(f.RolesChannelsRejoin))
+	f.flattenIRC(m)
 	f.flattenBranding(m)
 	return m
 }
@@ -362,7 +377,7 @@ func (c Config) WithFile(f FileConfig) Config {
 		c.RolesConfig.ChannelsAutojoin = *f.RolesChannelsAutojoin
 	}
 	set(&c.RolesConfig.ChannelsRejoin, f.RolesChannelsRejoin)
-	return c
+	return c.withIRC(f)
 }
 
 // ExportFile renders the network: and auth: sections for the stack config
@@ -395,6 +410,9 @@ func ExportFile(c Config, corsSet bool) ([]byte, error) {
 		"network", mapping("name", c.AppConfig.SiteName),
 		"auth", mapping(auth...),
 	)
+	if irc := exportIRC(c.IRCConfig); irc != nil {
+		root.Content = append(root.Content, mapping("irc", mapping(irc...)).Content...)
+	}
 	root.Content[0].HeadComment = "Exported by `auth export-config` from the env and the network_settings table.\n" +
 		"Merge into config/boson.yaml; SMTP_USER / SMTP_PASSWORD stay in .env."
 	var buf bytes.Buffer

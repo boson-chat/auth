@@ -453,3 +453,29 @@ auth:
 		t.Fatalf("%+v", st)
 	}
 }
+
+func TestNetworkChannelsReloadLive(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "version: 1\nirc:\n  channels: [{ name: \"#Lobby\", topic: Hi, autojoin: true }]\n  channel_founder: thelion\n")
+	if err := f.svc.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	irc := f.svc.Effective().IRCConfig
+	if len(irc.Channels) != 1 || irc.Channels[0] != (config.NetworkChannel{Name: "#Lobby", Topic: "Hi", Autojoin: true}) || irc.ChannelFounder != "thelion" {
+		t.Fatalf("%+v", irc)
+	}
+	write(t, f.path, "version: 1\nirc:\n  channels: [{ name: \"#Lobby\", autojoin: true }, { name: \"#help\" }]\n  autojoin_guests: false\n")
+	f.svc.Check(ctx)
+	if irc = f.svc.Effective().IRCConfig; len(irc.Channels) != 2 || irc.Channels[0].Topic != "" || irc.ChannelFounder != "" || irc.AutojoinGuests {
+		t.Fatalf("reloaded %+v", irc)
+	}
+	if got := strings.Join(f.audit.metas[0]["changed"].([]string), ","); got != "irc.autojoin_guests,irc.channel_founder,irc.channels" {
+		t.Fatal(got)
+	}
+	// an invalid list keeps the last good one
+	write(t, f.path, "version: 1\nirc:\n  channels: [{ name: lobby }]\n")
+	f.svc.Check(ctx)
+	if st := f.svc.Status(); st.OK || !strings.Contains(st.Error, "irc.channels[0].name") || len(f.svc.Effective().IRCConfig.Channels) != 2 {
+		t.Fatalf("%+v", st)
+	}
+}

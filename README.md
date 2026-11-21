@@ -59,7 +59,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`)) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
@@ -136,8 +136,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /internal/v1/users/{username}/irc` | `{user_id, username, disabled, irc: {oper_class, whois_line, vhost}, roles, permissions}` for logins without a password (OAUTHBEARER/SSO); 404 for unknown accounts |
 | `GET /internal/v1/roles/{id}/members?cursor=&limit=` | the admin API's members list (`{users, next_cursor}`), for RoleServ |
 | `GET /internal/v1/irc/grants` | `{version, users: [{username, oper_class, whois_line, vhost}]}`: every enabled account with an oper class or vhost; `ETag` = version, `If-None-Match` → 304 ([grants feed](docs/roles.md#get-internalv1ircgrants-live-changes)) |
-| `GET /internal/v1/irc/channel-access` | `{version, autojoin, rejoin, channels: [{channel, private, everyone, accounts}]}` for RoleServ; `ETag`/`If-None-Match` ([role channels](docs/roles.md#internal-api-roleserv)) |
-| `GET /internal/v1/irc/autojoin?account=`, `POST /internal/v1/irc/autojoin` `{account, channels}` | one account's auto-join channels `{account, enabled, rejoin, channels, pending}` / record what RoleServ joined (`rejoin: once`) |
+| `GET /internal/v1/irc/channel-access` | `{version, autojoin, rejoin, channels: [{channel, private, everyone, accounts}], network: {founder, autojoin_guests, channels: [{channel, name, topic, autojoin}]}}` for RoleServ; `ETag`/`If-None-Match` ([role channels](docs/roles.md#internal-api-roleserv)) |
+| `GET /internal/v1/irc/autojoin?account=`, `POST /internal/v1/irc/autojoin` `{account, channels}` | one account's auto-join channels `{account, enabled, rejoin, channels, pending, network, network_pending}` / record what RoleServ joined (`rejoin: once`, and network channels) |
 | `GET /internal/v1/irc/accounts/removed?since=&limit=` | `{accounts: [{username, reason: "deleted"\|"disabled", at}], next}`: deleted and disabled accounts in commit order after the cursor `since`, for IRC to drop; `limit` 1–1000 (500) ([removed-accounts feed](docs/roles.md#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts)) |
 | `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}, layout_html?, html?}` → `{subject, html, text, from, warnings}`, live preview with unsaved settings and unsaved compiled MJML (`layout_html` with `{{content}}`, `html` with `{{link}}`, ≤ 512 KB each; field-tagged 400s) ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
 | `GET /internal/email/default-mjml?part=layout\|verification\|password_reset\|account_setup\|invite` | bearer with `settings.manage`; `{mjml}`: Boson's default MJML source (the layout, or a whole email built on it) for the admin panel's MJML editor ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
@@ -223,6 +223,13 @@ roles:
   channels:                         # role channels ([details](docs/roles.md#role-channels-channel-access-and-auto-join))
     autojoin: false                 # ROLE_CHANNELS_AUTOJOIN: RoleServ auto-joins members
     rejoin: login                   # ROLE_CHANNELS_REJOIN: login | once
+irc:                                # the boson-ergo helper's section; auth reads only:
+  channels:                         # network channels ([details](docs/roles.md#network-channels)), ≤ 100
+    - name: "#lobby"
+      topic: Welcome to Boson       # optional, ≤ 300 characters
+      autojoin: true                # default false: joined once on first login (and guests on connect)
+  channel_founder: thelion          # IRC_CHANNEL_FOUNDER; default: the earliest-assigned Owner
+  autojoin_guests: true             # IRC_AUTOJOIN_GUESTS (true)
 ```
 
 `SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
@@ -474,6 +481,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `FILES_PUBLIC_URL` | – | the network's files (uploads) service, e.g. `https://files.example.com`; `GET /v1/config` `files_url` while uploads are on |
 | `ROLE_CHANNELS_AUTOJOIN` | `false` | RoleServ auto-joins members to their roles' channels (*file*: `roles.channels.autojoin`) |
 | `ROLE_CHANNELS_REJOIN` | `login` | `login` \| `once` (*file*: `roles.channels.rejoin`) |
+| `IRC_CHANNEL_FOUNDER` | – | account that founds the network channels; empty = the enabled account that has held Owner longest (*file*: `irc.channel_founder`) |
+| `IRC_AUTOJOIN_GUESTS` | `true` | RoleServ joins guests to the auto-join network channels on connect (*file*: `irc.autojoin_guests`) |
 | `FILES_ENABLED` | `false` | uploads are on: `files_url` is published (*file*: `files.enabled`) |
 | `HTTP_ADDR` | `:8080` | public listener |
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |

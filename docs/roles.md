@@ -464,15 +464,59 @@ All with `X-Internal-Token: $INTERNAL_API_TOKEN`.
   (empty for public ones, and when `everyone` is true). `ETag` = version,
   `If-None-Match` → 304. The version is the [grants
   version](#get-internalv1ircgrants-live-changes) (which also bumps on any
-  change to role channels or private channels) plus the two settings, so it
-  changes whenever the feed or any account's auto-join list may have.
+  change to role channels or private channels) plus the settings (including
+  a hash of the [network channel](#network-channels) keys), so it changes
+  whenever the feed or any account's auto-join list may have. The feed also
+  has `network: {founder, autojoin_guests, channels: [{channel, name, topic,
+  autojoin}]}` (see below); a feed without it (older auth) means no network
+  channels.
 - `GET /internal/v1/irc/autojoin?account=` → `{account, enabled, rejoin,
-  channels, pending}`: `channels` are every channel the account's roles
-  (everyone's included) auto-join, `pending` those RoleServ hasn't auto-joined
-  it to yet. Disabled accounts get none; unknown ones 404.
+  channels, pending, network, network_pending}`: `channels` are every channel
+  the account's roles (everyone's included) auto-join, `pending` those
+  RoleServ hasn't auto-joined it to yet; `network` are the auto-join network
+  channels (folded, sorted) and `network_pending` those not yet joined.
+  Disabled accounts get none; unknown ones 404.
 - `POST /internal/v1/irc/autojoin` `{account, channels}`: RoleServ joined the
-  account to `channels` (kept only if the account still gets them; entries
-  for channels it no longer gets are dropped) → the same object as the GET.
+  account to `channels`, role or network channels (kept only if the account
+  still gets them as role or network auto-join channels; entries for
+  channels it no longer gets are dropped) → the same object as the GET.
+
+## Network channels
+
+Fixed channels of the network (e.g. `#lobby`), listed in the stack config
+file under `irc:` (hot-reloaded; auth is the only reader, RoleServ gets them
+from the channel-access feed):
+
+```yaml
+irc:
+  channels:                     # at most 100
+    - name: "#lobby"            # same rules as role channels; matched case-insensitively
+      topic: Welcome to Boson   # optional, ≤ 300 characters, one line
+      autojoin: true            # default false
+  channel_founder: thelion      # optional (IRC_CHANNEL_FOUNDER)
+  autojoin_guests: true         # default true (IRC_AUTOJOIN_GUESTS)
+```
+
+- RoleServ keeps every network channel created and registered to the
+  **founder**: `irc.channel_founder`, else the username of the enabled
+  account that has held the built-in Owner role longest (`user_roles.assigned_at`),
+  else `""` (RoleServ's own account). The feed's `network.founder` is that
+  resolved name; owner changes, renames and disabling bump the grants
+  version, so the feed version follows them.
+- **Auto-join** channels are joined **once** per account, at its first
+  login after the channel became an auto-join one (a `/part` sticks), via
+  `network_pending` and `POST /internal/v1/irc/autojoin`. This is
+  independent of `roles.channels.autojoin` and `rejoin`. Existing accounts
+  without a row are joined once at their next login. Turning a channel's
+  auto-join off drops its rows at the account's next record, so turning it
+  on again joins everyone once more.
+- With `autojoin_guests`, RoleServ also joins guests and unregistered
+  clients to the auto-join channels on connect.
+- `GET /v1/config` lists them as `channels: [{name, topic, autojoin}]` (names
+  as written), so clients can show them.
+- An invalid list (bad or duplicate name, topic too long, more than 100)
+  keeps the last good config, like any other key. No migration:
+  `irc_autojoined` stores the network channels' rows too.
 
 ## quicvoiced
 
