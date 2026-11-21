@@ -229,8 +229,11 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	roleChannelsService := rolechannels.NewRoleChannelsService(rolechannels.Deps{
 		Channels: roleChannelRepo, Roles: roleRepo, Users: userRepo, Access: rolesService.Access, Tx: database, Audit: auditService,
 		Settings: func() rolechannels.Settings {
-			rc := stackConfig.Effective().RolesConfig
-			return rolechannels.Settings{Autojoin: rc.ChannelsAutojoin, Rejoin: rc.ChannelsRejoin}
+			eff := stackConfig.Effective()
+			rc, irc := eff.RolesConfig, eff.IRCConfig
+			return rolechannels.Settings{Autojoin: rc.ChannelsAutojoin, Rejoin: rc.ChannelsRejoin, Network: rolechannels.NetworkSettings{
+				Channels: irc.Channels, Founder: irc.ChannelFounder, AutojoinGuests: irc.AutojoinGuests,
+			}}
 		},
 		Now: opts.Now,
 	})
@@ -247,7 +250,8 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
-		FilesURL: func() string { return stackConfig.Effective().FilesConfig.URL() },
+		FilesURL:        func() string { return stackConfig.Effective().FilesConfig.URL() },
+		NetworkChannels: func() []config.NetworkChannel { return stackConfig.Effective().IRCConfig.Channels },
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {

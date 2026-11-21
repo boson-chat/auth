@@ -65,6 +65,9 @@ type Handlers struct {
 	// FilesURL is files_url in GET /v1/config ("" = null). Nil: the env
 	// config's FilesConfig.
 	FilesURL func() string
+	// NetworkChannels are channels in GET /v1/config (config irc.channels,
+	// hot-reloaded). Nil: Config.IRCConfig.
+	NetworkChannels func() []config.NetworkChannel
 }
 
 type principalKey struct{}

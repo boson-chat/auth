@@ -9,6 +9,8 @@ package rolechannels
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -37,26 +39,59 @@ const (
 	// EveryoneName is how the Member role shows in via lists.
 	EveryoneName = "Everyone"
 	// MaxChannelLen is Ergo's default channel length limit (channellen).
-	MaxChannelLen = 64
+	MaxChannelLen = config.MaxChannelNameLen
 	// MaxRoleChannels bounds one role's channel list.
 	MaxRoleChannels = 100
 	// MaxPrivate bounds the private channel list.
 	MaxPrivate = 500
 )
 
-// Settings are roles.channels in the stack config file.
+// Settings are roles.channels and the irc: network channel keys in the
+// stack config file.
 type Settings struct {
 	Autojoin bool
 	Rejoin   string
+	// Network is irc.channels, irc.channel_founder and irc.autojoin_guests.
+	Network NetworkSettings
 }
 
-// fingerprint is the settings' part of the feed version.
+// NetworkSettings are the network channels (config irc:).
+type NetworkSettings struct {
+	Channels []config.NetworkChannel
+	// Founder is irc.channel_founder ("" = the earliest-assigned Owner).
+	Founder        string
+	AutojoinGuests bool
+}
+
+// fingerprint is the settings' part of the feed version. The resolved
+// founder needs no part of it: owner assignments, renames and disabling
+// all bump the grants version.
 func (s Settings) fingerprint() string {
 	a := "0"
 	if s.Autojoin {
 		a = "1"
 	}
+	if n := s.Network; len(n.Channels) > 0 || n.Founder != "" || !n.AutojoinGuests {
+		h := sha256.New()
+		fmt.Fprintf(h, "%q %t", n.Founder, n.AutojoinGuests)
+		for _, c := range n.Channels {
+			fmt.Fprintf(h, " %q %q %t", c.Name, c.Topic, c.Autojoin)
+		}
+		return a + s.Rejoin + "." + hex.EncodeToString(h.Sum(nil))[:16]
+	}
 	return a + s.Rejoin
+}
+
+// networkAutojoin are the folded auto-join network channels, sorted.
+func (n NetworkSettings) networkAutojoin() []string {
+	out := []string{}
+	for _, c := range n.Channels {
+		if f := c.Folded(); c.Autojoin && !slices.Contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // NormalizeChannel validates an IRC channel name and folds it the way Ergo
@@ -64,16 +99,8 @@ func (s Settings) fingerprint() string {
 // other than space and comma, lower-cased.
 func NormalizeChannel(s string) (string, error) {
 	s = strings.TrimSpace(s)
-	if len(s) < 2 || s[0] != '#' {
-		return "", apperr.Invalid(fmt.Sprintf("channel %q must start with # and have a name", s))
-	}
-	if len(s) > MaxChannelLen {
-		return "", apperr.Invalid(fmt.Sprintf("channel %q is longer than %d characters", s, MaxChannelLen))
-	}
-	for i := 1; i < len(s); i++ {
-		if c := s[i]; c <= ' ' || c > '~' || c == ',' {
-			return "", apperr.Invalid(fmt.Sprintf("channel %q may only contain printable ASCII without spaces or commas", s))
-		}
+	if msg := config.CheckChannelName(s); msg != "" {
+		return "", apperr.Invalid(msg)
 	}
 	return strings.ToLower(s), nil
 }
@@ -132,6 +159,28 @@ type Feed struct {
 	Autojoin bool          `json:"autojoin"`
 	Rejoin   string        `json:"rejoin"`
 	Channels []FeedChannel `json:"channels"`
+	// Network are the network channels RoleServ keeps created and
+	// registered (config irc.channels).
+	Network FeedNetwork `json:"network"`
+}
+
+// FeedNetwork is the network part of the feed.
+type FeedNetwork struct {
+	// Founder is irc.channel_founder, else the username of the enabled
+	// account that has held the Owner role longest, else "" (RoleServ's
+	// own account).
+	Founder        string               `json:"founder"`
+	AutojoinGuests bool                 `json:"autojoin_guests"`
+	Channels       []FeedNetworkChannel `json:"channels"`
+}
+
+// FeedNetworkChannel is one network channel.
+type FeedNetworkChannel struct {
+	// Channel is the folded name, Name as written in the config.
+	Channel  string `json:"channel"`
+	Name     string `json:"name"`
+	Topic    string `json:"topic"`
+	Autojoin bool   `json:"autojoin"`
 }
 
 // Autojoin is GET /internal/v1/irc/autojoin for one account.
@@ -146,6 +195,11 @@ type Autojoin struct {
 	// Pending are the Channels RoleServ hasn't auto-joined the account to
 	// yet (rejoin: once joins only these).
 	Pending []string `json:"pending"`
+	// Network are the auto-join network channels (folded, sorted); they are
+	// always joined once, whatever Enabled and Rejoin say.
+	Network []string `json:"network"`
+	// NetworkPending are the Network channels not yet auto-joined.
+	NetworkPending []string `json:"network_pending"`
 }
 
 // MyChannel is one entry of GET /v1/me/channels.
@@ -202,7 +256,9 @@ func NewRoleChannelsService(d Deps) RoleChannelsServiceImpl {
 		d.Now = time.Now
 	}
 	if d.Settings == nil {
-		d.Settings = func() Settings { return Settings{Rejoin: config.RejoinLogin} }
+		d.Settings = func() Settings {
+			return Settings{Rejoin: config.RejoinLogin, Network: NetworkSettings{AutojoinGuests: true}}
+		}
 	}
 	return &RoleChannelsService{d: d}
 }
@@ -533,7 +589,18 @@ func (s *RoleChannelsService) Feed(ctx context.Context) (*Feed, error) {
 	for _, h := range holders {
 		byRole[h.RoleID] = append(byRole[h.RoleID], ergoFold(h.Username))
 	}
-	out := &Feed{Version: version, Autojoin: st.Autojoin, Rejoin: st.Rejoin, Channels: make([]FeedChannel, 0, len(access))}
+	founder := st.Network.Founder
+	if founder == "" {
+		if founder, err = s.d.Channels.EarliestOwner(ctx); err != nil {
+			return nil, err
+		}
+	}
+	network := FeedNetwork{Founder: founder, AutojoinGuests: st.Network.AutojoinGuests,
+		Channels: make([]FeedNetworkChannel, 0, len(st.Network.Channels))}
+	for _, c := range st.Network.Channels {
+		network.Channels = append(network.Channels, FeedNetworkChannel{Channel: c.Folded(), Name: c.Name, Topic: c.Topic, Autojoin: c.Autojoin})
+	}
+	out := &Feed{Version: version, Autojoin: st.Autojoin, Rejoin: st.Rejoin, Channels: make([]FeedChannel, 0, len(access)), Network: network}
 	for _, c := range access {
 		fc := FeedChannel{Channel: c.Channel, Private: c.Private, Accounts: []string{}}
 		if c.Private {
@@ -605,13 +672,23 @@ func (s *RoleChannelsService) autojoin(ctx context.Context, u *user.User) (*Auto
 	if err != nil {
 		return nil, err
 	}
-	pending := []string{}
-	for _, c := range channels {
+	network := []string{}
+	if !u.Disabled() {
+		network = st.Network.networkAutojoin()
+	}
+	return &Autojoin{Account: u.Username, Enabled: st.Autojoin, Rejoin: st.Rejoin, Channels: channels, Pending: notIn(channels, done),
+		Network: network, NetworkPending: notIn(network, done)}, nil
+}
+
+// notIn is list without the entries in done.
+func notIn(list, done []string) []string {
+	out := []string{}
+	for _, c := range list {
 		if !slices.Contains(done, c) {
-			pending = append(pending, c)
+			out = append(out, c)
 		}
 	}
-	return &Autojoin{Account: u.Username, Enabled: st.Autojoin, Rejoin: st.Rejoin, Channels: channels, Pending: pending}, nil
+	return out
 }
 
 func (s *RoleChannelsService) Autojoin(ctx context.Context, account string) (*Autojoin, error) {
@@ -633,6 +710,14 @@ func (s *RoleChannelsService) RecordAutojoined(ctx context.Context, account stri
 	keep, err := s.autojoinChannels(ctx, u)
 	if err != nil {
 		return nil, err
+	}
+	// Rows of auto-join network channels are kept too (a /part sticks).
+	if !u.Disabled() {
+		for _, c := range s.settings().Network.networkAutojoin() {
+			if !slices.Contains(keep, c) {
+				keep = append(keep, c)
+			}
+		}
 	}
 	var record []string
 	for _, c := range channels {

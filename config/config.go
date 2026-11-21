@@ -30,6 +30,7 @@ type Config struct {
 	TelemetryConfig TelemetryConfig
 	FilesConfig     FilesConfig
 	RolesConfig     RolesConfig
+	IRCConfig       IRCConfig
 	SocialConfig    SocialConfig
 }
 

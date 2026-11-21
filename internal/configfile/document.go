@@ -343,3 +343,24 @@ func (s *Section) KeyNode(key string) *yaml.Node {
 	}
 	return nil
 }
+
+// Mappings returns key's list of mappings as sections (paths such as
+// "irc.channels[0]"); set is false when absent.
+func (s *Section) Mappings(key string) (items []*Section, set bool, err error) {
+	n := s.Node(key)
+	if n == nil {
+		return nil, false, nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return nil, false, s.Errorf(key, "must be a list")
+	}
+	items = make([]*Section, 0, len(n.Content))
+	for i, item := range n.Content {
+		item = resolve(item)
+		if item.Kind != yaml.MappingNode {
+			return nil, false, At(item, "%s.%s[%d]: must be a mapping", s.path, key, i)
+		}
+		items = append(items, &Section{path: fmt.Sprintf("%s.%s[%d]", s.path, key, i), node: item})
+	}
+	return items, true, nil
+}

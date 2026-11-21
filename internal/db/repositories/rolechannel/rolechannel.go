@@ -66,6 +66,9 @@ type RoleChannelRepositoryImpl interface {
 	// RecordAutojoined adds channels to userID's auto-joined set and drops
 	// the entries not in keep.
 	RecordAutojoined(ctx context.Context, userID string, channels, keep []string, at time.Time) error
+	// EarliestOwner is the username of the enabled user who has held the
+	// built-in Owner role longest ("" when there is none).
+	EarliestOwner(ctx context.Context) (string, error)
 }
 
 type RoleChannelRepository struct {
@@ -175,4 +178,16 @@ func (r *RoleChannelRepository) RecordAutojoined(ctx context.Context, userID str
 		rows = append(rows, Autojoined{UserID: userID, Channel: c, JoinedAt: at})
 	}
 	return r.db.Conn(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+func (r *RoleChannelRepository) EarliestOwner(ctx context.Context) (string, error) {
+	var out []string
+	err := r.db.Conn(ctx).Model(&role.UserRole{}).
+		Joins("JOIN roles ON roles.id = user_roles.role_id AND roles.builtin = ?", role.BuiltinOwner).
+		Joins("JOIN users ON users.id = user_roles.user_id AND users.disabled_at IS NULL").
+		Order("user_roles.assigned_at, users.username_folded").Limit(1).Pluck("users.username", &out).Error
+	if err != nil || len(out) == 0 {
+		return "", err
+	}
+	return out[0], nil
 }

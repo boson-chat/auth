@@ -238,3 +238,70 @@ func TestRoleChannelsMigrationConstraints(t *testing.T) {
 		t.Fatal("role_channels accepted an unknown role")
 	}
 }
+
+// Network channels (config irc:): the feed's network part, the founder
+// fallback to the earliest Owner, once-only auto-join and GET /v1/config.
+func TestNetworkChannels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "boson.yaml")
+	writeConfig(t, path, "version: 1\n")
+	e := newEnv(t, func(c *config.Config) {
+		c.AppConfig.ConfigFile = path
+		c.AppConfig.ConfigPoll = 200 * time.Millisecond
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.app.StackConfig.Run(ctx)
+	firstAT := e.ownerToken("FirstBoss")
+	secondAT := e.ownerToken("secondboss")
+	e.roleToken("carol", "user")
+
+	r := e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
+	e.expect(r, 200, "")
+	if fmt.Sprint(r.body["network"]) != "map[autojoin_guests:true channels:[] founder:FirstBoss]" {
+		t.Fatalf("no network channels: %s", r.raw)
+	}
+	if c := e.api("GET", "/v1/config", nil); fmt.Sprint(c.body["channels"]) != "[]" {
+		t.Fatalf("config channels: %s", c.raw)
+	}
+	v0 := r.str("version")
+
+	writeConfig(t, path, "version: 1\nirc:\n  plaintext: true\n  channels:\n    - { name: \"#Lobby\", topic: Welcome, autojoin: true }\n    - { name: \"#help\" }\n")
+	eventually(t, "network channels in the feed", func() bool {
+		r = e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
+		return r.str("version") != v0
+	})
+	if fmt.Sprint(r.body["network"]) != "map[autojoin_guests:true channels:[map[autojoin:true channel:#lobby name:#Lobby topic:Welcome] map[autojoin:false channel:#help name:#help topic:]] founder:FirstBoss]" {
+		t.Fatalf("network: %s", r.raw)
+	}
+	if c := e.api("GET", "/v1/config", nil); fmt.Sprint(c.body["channels"]) != "[map[autojoin:true name:#Lobby topic:Welcome] map[autojoin:false name:#help topic:]]" {
+		t.Fatalf("config channels: %s", c.raw)
+	}
+	// The first owner losing Owner: the next one founds.
+	e.expect(e.api("PUT", "/v1/admin/users/"+e.userID(firstAT)+"/roles", map[string]any{"role_ids": []string{}}, bearer(secondAT)), 200, "")
+	if r := e.internalAPI("GET", "/internal/v1/irc/channel-access", nil); r.str("network", "founder") != "secondboss" {
+		t.Fatalf("next owner: %s", r.raw)
+	}
+
+	// Once-only, with roles.channels.autojoin off.
+	aj := e.internalAPI("GET", "/internal/v1/irc/autojoin?account=carol", nil)
+	if aj.body["enabled"] != false || fmt.Sprint(aj.body["network"]) != "[#lobby]" || fmt.Sprint(aj.body["network_pending"]) != "[#lobby]" {
+		t.Fatalf("autojoin: %s", aj.raw)
+	}
+	rec := e.internalAPI("POST", "/internal/v1/irc/autojoin", map[string]any{"account": "carol", "channels": []string{"#LOBBY"}})
+	e.expect(rec, 200, "")
+	if fmt.Sprint(rec.body["network_pending"]) != "[]" {
+		t.Fatalf("record: %s", rec.raw)
+	}
+	// Recording role channels later keeps the network row.
+	e.expect(e.internalAPI("POST", "/internal/v1/irc/autojoin", map[string]any{"account": "carol", "channels": []string{}}), 200, "")
+	if aj := e.internalAPI("GET", "/internal/v1/irc/autojoin?account=carol", nil); fmt.Sprint(aj.body["network_pending"]) != "[]" {
+		t.Fatalf("kept: %s", aj.raw)
+	}
+
+	// The founder from the file wins; guests can be turned off.
+	writeConfig(t, path, "version: 1\nirc:\n  channels: [{ name: \"#lobby\", autojoin: true }]\n  channel_founder: thelion\n  autojoin_guests: false\n")
+	eventually(t, "founder from the file", func() bool {
+		r := e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
+		return r.str("network", "founder") == "thelion" && r.body["network"].(map[string]any)["autojoin_guests"] == false
+	})
+}

@@ -6,6 +6,7 @@ import (
 	nethttp "net/http"
 	"time"
 
+	"github.com/boson-chat/auth/config"
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/services/account"
 	"github.com/boson-chat/auth/internal/services/idp"
@@ -111,6 +112,14 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if u != "" {
 		filesURL = &u
 	}
+	// The network channels (config irc.channels).
+	channels := h.Config.IRCConfig.Channels
+	if h.NetworkChannels != nil {
+		channels = h.NetworkChannels()
+	}
+	if channels == nil {
+		channels = []config.NetworkChannel{}
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"registration":               st.Registration,
 		"require_email_verification": st.RequireEmailVerification,
@@ -124,6 +133,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"sso_providers": providers,
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
+		"channels":      channels,
 	})
 }
 

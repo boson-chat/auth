@@ -33,6 +33,7 @@ type world struct {
 	channels   []*rolechannel.RoleChannel
 	private    map[string]bool
 	autojoined map[string][]string
+	owners     []string // user ids in Owner assignment order
 	version    int64
 }
 
@@ -192,6 +193,16 @@ func (c chanRepo) RecordAutojoined(_ context.Context, userID string, channels, k
 	}
 	c.w.autojoined[userID] = cur
 	return nil
+}
+
+// EarliestOwner: the first enabled holder of Owner in w.owners order.
+func (c chanRepo) EarliestOwner(context.Context) (string, error) {
+	for _, uid := range c.w.owners {
+		if u := c.w.users[uid]; u != nil && !u.Disabled() && slices.Contains(c.w.held[uid], role.OwnerID) {
+			return u.Username, nil
+		}
+	}
+	return "", nil
 }
 
 type tx struct{}
@@ -492,7 +503,99 @@ func TestSettingsDefault(t *testing.T) {
 	svc := rolechannels.NewRoleChannelsService(rolechannels.Deps{Channels: chanRepo{w}, Roles: roleRepo{w: w}, Users: userRepo{w: w},
 		Settings: func() rolechannels.Settings { return rolechannels.Settings{} }})
 	feed, err := svc.Feed(context.Background())
-	if err != nil || feed.Autojoin || feed.Rejoin != "login" || len(feed.Channels) != 0 {
+	if err != nil || feed.Autojoin || feed.Rejoin != "login" || len(feed.Channels) != 0 || feed.Network.Channels == nil {
 		t.Fatalf("%+v %v", feed, err)
+	}
+}
+
+func TestNetworkChannels(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.w.addUser("usr_owner2", "Second", role.OwnerID)
+	f.w.addUser("usr_owner1", "TheLion", role.OwnerID)
+	f.w.owners = []string{"usr_owner1", "usr_owner2"}
+	f.svc.SetForRole(ctx, "", "everyone", []rolechannels.ChannelInput{{Channel: "#general"}})
+
+	// no network channels: an empty list and guests on by default
+	feed, err := f.svc.Feed(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Network.Founder != "TheLion" || len(feed.Network.Channels) != 0 || feed.Network.Channels == nil {
+		t.Fatalf("network %+v", feed.Network)
+	}
+	v0, _ := f.svc.FeedVersion(ctx)
+
+	f.settings.Network = rolechannels.NetworkSettings{AutojoinGuests: true, Channels: []config.NetworkChannel{
+		{Name: "#Lobby", Topic: "Welcome", Autojoin: true}, {Name: "#help"}, {Name: "#news", Autojoin: true},
+	}}
+	v1, _ := f.svc.FeedVersion(ctx)
+	if v1 == v0 {
+		t.Fatal("version must change with the network channels")
+	}
+	feed, _ = f.svc.Feed(ctx)
+	if feed.Version != v1 || fmt.Sprint(feed.Network) != "{TheLion true [{#lobby #Lobby Welcome true} {#help #help  false} {#news #news  true}]}" {
+		t.Fatalf("feed %+v", feed)
+	}
+	for _, change := range []func(){
+		func() { f.settings.Network.Channels[0].Topic = "Hi" },
+		func() { f.settings.Network.Channels[1].Autojoin = true },
+		func() { f.settings.Network.Founder = "Second" },
+		func() { f.settings.Network.AutojoinGuests = false },
+	} {
+		before, _ := f.svc.FeedVersion(ctx)
+		change()
+		if after, _ := f.svc.FeedVersion(ctx); after == before {
+			t.Fatalf("version unchanged: %s", after)
+		}
+	}
+	if feed, _ = f.svc.Feed(ctx); feed.Network.Founder != "Second" || feed.Network.AutojoinGuests {
+		t.Fatalf("configured founder %+v", feed.Network)
+	}
+	// founder falls back to the next Owner, then to ""
+	f.settings.Network.Founder = ""
+	now := time.Now()
+	f.w.users["usr_owner1"].DisabledAt = &now
+	if feed, _ = f.svc.Feed(ctx); feed.Network.Founder != "Second" {
+		t.Fatalf("next owner %+v", feed.Network)
+	}
+	f.w.held["usr_owner2"] = nil
+	if feed, _ = f.svc.Feed(ctx); feed.Network.Founder != "" {
+		t.Fatalf("no owner %+v", feed.Network)
+	}
+
+	// auto-join: network channels are once-only, with the master switch off
+	f.settings.Network.Channels[1].Autojoin = false
+	aj, err := f.svc.Autojoin(ctx, "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aj.Enabled || fmt.Sprint(aj.Network) != "[#lobby #news]" || fmt.Sprint(aj.NetworkPending) != "[#lobby #news]" ||
+		fmt.Sprint(aj.Channels) != "[#general]" || fmt.Sprint(aj.Pending) != "[#general]" {
+		t.Fatalf("autojoin %+v", aj)
+	}
+	// recording accepts network channels (any case), not #help (no auto-join)
+	aj, err = f.svc.RecordAutojoined(ctx, "plain", []string{"#LOBBY", "#help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(aj.NetworkPending) != "[#news]" || fmt.Sprint(f.w.autojoined["usr_plain"]) != "[#lobby]" {
+		t.Fatalf("record %+v %v", aj, f.w.autojoined["usr_plain"])
+	}
+	// a later record of role channels keeps the network rows (a /part sticks)
+	aj, _ = f.svc.RecordAutojoined(ctx, "plain", []string{"#general"})
+	if fmt.Sprint(f.w.autojoined["usr_plain"]) != "[#lobby #general]" || fmt.Sprint(aj.NetworkPending) != "[#news]" || len(aj.Pending) != 0 {
+		t.Fatalf("keep %+v %v", aj, f.w.autojoined["usr_plain"])
+	}
+	// a channel that stops auto-joining is pruned at the next record
+	f.settings.Network.Channels[0].Autojoin = false
+	aj, _ = f.svc.RecordAutojoined(ctx, "plain", nil)
+	if fmt.Sprint(f.w.autojoined["usr_plain"]) != "[#general]" || fmt.Sprint(aj.Network) != "[#news]" {
+		t.Fatalf("prune %+v %v", aj, f.w.autojoined["usr_plain"])
+	}
+	// disabled accounts get nothing
+	f.w.users["usr_plain"].DisabledAt = &now
+	if aj, _ = f.svc.Autojoin(ctx, "plain"); len(aj.Network) != 0 || aj.NetworkPending == nil {
+		t.Fatalf("disabled %+v", aj)
 	}
 }
