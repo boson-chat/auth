@@ -534,7 +534,7 @@ func TestNetworkChannels(t *testing.T) {
 		t.Fatal("version must change with the network channels")
 	}
 	feed, _ = f.svc.Feed(ctx)
-	if feed.Version != v1 || fmt.Sprint(feed.Network) != "{TheLion true [{#lobby #Lobby Welcome true} {#help #help  false} {#news #news  true}]}" {
+	if feed.Version != v1 || fmt.Sprint(feed.Network) != "{TheLion true [{#lobby #Lobby Welcome true false []} {#help #help  false false []} {#news #news  true false []}]}" {
 		t.Fatalf("feed %+v", feed)
 	}
 	for _, change := range []func(){
@@ -597,5 +597,86 @@ func TestNetworkChannels(t *testing.T) {
 	f.w.users["usr_plain"].DisabledAt = &now
 	if aj, _ = f.svc.Autojoin(ctx, "plain"); len(aj.Network) != 0 || aj.NetworkPending == nil {
 		t.Fatalf("disabled %+v", aj)
+	}
+}
+
+func TestRestrictedNetworkChannels(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.w.addUser("usr_owner", "TheLion", role.OwnerID)
+	f.w.owners = []string{"usr_owner"}
+	// #staff is also a role channel: private on Mods, so Mods get in too
+	f.svc.SetForRole(ctx, "", modsID, []rolechannels.ChannelInput{{Channel: "#staff"}})
+	f.svc.SetAccess(ctx, "", []rolechannels.AccessInput{{Channel: "#staff", Private: true}})
+	// #general is a public role channel: the restriction makes it private
+	f.svc.SetForRole(ctx, "", "everyone", []rolechannels.ChannelInput{{Channel: "#general", Autojoin: no()}})
+
+	f.settings.Network = rolechannels.NetworkSettings{AutojoinGuests: true, Channels: []config.NetworkChannel{
+		{Name: "#Lobby", Autojoin: true},
+		{Name: "#Opers", Autojoin: true, Roles: []string{"owner", "ADMIN", "nobody"}},
+		{Name: "#staff", Autojoin: true, Roles: []string{"DJ"}},
+		{Name: "#members", Autojoin: true, Roles: []string{"Member"}},
+		{Name: "#general", Roles: []string{"Admin"}},
+		{Name: "#void", Autojoin: true, Roles: []string{"Gone Role"}},
+	}}
+	v0, _ := f.svc.FeedVersion(ctx)
+	feed, err := f.svc.Feed(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var net []string
+	for _, c := range feed.Network.Channels {
+		net = append(net, fmt.Sprintf("%s:%t:%v", c.Channel, c.Restricted, c.Roles))
+	}
+	if strings.Join(net, " ") != "#lobby:false:[] #opers:true:[Owner Admin] #staff:true:[DJ] #members:true:[Member] #general:true:[Admin] #void:true:[]" {
+		t.Fatal(net)
+	}
+	var chans []string
+	for _, c := range feed.Channels {
+		chans = append(chans, fmt.Sprintf("%s:%t:%t:%v", c.Channel, c.Private, c.Everyone, c.Accounts))
+	}
+	// role channels by name, then the restricted network channels only the network lists
+	want := "#general:true:false:[admin1] #staff:true:false:[both dj[x] moddy] #members:true:true:[] #opers:true:false:[admin1 thelion] #void:true:false:[]"
+	if strings.Join(chans, " ") != want {
+		t.Fatalf("channels\n got %s\nwant %s", strings.Join(chans, " "), want)
+	}
+
+	// auto-join: only the restricted channels the account may join
+	for account, want := range map[string]string{
+		"plain":   "[#lobby #members]",
+		"Admin1":  "[#lobby #members #opers]",
+		"DJ[x]":   "[#lobby #members #staff]",
+		"Moddy":   "[#lobby #members]",                     // a role channel's role gets in, but isn't auto-joined by the network
+		"TheLion": "[#lobby #members #opers #staff #void]", // the founder
+	} {
+		aj, err := f.svc.Autojoin(ctx, account)
+		if err != nil || fmt.Sprint(aj.Network) != want || fmt.Sprint(aj.NetworkPending) != want {
+			t.Errorf("%s: %+v %v, want %s", account, aj, err, want)
+		}
+	}
+	// a restricted channel can only be recorded while the account may join it;
+	// losing the role drops its row (regaining it joins once more)
+	aj, _ := f.svc.RecordAutojoined(ctx, "DJ[x]", []string{"#staff", "#opers"})
+	if fmt.Sprint(f.w.autojoined["usr_dj"]) != "[#staff]" || fmt.Sprint(aj.NetworkPending) != "[#lobby #members]" {
+		t.Fatalf("record %+v %v", aj, f.w.autojoined["usr_dj"])
+	}
+	f.w.held["usr_dj"] = nil
+	f.w.version++
+	aj, _ = f.svc.RecordAutojoined(ctx, "DJ[x]", nil)
+	if len(f.w.autojoined["usr_dj"]) != 0 || fmt.Sprint(aj.Network) != "[#lobby #members]" {
+		t.Fatalf("lost role %+v %v", aj, f.w.autojoined["usr_dj"])
+	}
+
+	// the roles are part of the version
+	f.settings.Network.Channels[1].Roles = []string{"Owner"}
+	if v1, _ := f.svc.FeedVersion(ctx); v1 == v0 {
+		t.Fatal("version must change with a channel's roles")
+	}
+	f.settings.Network.Channels[1].Roles = nil
+	feed, _ = f.svc.Feed(ctx)
+	for _, c := range feed.Channels {
+		if c.Channel == "#opers" {
+			t.Fatalf("an open network channel isn't private: %+v", c)
+		}
 	}
 }

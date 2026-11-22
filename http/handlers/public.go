@@ -117,8 +117,14 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if h.NetworkChannels != nil {
 		channels = h.NetworkChannels()
 	}
-	if channels == nil {
-		channels = []config.NetworkChannel{}
+	type publicChannel struct {
+		config.NetworkChannel
+		// Restricted: only some roles may join (which ones isn't public).
+		Restricted bool `json:"restricted,omitempty"`
+	}
+	public := make([]publicChannel, 0, len(channels))
+	for _, c := range channels {
+		public = append(public, publicChannel{NetworkChannel: c, Restricted: c.Restricted()})
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"registration":               st.Registration,
@@ -133,7 +139,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"sso_providers": providers,
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
-		"channels":      channels,
+		"channels":      public,
 	})
 }
 

@@ -468,8 +468,8 @@ All with `X-Internal-Token: $INTERNAL_API_TOKEN`.
   a hash of the [network channel](#network-channels) keys), so it changes
   whenever the feed or any account's auto-join list may have. The feed also
   has `network: {founder, autojoin_guests, channels: [{channel, name, topic,
-  autojoin}]}` (see below); a feed without it (older auth) means no network
-  channels.
+  autojoin, restricted, roles}]}` (see below); a feed without it (older
+  auth) means no network channels.
 - `GET /internal/v1/irc/autojoin?account=` → `{account, enabled, rejoin,
   channels, pending, network, network_pending}`: `channels` are every channel
   the account's roles (everyone's included) auto-join, `pending` those
@@ -493,6 +493,8 @@ irc:
     - name: "#lobby"            # same rules as role channels; matched case-insensitively
       topic: Welcome to Boson   # optional, ≤ 300 characters, one line
       autojoin: true            # default false
+    - name: "#opers"
+      roles: [Admin, Owner]     # optional, ≤ 32: only these roles may join (see below)
   channel_founder: thelion      # optional (IRC_CHANNEL_FOUNDER)
   autojoin_guests: true         # default true (IRC_AUTOJOIN_GUESTS)
 ```
@@ -512,8 +514,28 @@ irc:
   on again joins everyone once more.
 - With `autojoin_guests`, RoleServ also joins guests and unregistered
   clients to the auto-join channels on connect.
-- `GET /v1/config` lists them as `channels: [{name, topic, autojoin}]` (names
-  as written), so clients can show them.
+- **Who may join** (`roles`): absent or empty, everyone, guests included.
+  Otherwise only accounts holding one of the listed roles. Roles are named
+  as in the admin panel, matched case-insensitively to a role's name or
+  slug (`Chat Helper` or `chat-helper`); `Member`, the built-in role every
+  account has, means any signed-in account but no guests. **Guests** are
+  only ever let into open channels: there is no "guests" role. A name no
+  role has lets nobody in (renaming a role means updating the list), so a
+  list where no name matches leaves the channel to the founder and opers.
+  The founder of the network channels and IRC operators with the `sajoin`
+  capability always get in. In the feed, a restricted channel is also a
+  private entry of `channels` (`everyone` when `Member` is listed, else
+  `accounts` = the enabled holders of the roles); a private role channel
+  of the same name adds its roles' members, a public one becomes private.
+  RoleServ enforces it (stack `docs/irc-channels.md`), including removing
+  people who lose access. The network entry gets `restricted: true` and
+  `roles`: the matched roles' names, most senior first. Auto-join (and
+  `network`/`network_pending` in the auto-join API) skips restricted
+  channels the account may not join; losing access drops the account's
+  auto-join row, so getting access back joins it once more.
+- `GET /v1/config` lists them as `channels: [{name, topic, autojoin,
+  restricted?}]` (names as written), so clients can show them; which roles
+  a restricted channel admits isn't public.
 - An invalid list (bad or duplicate name, topic too long, more than 100)
   keeps the last good config, like any other key. No migration:
   `irc_autojoined` stores the network channels' rows too.

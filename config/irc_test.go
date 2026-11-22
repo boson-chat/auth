@@ -24,7 +24,7 @@ irc:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !f.IRCChannelsSet || fmt.Sprint(f.IRCChannels) != "[{#Lobby Welcome to Boson true} {#help  false}]" {
+	if !f.IRCChannelsSet || fmt.Sprint(f.IRCChannels) != "[{#Lobby Welcome to Boson true []} {#help  false []}]" {
 		t.Fatalf("%+v", f.IRCChannels)
 	}
 	if *f.IRCChannelFounder != "thelion" || *f.IRCAutojoinGuests {
@@ -79,6 +79,11 @@ func TestNetworkChannelsValidation(t *testing.T) {
 		{"irc: { channel_founder: \"no spaces\" }", "irc.channel_founder: must be an account name"},
 		{"irc: { channel_founder: " + strings.Repeat("a", 31) + " }", "must be an account name"},
 		{"irc: { autojoin_guests: maybe }", "irc.autojoin_guests: must be true or false"},
+		{"irc: { channels: [{ name: \"#a\", roles: { admin: true } }] }", "irc.channels[0].roles: must be a list of strings"},
+		{"irc: { channels: [{ name: \"#a\", roles: [[Admin]] }] }", "every item must be a string"},
+		{"irc: { channels: [{ name: \"#a\", roles: [\"Admin!\"] }] }", "irc.channels[0].roles: role \"Admin!\" may only contain letters"},
+		{"irc: { channels: [{ name: \"#a\", roles: [\"" + strings.Repeat("x", 33) + "\"] }] }", "must be 1-32 characters"},
+		{"irc: { channels: [{ name: \"#a\", roles: [\" \"] }] }", "must be 1-32 characters"},
 		{strings.TrimPrefix(many, "version: 1\n"), "at most 100 network channels"},
 	} {
 		_, err := loadFile(t, "version: 1\n"+tc.src+"\n")
@@ -106,7 +111,7 @@ func TestExportIRC(t *testing.T) {
 	if strings.Contains(string(out), "irc:") {
 		t.Fatalf("defaults aren't exported:\n%s", out)
 	}
-	env.IRCConfig = IRCConfig{ChannelFounder: "thelion", Channels: []NetworkChannel{{Name: "#Lobby", Topic: "Hi", Autojoin: true}, {Name: "#help"}}}
+	env.IRCConfig = IRCConfig{ChannelFounder: "thelion", Channels: []NetworkChannel{{Name: "#Lobby", Topic: "Hi", Autojoin: true}, {Name: "#help", Roles: []string{"Admin", "Chat Helper"}}}}
 	out, err = ExportFile(env, false)
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +125,42 @@ func TestExportIRC(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	got := (Config{}).WithFile(f).IRCConfig
-	if fmt.Sprint(got) != "{[{#Lobby Hi true} {#help  false}] thelion false}" {
+	if fmt.Sprint(got) != "{[{#Lobby Hi true []} {#help  false [Admin Chat Helper]}] thelion false}" {
 		t.Fatalf("round trip %+v\n%s", got, out)
+	}
+}
+
+func TestNetworkChannelRoles(t *testing.T) {
+	f, err := loadFile(t, `version: 1
+irc:
+  channels:
+    - name: "#opers"
+      roles: [ Admin, " Owner ", admin ]   # trimmed, de-duplicated case-insensitively
+    - name: "#staff"
+      roles: Chat Helper                   # one role as a string
+    - name: "#lobby"
+      roles:                               # null: everyone
+    - name: "#news"
+      roles: []
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprint(f.IRCChannels)
+	if got != "[{#opers  false [Admin Owner]} {#staff  false [Chat Helper]} {#lobby  false []} {#news  false []}]" {
+		t.Fatal(got)
+	}
+	if !f.IRCChannels[0].Restricted() || f.IRCChannels[2].Restricted() || f.IRCChannels[3].Restricted() || len(f.Unknown) != 0 {
+		t.Fatalf("%+v %v", f.IRCChannels, f.Unknown)
+	}
+	if m := fmt.Sprint(f.Flatten()[KeyIRCChannels]); m != "[map[autojoin:false name:#opers roles:[Admin Owner] topic:] map[autojoin:false name:#staff roles:[Chat Helper] topic:] map[autojoin:false name:#lobby topic:] map[autojoin:false name:#news topic:]]" {
+		t.Fatal(m)
+	}
+	many := make([]string, MaxChannelRoles+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("r%d", i)
+	}
+	if _, err := loadFile(t, "version: 1\nirc: { channels: [{ name: \"#a\", roles: ["+strings.Join(many, ", ")+"] }] }\n"); err == nil || !strings.Contains(err.Error(), "at most 32 roles") {
+		t.Fatal(err)
 	}
 }
