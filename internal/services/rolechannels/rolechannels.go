@@ -576,11 +576,19 @@ func (s *RoleChannelsService) SetAccess(ctx context.Context, actorID string, in 
 }
 
 func (s *RoleChannelsService) FeedVersion(ctx context.Context) (string, error) {
+	return s.feedVersion(ctx, s.settings())
+}
+
+// feedVersion is the version of a feed built from st: the settings part
+// must come from the same snapshot as the feed's data, or a config reload
+// in between yields a new version with old data (and RoleServ, caching the
+// ETag, wouldn't fetch it again until its next full resync).
+func (s *RoleChannelsService) feedVersion(ctx context.Context, st Settings) (string, error) {
 	v, err := s.d.Roles.GrantsVersion(ctx)
 	if err != nil {
 		return "", err
 	}
-	return strconv.FormatInt(v, 10) + "." + s.settings().fingerprint(), nil
+	return strconv.FormatInt(v, 10) + "." + st.fingerprint(), nil
 }
 
 // ergoFold is Ergo's casefolding of an account name (casemapping: ascii).
@@ -589,7 +597,8 @@ func ergoFold(username string) string { return strings.ToLower(username) }
 func (s *RoleChannelsService) Feed(ctx context.Context) (*Feed, error) {
 	st := s.settings()
 	// The version is read first: the data that follows is at least as new.
-	version, err := s.FeedVersion(ctx)
+	// Its settings part is st's, the snapshot the feed is built from.
+	version, err := s.feedVersion(ctx, st)
 	if err != nil {
 		return nil, err
 	}
