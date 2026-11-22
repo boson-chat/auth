@@ -270,7 +270,7 @@ func TestNetworkChannels(t *testing.T) {
 	writeConfig(t, path, "version: 1\nirc:\n  plaintext: true\n  channels:\n    - { name: \"#Lobby\", topic: Welcome, autojoin: true }\n    - { name: \"#help\" }\n")
 	eventually(t, "network channels in the feed", func() bool {
 		r = e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
-		return r.str("version") != v0
+		return r.str("version") != v0 && strings.Contains(string(r.raw), "#lobby")
 	})
 	if fmt.Sprint(r.body["network"]) != "map[autojoin_guests:true channels:[map[autojoin:true channel:#lobby name:#Lobby restricted:false roles:[] topic:Welcome] map[autojoin:false channel:#help name:#help restricted:false roles:[] topic:]] founder:FirstBoss]" {
 		t.Fatalf("network: %s", r.raw)

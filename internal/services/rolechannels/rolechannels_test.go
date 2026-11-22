@@ -680,3 +680,32 @@ func TestRestrictedNetworkChannels(t *testing.T) {
 		}
 	}
 }
+
+// A config reload between reading the settings and the version must not
+// give a new version with the old data.
+func TestFeedVersionMatchesItsSettings(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	old := rolechannels.Settings{Rejoin: config.RejoinLogin, Network: rolechannels.NetworkSettings{AutojoinGuests: true}}
+	reloaded := old
+	reloaded.Network.Channels = []config.NetworkChannel{{Name: "#lobby", Autojoin: true}}
+	calls := 0
+	svc := rolechannels.NewRoleChannelsService(rolechannels.Deps{
+		Channels: chanRepo{f.w}, Roles: roleRepo{w: f.w}, Users: userRepo{w: f.w}, Tx: tx{}, Audit: f.audit,
+		Settings: func() rolechannels.Settings {
+			calls++
+			if calls == 1 {
+				return old // the reload lands right after the feed's first read
+			}
+			return reloaded
+		},
+	})
+	feed, err := svc.Feed(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newVersion, _ := svc.FeedVersion(ctx)
+	if len(feed.Network.Channels) == 0 && feed.Version == newVersion {
+		t.Fatalf("version %s claims the reloaded settings but the feed has the old ones", feed.Version)
+	}
+}
