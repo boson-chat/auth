@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -461,12 +462,12 @@ func TestNetworkChannelsReloadLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	irc := f.svc.Effective().IRCConfig
-	if len(irc.Channels) != 1 || irc.Channels[0] != (config.NetworkChannel{Name: "#Lobby", Topic: "Hi", Autojoin: true}) || irc.ChannelFounder != "thelion" {
+	if len(irc.Channels) != 1 || !reflect.DeepEqual(irc.Channels[0], config.NetworkChannel{Name: "#Lobby", Topic: "Hi", Autojoin: true}) || irc.ChannelFounder != "thelion" {
 		t.Fatalf("%+v", irc)
 	}
-	write(t, f.path, "version: 1\nirc:\n  channels: [{ name: \"#Lobby\", autojoin: true }, { name: \"#help\" }]\n  autojoin_guests: false\n")
+	write(t, f.path, "version: 1\nirc:\n  channels: [{ name: \"#Lobby\", autojoin: true }, { name: \"#help\", roles: [Admin] }]\n  autojoin_guests: false\n")
 	f.svc.Check(ctx)
-	if irc = f.svc.Effective().IRCConfig; len(irc.Channels) != 2 || irc.Channels[0].Topic != "" || irc.ChannelFounder != "" || irc.AutojoinGuests {
+	if irc = f.svc.Effective().IRCConfig; len(irc.Channels) != 2 || irc.Channels[0].Topic != "" || !irc.Channels[1].Restricted() || irc.ChannelFounder != "" || irc.AutojoinGuests {
 		t.Fatalf("reloaded %+v", irc)
 	}
 	if got := strings.Join(f.audit.metas[0]["changed"].([]string), ","); got != "irc.autojoin_guests,irc.channel_founder,irc.channels" {

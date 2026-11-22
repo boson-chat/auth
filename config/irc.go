@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -19,6 +20,8 @@ import (
 //	    - name: "#lobby"
 //	      topic: "Welcome to Boson" # optional, at most 300 characters
 //	      autojoin: true            # default false
+//	    - name: "#opers"
+//	      roles: [Admin, Owner]     # optional: only these roles may join
 //	  channel_founder: thelion      # optional; default: the earliest Owner
 //	  autojoin_guests: true         # default true
 
@@ -29,6 +32,10 @@ const (
 	MaxChannelTopicLen = 300
 	// MaxChannelNameLen is Ergo's default channel length limit.
 	MaxChannelNameLen = 64
+	// MaxChannelRoles bounds a network channel's roles list.
+	MaxChannelRoles = 32
+	// MaxRoleNameLen is the longest role name (auth's roles).
+	MaxRoleNameLen = 32
 )
 
 // Keys of irc: in the file.
@@ -45,10 +52,31 @@ type NetworkChannel struct {
 	Name     string `json:"name"`
 	Topic    string `json:"topic"`
 	Autojoin bool   `json:"autojoin"`
+	// Roles, when not empty, are the only roles whose members may join
+	// (role names as written, matched case-insensitively to a role's name
+	// or slug; "Member" is every account). Empty: everyone, guests too.
+	Roles []string `json:"-"`
 }
 
 // Folded is the channel name as Ergo (casemapping: ascii) folds it.
 func (c NetworkChannel) Folded() string { return strings.ToLower(c.Name) }
+
+// Restricted: only some roles may join.
+func (c NetworkChannel) Restricted() bool { return len(c.Roles) > 0 }
+
+// CheckRoleName returns why s can't be a role name ("" when it can): 1..32
+// letters, digits, spaces, - and _ (auth's role names).
+func CheckRoleName(s string) string {
+	if s == "" || len(s) > MaxRoleNameLen {
+		return fmt.Sprintf("role %q must be 1-%d characters", s, MaxRoleNameLen)
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == ' ' || c == '-' || c == '_') {
+			return fmt.Sprintf("role %q may only contain letters, digits, spaces, - and _", s)
+		}
+	}
+	return ""
+}
 
 // IRCConfig is the irc: keys auth reads from the stack config file.
 type IRCConfig struct {
@@ -143,7 +171,25 @@ func loadIRC(doc *configfile.Document, f *FileConfig) error {
 				return err
 			}
 			c.Autojoin = aj != nil && *aj
-			f.Unknown = append(f.Unknown, it.Unknown("name", "topic", "autojoin")...)
+			var roles []string
+			if n := it.Node("roles"); n != nil && !(n.Kind == yaml.ScalarNode && n.Tag == "!!null") {
+				if roles, _, err = it.Strings("roles"); err != nil {
+					return err
+				}
+			}
+			if len(roles) > MaxChannelRoles {
+				return it.Errorf("roles", "at most %d roles, got %d", MaxChannelRoles, len(roles))
+			}
+			for _, r := range roles {
+				r = strings.TrimSpace(r)
+				if msg := CheckRoleName(r); msg != "" {
+					return it.Errorf("roles", "%s", msg)
+				}
+				if !slices.ContainsFunc(c.Roles, func(x string) bool { return strings.EqualFold(x, r) }) {
+					c.Roles = append(c.Roles, r)
+				}
+			}
+			f.Unknown = append(f.Unknown, it.Unknown("name", "topic", "autojoin", "roles")...)
 			list = append(list, c)
 		}
 		f.IRCChannels, f.IRCChannelsSet = list, true
@@ -180,7 +226,15 @@ func (f FileConfig) flattenIRC(m map[string]any) {
 	if f.IRCChannelsSet {
 		list := make([]any, 0, len(f.IRCChannels))
 		for _, c := range f.IRCChannels {
-			list = append(list, map[string]any{"name": c.Name, "topic": c.Topic, "autojoin": c.Autojoin})
+			item := map[string]any{"name": c.Name, "topic": c.Topic, "autojoin": c.Autojoin}
+			if c.Restricted() {
+				roles := make([]any, 0, len(c.Roles))
+				for _, r := range c.Roles {
+					roles = append(roles, r)
+				}
+				item["roles"] = roles
+			}
+			list = append(list, item)
 		}
 		m[KeyIRCChannels] = list
 	}
@@ -217,6 +271,13 @@ func exportIRC(c IRCConfig) []any {
 				kv = append(kv, "topic", ch.Topic)
 			}
 			kv = append(kv, "autojoin", ch.Autojoin)
+			if ch.Restricted() {
+				roles := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+				for _, r := range ch.Roles {
+					roles.Content = append(roles.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: r})
+				}
+				kv = append(kv, "roles", roles)
+			}
 			seq.Content = append(seq.Content, mapping(kv...))
 		}
 		out = append(out, "channels", seq)

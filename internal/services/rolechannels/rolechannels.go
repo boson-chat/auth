@@ -76,21 +76,42 @@ func (s Settings) fingerprint() string {
 		fmt.Fprintf(h, "%q %t", n.Founder, n.AutojoinGuests)
 		for _, c := range n.Channels {
 			fmt.Fprintf(h, " %q %q %t", c.Name, c.Topic, c.Autojoin)
+			if c.Restricted() {
+				fmt.Fprintf(h, " roles%q", c.Roles)
+			}
 		}
 		return a + s.Rejoin + "." + hex.EncodeToString(h.Sum(nil))[:16]
 	}
 	return a + s.Rejoin
 }
 
-// networkAutojoin are the folded auto-join network channels, sorted.
-func (n NetworkSettings) networkAutojoin() []string {
+// networkAutojoin are the folded auto-join network channels, sorted; only
+// those may(channel) allows.
+func (n NetworkSettings) networkAutojoin(may func(config.NetworkChannel) bool) []string {
 	out := []string{}
 	for _, c := range n.Channels {
-		if f := c.Folded(); c.Autojoin && !slices.Contains(out, f) {
+		if f := c.Folded(); c.Autojoin && !slices.Contains(out, f) && (may == nil || may(c)) {
 			out = append(out, f)
 		}
 	}
 	slices.Sort(out)
+	return out
+}
+
+// resolveRoles are the roles names refers to (a role's name or slug,
+// case-insensitively), in rs's order (most senior first). Names no role
+// has are left out: nobody gets in through them.
+func resolveRoles(rs []*role.Role, names []string) []*role.Role {
+	var out []*role.Role
+	for _, r := range rs {
+		for _, n := range names {
+			n = strings.TrimSpace(n)
+			if strings.EqualFold(n, r.Name) || strings.EqualFold(n, r.Slug) || strings.EqualFold(roles.Slug(n), r.Slug) {
+				out = append(out, r)
+				break
+			}
+		}
+	}
 	return out
 }
 
@@ -181,6 +202,13 @@ type FeedNetworkChannel struct {
 	Name     string `json:"name"`
 	Topic    string `json:"topic"`
 	Autojoin bool   `json:"autojoin"`
+	// Restricted: only members of Roles may join (the channel is also in
+	// the feed's channels as a private one). Roles are the names of the
+	// existing roles the config lists, most senior first ("Member" = every
+	// account); empty when none of them exists (then only opers and the
+	// founder get in).
+	Restricted bool     `json:"restricted"`
+	Roles      []string `json:"roles"`
 }
 
 // Autojoin is GET /internal/v1/irc/autojoin for one account.
@@ -597,8 +625,42 @@ func (s *RoleChannelsService) Feed(ctx context.Context) (*Feed, error) {
 	}
 	network := FeedNetwork{Founder: founder, AutojoinGuests: st.Network.AutojoinGuests,
 		Channels: make([]FeedNetworkChannel, 0, len(st.Network.Channels))}
+	// Restricted network channels: their roles' enabled holders.
+	restricted := map[string]FeedChannel{}
+	var all []*role.Role
 	for _, c := range st.Network.Channels {
-		network.Channels = append(network.Channels, FeedNetworkChannel{Channel: c.Folded(), Name: c.Name, Topic: c.Topic, Autojoin: c.Autojoin})
+		fc := FeedNetworkChannel{Channel: c.Folded(), Name: c.Name, Topic: c.Topic, Autojoin: c.Autojoin, Roles: []string{}}
+		if c.Restricted() {
+			if all == nil {
+				if all, err = s.d.Roles.List(ctx); err != nil {
+					return nil, err
+				}
+			}
+			fc.Restricted = true
+			access := FeedChannel{Channel: fc.Channel, Private: true, Accounts: []string{}}
+			var ids []string
+			for _, r := range resolveRoles(all, c.Roles) {
+				fc.Roles = append(fc.Roles, r.Name)
+				if r.Is(role.BuiltinMember) {
+					access.Everyone = true
+				} else {
+					ids = append(ids, r.ID)
+				}
+			}
+			if !access.Everyone && len(ids) > 0 {
+				hs, err := s.d.Channels.EnabledHolders(ctx, ids)
+				if err != nil {
+					return nil, err
+				}
+				for _, h := range hs {
+					if a := ergoFold(h.Username); !slices.Contains(access.Accounts, a) {
+						access.Accounts = append(access.Accounts, a)
+					}
+				}
+			}
+			restricted[fc.Channel] = access
+		}
+		network.Channels = append(network.Channels, fc)
 	}
 	out := &Feed{Version: version, Autojoin: st.Autojoin, Rejoin: st.Rejoin, Channels: make([]FeedChannel, 0, len(access)), Network: network}
 	for _, c := range access {
@@ -622,7 +684,45 @@ func (s *RoleChannelsService) Feed(ctx context.Context) (*Feed, error) {
 		}
 		out.Channels = append(out.Channels, fc)
 	}
+	mergeRestricted(out, restricted)
 	return out, nil
+}
+
+// mergeRestricted puts the restricted network channels into the feed's
+// channels.
+func mergeRestricted(out *Feed, restricted map[string]FeedChannel) {
+	// A restricted network channel is private: its roles' members get
+	// in, plus those of the roles a private role channel of the same
+	// name lists (a public one is made private).
+	for i, c := range out.Channels {
+		if r, ok := restricted[c.Channel]; ok {
+			if c.Private {
+				r.Everyone = r.Everyone || c.Everyone
+				for _, a := range c.Accounts {
+					if !slices.Contains(r.Accounts, a) {
+						r.Accounts = append(r.Accounts, a)
+					}
+				}
+			}
+			out.Channels[i] = r
+			delete(restricted, c.Channel)
+		}
+	}
+	names := make([]string, 0, len(restricted))
+	for ch := range restricted {
+		names = append(names, ch)
+	}
+	slices.Sort(names)
+	for _, ch := range names {
+		out.Channels = append(out.Channels, restricted[ch])
+	}
+	for i := range out.Channels {
+		if c := &out.Channels[i]; c.Everyone {
+			c.Accounts = []string{}
+		} else {
+			slices.Sort(c.Accounts)
+		}
+	}
 }
 
 // userByAccount finds an account by name (RFC 1459 folding, like logins).
@@ -672,12 +772,64 @@ func (s *RoleChannelsService) autojoin(ctx context.Context, u *user.User) (*Auto
 	if err != nil {
 		return nil, err
 	}
-	network := []string{}
-	if !u.Disabled() {
-		network = st.Network.networkAutojoin()
+	network, err := s.networkAutojoinFor(ctx, st.Network, u)
+	if err != nil {
+		return nil, err
 	}
 	return &Autojoin{Account: u.Username, Enabled: st.Autojoin, Rejoin: st.Rejoin, Channels: channels, Pending: notIn(channels, done),
 		Network: network, NetworkPending: notIn(network, done)}, nil
+}
+
+// networkAutojoinFor are the auto-join network channels u may join: all of
+// them for an open channel; a restricted one only when u holds one of its
+// roles (Member: every account) or founds the network channels. None for a
+// disabled account.
+func (s *RoleChannelsService) networkAutojoinFor(ctx context.Context, n NetworkSettings, u *user.User) ([]string, error) {
+	if u.Disabled() {
+		return []string{}, nil
+	}
+	var mine, all []*role.Role
+	var founder string
+	loaded := false
+	var err error
+	load := func() error {
+		if loaded {
+			return nil
+		}
+		loaded = true
+		if mine, err = s.d.Roles.ForUser(ctx, u.ID); err != nil {
+			return err
+		}
+		if all, err = s.d.Roles.List(ctx); err != nil {
+			return err
+		}
+		if founder = n.Founder; founder == "" {
+			founder, err = s.d.Channels.EarliestOwner(ctx)
+		}
+		return err
+	}
+	var failed error
+	out := n.networkAutojoin(func(c config.NetworkChannel) bool {
+		if !c.Restricted() || failed != nil {
+			return failed == nil
+		}
+		if failed = load(); failed != nil {
+			return false
+		}
+		if founder != "" && nick.Fold(founder) == nick.Fold(u.Username) {
+			return true
+		}
+		for _, r := range resolveRoles(all, c.Roles) {
+			if slices.ContainsFunc(mine, func(m *role.Role) bool { return m.ID == r.ID }) {
+				return true
+			}
+		}
+		return false
+	})
+	if failed != nil {
+		return nil, failed
+	}
+	return out, nil
 }
 
 // notIn is list without the entries in done.
@@ -711,12 +863,15 @@ func (s *RoleChannelsService) RecordAutojoined(ctx context.Context, account stri
 	if err != nil {
 		return nil, err
 	}
-	// Rows of auto-join network channels are kept too (a /part sticks).
-	if !u.Disabled() {
-		for _, c := range s.settings().Network.networkAutojoin() {
-			if !slices.Contains(keep, c) {
-				keep = append(keep, c)
-			}
+	// Rows of auto-join network channels are kept too (a /part sticks),
+	// as long as the account may join them.
+	network, err := s.networkAutojoinFor(ctx, s.settings().Network, u)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range network {
+		if !slices.Contains(keep, c) {
+			keep = append(keep, c)
 		}
 	}
 	var record []string

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,6 +255,7 @@ func TestNetworkChannels(t *testing.T) {
 	firstAT := e.ownerToken("FirstBoss")
 	secondAT := e.ownerToken("secondboss")
 	e.roleToken("carol", "user")
+	e.roleToken("dave", "admin")
 
 	r := e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
 	e.expect(r, 200, "")
@@ -270,7 +272,7 @@ func TestNetworkChannels(t *testing.T) {
 		r = e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
 		return r.str("version") != v0
 	})
-	if fmt.Sprint(r.body["network"]) != "map[autojoin_guests:true channels:[map[autojoin:true channel:#lobby name:#Lobby topic:Welcome] map[autojoin:false channel:#help name:#help topic:]] founder:FirstBoss]" {
+	if fmt.Sprint(r.body["network"]) != "map[autojoin_guests:true channels:[map[autojoin:true channel:#lobby name:#Lobby restricted:false roles:[] topic:Welcome] map[autojoin:false channel:#help name:#help restricted:false roles:[] topic:]] founder:FirstBoss]" {
 		t.Fatalf("network: %s", r.raw)
 	}
 	if c := e.api("GET", "/v1/config", nil); fmt.Sprint(c.body["channels"]) != "[map[autojoin:true name:#Lobby topic:Welcome] map[autojoin:false name:#help topic:]]" {
@@ -304,4 +306,32 @@ func TestNetworkChannels(t *testing.T) {
 		r := e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
 		return r.str("network", "founder") == "thelion" && r.body["network"].(map[string]any)["autojoin_guests"] == false
 	})
+
+	// Restricted to roles: private in the feed with the roles' holders,
+	// auto-joined only by them, "restricted" on GET /v1/config.
+	writeConfig(t, path, "version: 1\nirc:\n  channels:\n    - { name: \"#lobby\", autojoin: true }\n    - { name: \"#Opers\", autojoin: true, roles: [Admin, owner] }\n")
+	eventually(t, "restricted channel in the feed", func() bool {
+		r = e.internalAPI("GET", "/internal/v1/irc/channel-access", nil)
+		return strings.Contains(string(r.raw), "#opers")
+	})
+	var opers map[string]any
+	for _, c := range r.list("channels") {
+		if c["channel"] == "#opers" {
+			opers = c
+		}
+	}
+	if fmt.Sprint(opers) != "map[accounts:[dave secondboss] channel:#opers everyone:false private:true]" {
+		t.Fatalf("restricted channel: %s", r.raw)
+	}
+	if !strings.Contains(string(r.raw), `"name":"#Opers","topic":"","autojoin":true,"restricted":true,"roles":["Owner","Admin"]`) {
+		t.Fatalf("network entry: %s", r.raw)
+	}
+	for account, want := range map[string]string{"carol": "[#lobby]", "dave": "[#lobby #opers]"} {
+		if aj := e.internalAPI("GET", "/internal/v1/irc/autojoin?account="+account, nil); fmt.Sprint(aj.body["network"]) != want {
+			t.Fatalf("%s autojoin: %s", account, aj.raw)
+		}
+	}
+	if c := e.api("GET", "/v1/config", nil); fmt.Sprint(c.body["channels"]) != "[map[autojoin:true name:#lobby topic:] map[autojoin:true name:#Opers restricted:true topic:]]" {
+		t.Fatalf("config channels: %s", c.raw)
+	}
 }
