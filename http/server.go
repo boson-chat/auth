@@ -250,6 +250,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		ReturnTo:        returnTo,
 		FilesURL:        func() string { return stackConfig.Effective().FilesConfig.URL() },
 		NetworkChannels: func() []config.NetworkChannel { return stackConfig.Effective().IRCConfig.Channels },
 		Ready: func(ctx context.Context) error {

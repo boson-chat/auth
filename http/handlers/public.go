@@ -148,6 +148,9 @@ type registerReq struct {
 	Email      string `json:"email"`
 	Password   string `json:"password"`
 	InviteCode string `json:"invite_code"`
+	// ReturnTo: where the verification link's page sends the user after
+	// verifying (dropped unless allowed, see verifyReturnTo).
+	ReturnTo string `json:"return_to"`
 }
 
 func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -161,6 +164,7 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	u, err := h.Account.Register(r.Context(), account.RegisterInput{
 		Username: req.Username, Email: req.Email, Password: req.Password, InviteCode: req.InviteCode,
+		ReturnTo: h.verifyReturnTo(req.ReturnTo),
 	})
 	if err != nil {
 		writeError(w, r, err)
@@ -182,8 +186,15 @@ type tokenReq struct {
 	Token string `json:"token"`
 }
 
+type verifyReq struct {
+	Token string `json:"token"`
+	// ReturnTo: the link's ?return_to=, checked again here (the link may
+	// have been edited).
+	ReturnTo string `json:"return_to"`
+}
+
 func (h *Handlers) verifyEmail(w nethttp.ResponseWriter, r *nethttp.Request) {
-	var req tokenReq
+	var req verifyReq
 	if err := decode(w, r, &req); err != nil {
 		writeError(w, r, err)
 		return
@@ -196,15 +207,24 @@ func (h *Handlers) verifyEmail(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{"user": toUser(u)})
+	out := map[string]any{"user": toUser(u)}
+	if to := h.verifiedRedirect(req.ReturnTo); to != "" {
+		out["redirect_to"] = to
+	}
+	writeJSON(w, nethttp.StatusOK, out)
 }
 
 type emailReq struct {
 	Email string `json:"email"`
 }
 
+type resendReq struct {
+	Email    string `json:"email"`
+	ReturnTo string `json:"return_to"` // as registerReq.ReturnTo
+}
+
 func (h *Handlers) resendVerification(w nethttp.ResponseWriter, r *nethttp.Request) {
-	var req emailReq
+	var req resendReq
 	if err := decodeOptional(w, r, &req); err != nil {
 		writeError(w, r, err)
 		return
@@ -228,7 +248,7 @@ func (h *Handlers) resendVerification(w nethttp.ResponseWriter, r *nethttp.Reque
 	if !h.Limits.allow(w, r, BucketVerify, key) {
 		return
 	}
-	if err := h.Account.ResendVerification(r.Context(), userID, req.Email); err != nil {
+	if err := h.Account.ResendVerification(r.Context(), userID, req.Email, h.verifyReturnTo(req.ReturnTo)); err != nil {
 		writeError(w, r, err)
 		return
 	}

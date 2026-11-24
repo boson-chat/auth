@@ -55,9 +55,12 @@ type Handlers struct {
 	// Social is friends, blocks, privacy and private calls (nil: off).
 	Social social.SocialServiceImpl
 	// Email serves the internal email preview / test endpoints.
-	Email  email.EmailServiceImpl
-	Limits *Limits
-	Config config.Config
+	Email email.EmailServiceImpl
+	// ReturnTo checks the verification page's return_to (the SSO policy:
+	// this site's web origins + SSO_RETURN_TO_ALLOWED). Nil: none allowed.
+	ReturnTo *sso.ReturnToPolicy
+	Limits   *Limits
+	Config   config.Config
 	// Ready reports whether dependencies (database) are reachable.
 	Ready func(ctx context.Context) error
 	// ConfigStatus reports the stack config file (nil: not configured).
