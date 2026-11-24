@@ -2,6 +2,7 @@ package integration
 
 import (
 	"database/sql"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -523,4 +524,60 @@ func TestImportedBcryptPasswordUpgradesOnLogin(t *testing.T) {
 		t.Fatalf("hash not upgraded: %q", hash)
 	}
 	e.expect(e.login("imported@example.com", "old supabase pw"), 200, "")
+}
+
+// return_to from the email request rides in the verification link and comes
+// back, re-validated, as redirect_to; anything not allowed falls back to
+// WEB_CLIENT_URL (or nothing).
+func TestVerifyEmailReturnTo(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.HTTPConfig.WebClientURL = "https://chat.integration.test/" })
+
+	e.expect(e.api("POST", "/v1/register", map[string]string{"username": "rose", "email": "rose@example.com", "password": pw,
+		"return_to": "https://app.integration.test/welcome?x=1"}), 201, "")
+	msg := e.mail.next(t)
+	if !strings.HasPrefix(msg.Link, "https://app.integration.test/verify-email?return_to=https%3A%2F%2Fapp.integration.test%2Fwelcome%3Fx%3D1#token=") {
+		t.Fatalf("link: %s", msg.Link)
+	}
+	u, _ := url.Parse(msg.Link)
+	r := e.api("POST", "/v1/email/verify", map[string]string{"token": tokenFromLink(t, msg.Link), "return_to": u.Query().Get("return_to")})
+	e.expect(r, 200, "")
+	if r.str("redirect_to") != "https://app.integration.test/welcome?x=1" {
+		t.Fatalf("redirect_to: %s", r.raw)
+	}
+
+	// A disallowed target never reaches the link; the page gets the web client.
+	e.expect(e.api("POST", "/v1/register", map[string]string{"username": "sam", "email": "sam@example.com", "password": pw,
+		"return_to": "https://evil.example.com/"}), 201, "")
+	msg = e.mail.next(t)
+	if strings.Contains(msg.Link, "return_to") || strings.Contains(msg.Link, "evil") {
+		t.Fatalf("link: %s", msg.Link)
+	}
+	// Resend carries return_to too (boson:// is in SSO_RETURN_TO_ALLOWED by default).
+	e.expect(e.api("POST", "/v1/email/resend", map[string]string{"email": "sam@example.com", "return_to": "boson://verified"}), 202, "")
+	msg = e.mail.next(t)
+	if !strings.Contains(msg.Link, "/verify-email?return_to=boson%3A%2F%2Fverified#token=") {
+		t.Fatalf("resend link: %s", msg.Link)
+	}
+	// An edited link's return_to is checked again.
+	r = e.api("POST", "/v1/email/verify", map[string]string{"token": tokenFromLink(t, msg.Link), "return_to": "https://evil.example.com/"})
+	e.expect(r, 200, "")
+	if r.str("redirect_to") != "https://chat.integration.test/" {
+		t.Fatalf("redirect_to: %s", r.raw)
+	}
+	// Errors carry no redirect.
+	r = e.api("POST", "/v1/email/verify", map[string]string{"token": tokenFromLink(t, msg.Link), "return_to": "boson://verified"})
+	e.expect(r, 400, "invalid_token")
+	if _, ok := r.body["redirect_to"]; ok {
+		t.Fatalf("error with redirect: %s", r.raw)
+	}
+}
+
+func TestVerifyEmailNoRedirect(t *testing.T) {
+	e := newEnv(t)
+	e.expect(e.api("POST", "/v1/register", map[string]string{"username": "tia", "email": "tia@example.com", "password": pw}), 201, "")
+	r := e.api("POST", "/v1/email/verify", map[string]string{"token": tokenFromLink(t, e.mail.next(t).Link)})
+	e.expect(r, 200, "")
+	if _, ok := r.body["redirect_to"]; ok {
+		t.Fatalf("redirect without return_to or WEB_CLIENT_URL: %s", r.raw)
+	}
 }

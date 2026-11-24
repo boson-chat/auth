@@ -139,3 +139,22 @@ func TestFilesConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWebClientURL(t *testing.T) {
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"chat.example.com", "javascript:alert(1)", "boson://open", "https://", "https://u@chat.example.com/", "https://chat.example.com/#x"} {
+		c.HTTPConfig.WebClientURL = bad
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "WEB_CLIENT_URL") {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	for _, ok := range []string{"", "https://chat.example.com/", "http://localhost:5173/app?x=1"} {
+		c.HTTPConfig.WebClientURL = ok
+		if err := c.Validate(); err != nil {
+			t.Fatalf("%q: %v", ok, err)
+		}
+	}
+}

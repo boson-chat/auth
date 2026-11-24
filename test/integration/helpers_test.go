@@ -79,8 +79,8 @@ func tokenFromLink(t *testing.T, link string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.RawQuery != "" {
-		t.Fatalf("token must be in the fragment, not the query: %s", link)
+	if q := u.Query(); q.Has("token") || (u.RawQuery != "" && (len(q) != 1 || !q.Has("return_to"))) {
+		t.Fatalf("token must be in the fragment, the query only return_to: %s", link)
 	}
 	v, _ := url.ParseQuery(u.Fragment)
 	tok := v.Get("token")

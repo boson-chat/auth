@@ -139,6 +139,11 @@ type HTTPConfig struct {
 	// Base URL for links in emails (verify / reset pages). Defaults to PUBLIC_URL,
 	// whose built-in /verify-email and /reset-password pages work without a web app.
 	AppURL string `env:"APP_URL"`
+	// Where the built-in /verify-email page sends the user after a
+	// successful verification when the email request named no return_to,
+	// e.g. the web client https://chat.example.com/. Empty: the page offers
+	// to open the desktop app (boson://) instead.
+	WebClientURL string `env:"WEB_CLIENT_URL"`
 	// Comma-separated CIDRs (or IPs) whose X-Forwarded-For is trusted.
 	TrustedProxies string `env:"TRUSTED_PROXIES"`
 	// Comma-separated origins allowed to call the API with credentials (CORS).
@@ -436,6 +441,11 @@ func (c Config) Validate() error {
 	if u := strings.TrimSpace(c.FilesConfig.PublicURL); u != "" {
 		if p, err := url.Parse(u); err != nil || (p.Scheme != "https" && p.Scheme != "http") || p.Host == "" || p.RawQuery != "" || p.Fragment != "" || p.User != nil {
 			return fmt.Errorf("FILES_PUBLIC_URL must be an http(s) URL such as https://files.example.com, got %q", u)
+		}
+	}
+	if u := strings.TrimSpace(c.HTTPConfig.WebClientURL); u != "" {
+		if p, err := url.Parse(u); err != nil || (p.Scheme != "https" && p.Scheme != "http") || p.Host == "" || p.Fragment != "" || p.User != nil {
+			return fmt.Errorf("WEB_CLIENT_URL must be an http(s) URL such as https://chat.example.com/, got %q", u)
 		}
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {

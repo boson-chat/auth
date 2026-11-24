@@ -75,7 +75,7 @@ func sendAll(s *EmailService) {
 	email := "a@example.com"
 	u := &user.User{ID: "usr_1", Username: "alice<b>", Email: &email}
 	ctx := context.Background()
-	s.SendVerification(ctx, u, "tok/1+2", 24*time.Hour)
+	s.SendVerification(ctx, u, "tok/1+2", 24*time.Hour, "")
 	s.SendPasswordReset(ctx, u, "tok/1+2", 30*time.Minute)
 	s.SendAccountSetup(ctx, u, "tok/1+2", 72*time.Hour)
 	s.Wait()
@@ -328,4 +328,16 @@ func TestReloadSwitchesBackToDefaults(t *testing.T) {
 
 func previewIn(name string, over *config.EmailTemplate) PreviewInput {
 	return PreviewInput{Template: name, Subject: over.Subject, Body: over.Body}
+}
+
+func TestVerifyLinkReturnTo(t *testing.T) {
+	s := newSvc(&capture{}, "", nil)
+	if got := s.verifyLink("tok/1+2", ""); got != "https://app.example.com/verify-email#token=tok%2F1%2B2" {
+		t.Fatalf("no return_to: %s", got)
+	}
+	got := s.verifyLink("tok/1+2", "https://chat.example.com/a?b=1&c=2#/x")
+	want := "https://app.example.com/verify-email?return_to=https%3A%2F%2Fchat.example.com%2Fa%3Fb%3D1%26c%3D2%23%2Fx#token=tok%2F1%2B2"
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
 }

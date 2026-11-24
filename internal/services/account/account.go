@@ -46,6 +46,9 @@ type RegisterInput struct {
 	Email      string
 	Password   string
 	InviteCode string
+	// ReturnTo ("" = none): a validated URL for the verification link's
+	// page to send the user back to.
+	ReturnTo string
 }
 
 type CreateUserInput struct {
@@ -66,7 +69,8 @@ type AccountServiceImpl interface {
 	// ResendVerification sends a new link to userID's address, or to the
 	// account with emailAddr. It reveals nothing: unknown, verified or
 	// disabled accounts are silently skipped.
-	ResendVerification(ctx context.Context, userID, emailAddr string) error
+	// returnTo as RegisterInput.ReturnTo.
+	ResendVerification(ctx context.Context, userID, emailAddr, returnTo string) error
 	// ForgotPassword emails a reset link to the stored address of the account
 	// with that email. It always returns nil to clients.
 	ForgotPassword(ctx context.Context, emailAddr string) error
@@ -243,7 +247,7 @@ func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*user.
 		}
 		return nil, err
 	}
-	s.Email.SendVerification(ctx, u, verifyToken, s.Config.EmailVerifyTTL)
+	s.Email.SendVerification(ctx, u, verifyToken, s.Config.EmailVerifyTTL, in.ReturnTo)
 	s.Metrics.Registration(ctx, metrics.OutcomeSuccess)
 	s.Audit.Record(ctx, u.ID, audit.EventRegister, nil)
 	return u, nil
@@ -368,7 +372,7 @@ func (s *AccountService) VerifyEmail(ctx context.Context, raw string) (*user.Use
 	return u, nil
 }
 
-func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAddr string) error {
+func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAddr, returnTo string) error {
 	var (
 		u   *user.User
 		err error
@@ -398,7 +402,7 @@ func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAd
 	if err != nil {
 		return err
 	}
-	s.Email.SendVerification(ctx, u, tok, s.Config.EmailVerifyTTL)
+	s.Email.SendVerification(ctx, u, tok, s.Config.EmailVerifyTTL, returnTo)
 	return nil
 }
 
@@ -494,7 +498,7 @@ func (s *AccountService) SendVerification(ctx context.Context, userID string) er
 	if err != nil {
 		return err
 	}
-	s.Email.SendVerification(ctx, u, tok, s.Config.EmailVerifyTTL)
+	s.Email.SendVerification(ctx, u, tok, s.Config.EmailVerifyTTL, "")
 	return nil
 }
 

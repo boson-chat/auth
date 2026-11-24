@@ -58,7 +58,10 @@ type EmailServiceImpl interface {
 	// SendVerification and SendPasswordReset send in the background so the
 	// response time does not depend on the mail server (or on whether an
 	// account exists). Wait blocks until queued sends finish.
-	SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration)
+	// returnTo ("" = none) is an already validated URL the verify page
+	// sends the user to afterwards; it rides in the link's query
+	// (?return_to=) and is checked again when the page posts it.
+	SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration, returnTo string)
 	SendPasswordReset(ctx context.Context, u *user.User, token string, ttl time.Duration)
 	// SendAccountSetup invites a user an admin created to choose a password
 	// (a reset-password token, opened on the same page).
@@ -192,6 +195,14 @@ func (s *EmailService) link(path, token string) string {
 	return s.opts.AppURL + path + "#token=" + url.QueryEscape(token)
 }
 
+// verifyLink is the verification link, with ?return_to= when given.
+func (s *EmailService) verifyLink(token, returnTo string) string {
+	if returnTo == "" {
+		return s.link(VerifyPath, token)
+	}
+	return s.opts.AppURL + VerifyPath + "?" + url.Values{"return_to": {returnTo}}.Encode() + "#token=" + url.QueryEscape(token)
+}
+
 func humanize(d time.Duration) string {
 	plural := func(n time.Duration, unit string) string {
 		if n == 1 {
@@ -211,8 +222,8 @@ func humanize(d time.Duration) string {
 	}
 }
 
-func (s *EmailService) SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration) {
-	s.sendUser(ctx, u, catalog[config.EmailVerification], s.link(VerifyPath, token), ttl)
+func (s *EmailService) SendVerification(ctx context.Context, u *user.User, token string, ttl time.Duration, returnTo string) {
+	s.sendUser(ctx, u, catalog[config.EmailVerification], s.verifyLink(token, returnTo), ttl)
 }
 
 func (s *EmailService) SendPasswordReset(ctx context.Context, u *user.User, token string, ttl time.Duration) {

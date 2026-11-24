@@ -62,9 +62,9 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
-| `POST /v1/register` | – | `{username, email, password, invite_code?}` → 201 `{user, email_verification_sent, email_verification_required}` |
-| `POST /v1/email/verify` | – | `{token}` → `{user}` |
-| `POST /v1/email/resend` | optional | `{email}` (or a bearer token) → 202, same response whether or not the account exists |
+| `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` |
+| `POST /v1/email/verify` | – | `{token, return_to?}` → `{user, redirect_to?}`: where the verify page sends the user next (see below) |
+| `POST /v1/email/resend` | optional | `{email, return_to?}` (or a bearer token) → 202, same response whether or not the account exists |
 | `POST /v1/login` | – | `{login, password, cookie?}` (`login` = username or email) → `{token_type, access_token, expires_in, refresh_token, refresh_expires_in, session_id, user}` |
 | `POST /v1/token/refresh` | – | `{refresh_token}` or the refresh cookie → same shape as login, with a **new** refresh token |
 | `POST /v1/logout` | bearer, or `{refresh_token}`/cookie | revokes the session → 204 |
@@ -89,6 +89,19 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/roles` | – | `{roles: [{id, name, color, position, hoist, mentionable}]}`; `ETag`/`If-None-Match`, cacheable, rate-limited ([roles](docs/roles.md#public-api)) |
 | `GET /v1/users/roles?username=a&username=b` | – | ≤ 100 names → `{users: {"a": ["rol_…"]}}` (visible roles only) |
 | `GET /verify-email`, `GET /reset-password` | – | built-in pages for the email links (used when `APP_URL` = `PUBLIC_URL`) |
+
+**After verifying.** A client may send `return_to` with `POST /v1/register`
+or `/v1/email/resend`: where the user should land once the link is opened
+(the web client's URL, or a `boson://…` link for the desktop app). It must
+pass the same check as SSO's `return_to` (this site's web origins, i.e.
+`APP_URL`, `PUBLIC_URL`, `CORS_ALLOWED_ORIGINS`, or an
+`SSO_RETURN_TO_ALLOWED` pattern); otherwise it is silently dropped. An
+allowed one rides in the link (`/verify-email?return_to=…#token=…`; email
+templates need no change, it is part of `{{link}}`), and the page posts it
+back with the token, where it is checked again. On success the response's
+`redirect_to` is that `return_to`, else `WEB_CLIENT_URL`, else absent; the
+built-in page shows a Continue button and goes there after 2.5 s, or, with no
+target, offers an "Open the Boson app" (`boson://open`) button.
 
 Admin: each endpoint needs a [permission](docs/roles.md#admin-endpoint--permission)
 (any one of those listed), checked against the database on every request.
@@ -490,6 +503,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `INTERNAL_ADDR` | `:8081` | internal listener (`/metrics`, `/internal/v1`) |
 | `PUBLIC_URL` | `http://localhost:8080` | external URL of this service; `jwks_uri` is built from it |
 | `APP_URL` | `PUBLIC_URL` | base of email links: `$APP_URL/verify-email#token=…`, `$APP_URL/reset-password#token=…` |
+| `WEB_CLIENT_URL` | – | where `/verify-email` sends the user after verifying when the request had no (allowed) `return_to`, e.g. `https://chat.example.com/`. Unset: the page offers an "Open the Boson app" (`boson://open`) button |
 | `TRUSTED_PROXIES` | – | comma-separated CIDRs/IPs whose `X-Forwarded-For` is honoured (e.g. the Caddy container network) |
 | `CORS_ALLOWED_ORIGINS` | origin of `APP_URL` | comma-separated origins allowed to make credentialed requests (*file*: `auth.cors_allowed_origins`) |
 | `COOKIE_SECURE` | `true` | set `false` only for plain-http dev |

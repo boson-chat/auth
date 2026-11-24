@@ -6,6 +6,8 @@ main { max-width: 26rem; margin: 12vh auto; padding: 0 16px; }
 h1 { font-size: 1.4rem; margin: 0 0 1rem; }
 label { display: block; margin: .8rem 0 .3rem; color: var(--muted); font-size: .9rem; }
 input { width: 100%; padding: .6rem .7rem; font: inherit; border: 1px solid var(--muted); border-radius: 6px; background: transparent; color: inherit; }
-button { margin-top: 1.2rem; padding: .6rem 1.2rem; font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+button, .button { margin-top: 1.2rem; padding: .6rem 1.2rem; font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+.button { display: inline-block; text-decoration: none; }
+.button.secondary { color: var(--accent); background: transparent; border: 1px solid var(--accent); }
 button:disabled { opacity: .6; cursor: default; }
 .error { color: var(--err); }
