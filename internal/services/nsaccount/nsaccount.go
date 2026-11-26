@@ -60,10 +60,12 @@ var (
 )
 
 // Provisioner hears about NickServ accounts as they sign in, e.g. to set
-// up the account in a bridge (evrd's managed mode) later. Errors are
-// logged and never block the sign-in.
+// up the account in the evrd bridge (internal/services/bridge) with its
+// services login. password is the NickServ password just verified: the
+// provisioner may hand it on (over the internal network) but must never
+// log or store it. Errors are logged and never block the sign-in.
 type Provisioner interface {
-	AccountSignedIn(ctx context.Context, u *user.User, account string) error
+	AccountSignedIn(ctx context.Context, u *user.User, account, password string) error
 }
 
 type Deps struct {
@@ -265,7 +267,7 @@ func (s *NickServAccountService) Authenticate(ctx context.Context, login, passwo
 		}
 	}
 	if s.Provisioner != nil {
-		if err := s.Provisioner.AccountSignedIn(ctx, u, acct.Name); err != nil {
+		if err := s.Provisioner.AccountSignedIn(ctx, u, acct.Name, password); err != nil {
 			logger.FromCtx(ctx).Warn().Err(err).Str("user_id", u.ID).Msg("nickserv: provisioner")
 		}
 	}

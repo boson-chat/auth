@@ -370,14 +370,17 @@ The fixture Dockerfiles and configs are meant to move to boson-chat/stack's
 package for the setup probe and for these tests); `TEST_NICKSERV_*`
 variables already let the tests point at other addresses.
 
-## Later: evrd
+## The evrd bridge
 
-Where a network lacks IRCv3, Boson fronts it with an evrd bridge. evrd's
-managed mode will get a provisioning API; auth will then create the evrd
-user for a NickServ account when it signs in. The hook is
-`nsaccount.Provisioner` (`AccountSignedIn(ctx, user, account)`), called after
-every successful NickServ sign-in; errors are logged and never block the
-sign-in. Nothing implements it yet.
+Where a network lacks IRCv3, Boson fronts it with an evrd bridge in managed
+mode. With `BRIDGE_API_URL` and `BRIDGE_TOKEN` set, auth gives each account
+its bridge account and, after every successful NickServ sign-in, hands the
+bridge the services login (account and the password just verified) through
+the `nsaccount.Provisioner` hook (`AccountSignedIn(ctx, user, account,
+password)`), so the bridge identifies the user to NickServ (SASL, or
+IDENTIFY with `NICKSERV_STRATEGY=identify` / `BRIDGE_NICKSERV_METHOD`). The
+password is sent over the internal network only and never logged or
+stored; errors never block the sign-in. See [bridge.md](bridge.md).
 
 ## Limitations
 

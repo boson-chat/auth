@@ -37,6 +37,8 @@ type Config struct {
 	// FederationConfig is Boson federated login (docs/federation.md).
 	FederationConfig    FederationConfig
 	FilesInternalConfig FilesInternalConfig
+	// BridgeConfig is the evrd bridge's accounts (docs/bridge.md).
+	BridgeConfig BridgeConfig
 }
 
 // SocialConfig is friends and private calls (docs/friends-calls.md).
@@ -466,6 +468,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("ACCOUNT_BACKEND must be local or nickserv, got %q", c.AccountsConfig.Backend)
 	}
 	if err := c.ValidateFederation(); err != nil {
+		return err
+	}
+	if err := c.BridgeConfig.Validate(); err != nil {
 		return err
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {

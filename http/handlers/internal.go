@@ -40,6 +40,7 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	mux.HandleFunc("GET /internal/v1/roles/{id}/members", h.internalOnly(h.adminRoleMembers))
 	mux.HandleFunc("GET /internal/v1/irc/grants", h.internalOnly(h.internalIRCGrants))
 	mux.HandleFunc("GET /internal/v1/irc/accounts/removed", h.internalOnly(h.internalRemovedAccounts))
+	h.registerBridge(mux)
 	h.registerInternalRoleChannels(mux)
 	h.registerActing(mux)
 	h.registerEmail(mux)

@@ -48,6 +48,8 @@ type Metrics struct {
 	passwordResets metric.Int64Counter
 	guestVoice     metric.Int64Counter
 	nickservCheck  metric.Int64Counter
+	bridgePushes   metric.Int64Counter
+	meter          metric.Meter
 }
 
 // New creates the instruments on mp.
@@ -72,6 +74,8 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		passwordResets: c("auth.password.resets", "Password reset completions by outcome."),
 		guestVoice:     c("auth.voice.guest_tokens", "Guest voice token requests by outcome."),
 		nickservCheck:  c("auth.nickserv.checks", "NickServ password checks by strategy and outcome."),
+		bridgePushes:   c("auth.bridge.pushes", "Calls to the evrd bridge's managed API by operation and outcome."),
+		meter:          m,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -123,4 +127,38 @@ func (m *Metrics) GuestVoiceToken(ctx context.Context, o string) {
 // NickServCheck counts one NickServ verification (strategy: anope_rpc, ...).
 func (m *Metrics) NickServCheck(ctx context.Context, strategy, o string) {
 	m.nickservCheck.Add(ctx, 1, metric.WithAttributes(attribute.String("strategy", strategy), attribute.String("outcome", o)))
+}
+
+// Bridge push operations (BridgePush).
+const (
+	BridgeOpPut         = "put"
+	BridgeOpDelete      = "delete"
+	BridgeOpCredentials = "credentials"
+	BridgeOpReconcile   = "reconcile"
+)
+
+// OutcomeDropped: a NickServ login the bridge never got (retries ran out;
+// the next sign-in sends it again).
+const OutcomeDropped = "dropped"
+
+// BridgePush counts one push to the evrd bridge (op: put, delete,
+// credentials, reconcile; outcome: success, error, dropped).
+func (m *Metrics) BridgePush(ctx context.Context, op, o string) {
+	m.bridgePushes.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op), attribute.String("outcome", o)))
+}
+
+// ObserveBridgeOutbox reports the bridge outbox's pending changes
+// (auth.bridge.outbox.pending) through pending, read at each collection.
+func (m *Metrics) ObserveBridgeOutbox(pending func(ctx context.Context) (int64, error)) error {
+	_, err := m.meter.Int64ObservableGauge("auth.bridge.outbox.pending",
+		metric.WithDescription("Account changes waiting to reach the evrd bridge."), metric.WithUnit("{change}"),
+		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
+			n, err := pending(ctx)
+			if err != nil {
+				return nil // no point failing the whole collection
+			}
+			o.Observe(n)
+			return nil
+		}))
+	return err
 }

@@ -38,6 +38,7 @@ import (
 	auditsvc "github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/authn"
 	"github.com/boson-chat/auth/internal/services/branding"
+	"github.com/boson-chat/auth/internal/services/bridge"
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/federation"
 	"github.com/boson-chat/auth/internal/services/idp"
@@ -57,6 +58,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/stackconfig"
 	"github.com/boson-chat/auth/internal/services/token"
 	"github.com/boson-chat/auth/metrics"
+	"github.com/rs/zerolog"
 )
 
 // Options override dependencies (tests, CLI).
@@ -72,6 +74,13 @@ type Options struct {
 	FederationHTTPClient *nethttp.Client
 	// FilesHTTPClient calls the files service's internal API (tests).
 	FilesHTTPClient *nethttp.Client
+	// BridgeHTTPClient calls the evrd bridge's managed API (tests).
+	BridgeHTTPClient *nethttp.Client
+	// BridgeLog is the bridge service's logger (tests; nil: the base logger).
+	BridgeLog *zerolog.Logger
+	// BridgeCredentialRetries are the waits between NickServ login pushes
+	// (tests; nil: bridge.DefaultCredentialRetries).
+	BridgeCredentialRetries []time.Duration
 }
 
 // App is the wired service.
@@ -100,7 +109,9 @@ type App struct {
 	// NickServ is the NickServ account backend (nil: local accounts).
 	NickServ nsaccount.NickServAccountServiceImpl
 	// Federation is Boson federated login.
-	Federation    federation.FederationServiceImpl
+	Federation federation.FederationServiceImpl
+	// Bridge provisions the evrd bridge's accounts (nil: BRIDGE_API_URL unset).
+	Bridge        *bridge.Service
 	nickServGuard *nickserv.Guard
 	limits        *handlers.Limits
 }
@@ -196,6 +207,24 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		SetupTTL: cfg.AccountConfig.AccountSetupTTL, InviteTTL: 7 * 24 * time.Hour, Audit: auditService,
 	})
 	inviteService := invitesvc.NewInviteService(inviteRepo, opts.Now)
+	// The evrd bridge's accounts (docs/bridge.md). Off, its triggers queue nothing.
+	bridgeStore := bridge.NewStore(database)
+	var bridgeService *bridge.Service
+	if bc := cfg.BridgeConfig; bc.Enabled() {
+		bridgeService = bridge.New(bridge.Deps{
+			Client: bridge.NewHTTPClient(bc.APIURL, bc.Token, bc.Timeout, opts.BridgeHTTPClient),
+			Store:  bridgeStore, Metrics: m, Config: bc, Strategy: cfg.NickServConfig.Strategy,
+			Log: opts.BridgeLog, CredentialRetries: opts.BridgeCredentialRetries,
+		})
+		if err := bridgeService.Start(ctx); err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("bridge: %w", err)
+		}
+		logger.FromCtx(ctx).Info().Str("api", bc.APIURL).Str("nickserv_login", bridgeService.Method()).Msg("bridge: provisioning accounts")
+	} else if err := bridgeStore.SetEnabled(ctx, false); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("bridge: %w", err)
+	}
 	var nickServService nsaccount.NickServAccountServiceImpl
 	var nickServGuard *nickserv.Guard
 	nickServRepo := nickservacct.NewNickServAccountRepository(database)
@@ -212,11 +241,15 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 			AccountThreshold: nc.LockoutThreshold, IPThreshold: nc.LockoutIPThreshold,
 			Window: nc.LockoutWindow, LockFor: nc.LockoutDuration,
 		}, nickServRepo, opts.Now)
-		nickServService = nsaccount.NewNickServAccountService(nsaccount.Deps{
+		nd := nsaccount.Deps{
 			Backend: backend, Guard: nickServGuard, Users: userRepo, Links: nickServRepo,
 			Credentials: credRepo, Identities: identityRepo, Tx: database, Settings: settingsService,
 			Audit: auditService, Metrics: m, Config: nc, SessionKey: kek, Federated: fedRepo.IsFederated, Now: opts.Now,
-		})
+		}
+		if bridgeService != nil {
+			nd.Provisioner = bridgeService
+		}
+		nickServService = nsaccount.NewNickServAccountService(nd)
 		logger.FromCtx(ctx).Info().Str("strategy", nc.Strategy).Bool("signup", nickServService.Signup().Available).
 			Msg("accounts: NickServ backend")
 	}
@@ -296,7 +329,12 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	assertBurst, assertRate := cfg.FederationConfig.AssertLimit()
 	limits.SetAccountLimit(handlers.BucketFederationAssert, assertBurst, assertRate)
+	var bridgeHandler handlers.BridgeService
+	if bridgeService != nil {
+		bridgeHandler = bridgeService
+	}
 	h := &handlers.Handlers{
+		Bridge:  bridgeHandler,
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
@@ -333,7 +371,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
 		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, Social: socialService, limits: limits,
-		NickServ: nickServService, nickServGuard: nickServGuard, Federation: federationService,
+		NickServ: nickServService, nickServGuard: nickServGuard, Federation: federationService, Bridge: bridgeService,
 	}, nil
 }
 
@@ -342,6 +380,9 @@ func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
 	go a.StackConfig.Run(ctx)
 	go a.Social.Run(ctx)
+	if a.Bridge != nil {
+		go a.Bridge.Run(ctx)
+	}
 	a.limits.RunPruner(ctx)
 	if a.nickServGuard != nil {
 		a.nickServGuard.RunPruner(ctx)
@@ -397,6 +438,9 @@ func (a *App) RunBackground(ctx context.Context) {
 // Close waits for queued emails and closes the database.
 func (a *App) Close() error {
 	a.Email.Wait()
+	if a.Bridge != nil {
+		a.Bridge.Close()
+	}
 	return a.DB.Close()
 }
 
