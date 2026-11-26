@@ -5,6 +5,7 @@ package account
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/mail"
 	"strings"
 	"time"
@@ -129,7 +130,14 @@ type Deps struct {
 	// sign-up registers a NickServ account (if the services can) and
 	// password changes / resets are refused.
 	NickServ nsaccount.NickServAccountServiceImpl
+	// Federated, when set, reports federated accounts (docs/federation.md):
+	// they have no password here, so password resets don't apply.
+	Federated func(ctx context.Context, userID string) (bool, error)
 }
+
+// ErrFederatedAccount: the account belongs to another Boson server.
+var ErrFederatedAccount = apperr.New(http.StatusConflict, "federated_account",
+	"this account signs in through its home server; it has no password here")
 
 type AccountService struct {
 	Deps
@@ -581,6 +589,13 @@ func (s *AccountService) adminTarget(ctx context.Context, userID string) (*user.
 func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, setup bool) error {
 	if s.NickServ != nil {
 		return nsaccount.ErrPasswordManaged
+	}
+	if s.Federated != nil {
+		if fed, err := s.Federated(ctx, userID); err != nil {
+			return err
+		} else if fed {
+			return ErrFederatedAccount
+		}
 	}
 	u, err := s.adminTarget(ctx, userID)
 	if err != nil {

@@ -93,6 +93,42 @@ type Deps struct {
 	// NickServ, when set (ACCOUNT_BACKEND=nickserv), checks passwords with
 	// the IRC network's services instead of the local credentials.
 	NickServ nsaccount.NickServAccountServiceImpl
+	// Federation, when set, marks federated accounts (users of another
+	// Boson server, docs/federation.md): they never sign in with a
+	// password here, and get voice tokens only while the federation
+	// settings allow it.
+	Federation FederationPolicy
+}
+
+// FederationPolicy is what authn asks the federation service.
+type FederationPolicy interface {
+	IsFederated(ctx context.Context, userID string) (bool, error)
+	// RemoteVoice reports whether federated users may get voice tokens.
+	RemoteVoice(ctx context.Context) (bool, error)
+}
+
+// ErrRemoteVoiceDisabled: this server doesn't give federated users voice.
+var ErrRemoteVoiceDisabled = apperr.New(http.StatusForbidden, "remote_voice_disabled",
+	"voice isn't available to accounts from other servers here")
+
+// federatedVoice refuses voice tokens to federated users when the
+// federation settings say so.
+func (s *AuthnService) federatedVoice(ctx context.Context, userID string) error {
+	if s.Federation == nil {
+		return nil
+	}
+	fed, err := s.Federation.IsFederated(ctx, userID)
+	if err != nil || !fed {
+		return err
+	}
+	ok, err := s.Federation.RemoteVoice(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrRemoteVoiceDisabled
+	}
+	return nil
 }
 
 type AuthnService struct {
@@ -152,6 +188,17 @@ func (s *AuthnService) checkPassword(ctx context.Context, method string, u *user
 	if u == nil {
 		s.Hasher.VerifyDummy(pw)
 		return fail("unknown_user", "")
+	}
+	if s.Federation != nil {
+		// Federated accounts sign in through their home server only.
+		fed, err := s.Federation.IsFederated(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		if fed {
+			s.Hasher.VerifyDummy(pw)
+			return fail("federated_account", u.ID)
+		}
 	}
 	cred, err := s.Credentials.Get(ctx, u.ID)
 	if errors.Is(err, repositories.ErrNotFound) {
@@ -318,6 +365,9 @@ func (s *AuthnService) CallVoiceToken(ctx context.Context, p *Principal, room st
 	if !strings.HasPrefix(room, PrivateCallRoomPrefix) || len(room) > maxRoomLen {
 		return "", time.Time{}, apperr.Invalid("not a call room")
 	}
+	if err := s.federatedVoice(ctx, p.UserID); err != nil {
+		return "", time.Time{}, err
+	}
 	g, err := s.grants(ctx, p.UserID)
 	if err != nil {
 		return "", time.Time{}, err
@@ -328,6 +378,9 @@ func (s *AuthnService) CallVoiceToken(ctx context.Context, p *Principal, room st
 func (s *AuthnService) VoiceToken(ctx context.Context, p *Principal, rooms []string) (string, time.Time, error) {
 	clean, err := cleanRooms(rooms)
 	if err != nil {
+		return "", time.Time{}, err
+	}
+	if err := s.federatedVoice(ctx, p.UserID); err != nil {
 		return "", time.Time{}, err
 	}
 	g, err := s.grants(ctx, p.UserID)

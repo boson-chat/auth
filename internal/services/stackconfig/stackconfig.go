@@ -49,6 +49,12 @@ type Deps struct {
 	Env      config.Config
 	Settings settings.SettingsServiceImpl
 	Email    Emailer
+	// Federation receives auth.federation (nil: not wired). File present:
+	// the env federation config with the file applied and the fields the
+	// file sets; absent: nil (the database again).
+	Federation interface {
+		SetFile(cfg *config.FederationConfig, fields []string)
+	}
 	// Branding receives the branding: section (nil: not wired).
 	Branding Brander
 	// Mailer is replaced when the smtp keys change. Nil: leave the mailer
@@ -156,6 +162,13 @@ func (s *StackConfigService) apply(ctx context.Context, lc configfile.Change[loa
 		s.d.Settings.SetFile(&eff.AccountConfig)
 	} else {
 		s.d.Settings.SetFile(nil)
+	}
+	if s.d.Federation != nil {
+		if c.Next.Present {
+			s.d.Federation.SetFile(&eff.FederationConfig, c.Next.Value.Federation.Fields())
+		} else {
+			s.d.Federation.SetFile(nil, nil)
+		}
 	}
 	if len(lc.Next.Value.emailWarnings) > 0 {
 		log.Warn().Strs("warnings", lc.Next.Value.emailWarnings).Msg("config file: custom email HTML")

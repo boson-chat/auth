@@ -15,6 +15,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/authn"
 	"github.com/boson-chat/auth/internal/services/branding"
 	"github.com/boson-chat/auth/internal/services/email"
+	"github.com/boson-chat/auth/internal/services/federation"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
 	"github.com/boson-chat/auth/internal/services/nsaccount"
@@ -57,6 +58,8 @@ type Handlers struct {
 	Social social.SocialServiceImpl
 	// NickServ is the NickServ account backend (nil: local accounts).
 	NickServ nsaccount.NickServAccountServiceImpl
+	// Federation is Boson federated login (nil: off, routes not registered).
+	Federation federation.FederationServiceImpl
 	// Email serves the internal email preview / test endpoints.
 	Email email.EmailServiceImpl
 	// ReturnTo checks the verification page's return_to (the SSO policy:
@@ -205,6 +208,11 @@ type tokenResponse struct {
 // respondTokens returns tokens in the body, or (cookie mode) only in
 // HttpOnly cookies so page scripts never see them.
 func (h *Handlers) respondTokens(w nethttp.ResponseWriter, t *authn.Tokens, cookie bool) {
+	writeJSON(w, nethttp.StatusOK, h.tokenBody(w, t, cookie))
+}
+
+// tokenBody is respondTokens' body (setting the cookies in cookie mode).
+func (h *Handlers) tokenBody(w nethttp.ResponseWriter, t *authn.Tokens, cookie bool) tokenResponse {
 	now := time.Now()
 	resp := tokenResponse{
 		TokenType:        "Bearer",
@@ -218,5 +226,5 @@ func (h *Handlers) respondTokens(w nethttp.ResponseWriter, t *authn.Tokens, cook
 	} else {
 		resp.AccessToken, resp.RefreshToken = t.AccessToken, t.RefreshToken
 	}
-	writeJSON(w, nethttp.StatusOK, resp)
+	return resp
 }

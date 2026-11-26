@@ -84,7 +84,10 @@ type Deps struct {
 	SessionKey []byte
 	// Provisioner is optional.
 	Provisioner Provisioner
-	Now         func() time.Time
+	// Federated, when set, reports federated accounts (users of another
+	// Boson server): a NickServ account never adopts one.
+	Federated func(ctx context.Context, userID string) (bool, error)
+	Now       func() time.Time
 }
 
 // SignupInfo tells clients whether Boson sign-up works.
@@ -391,6 +394,11 @@ func (s *NickServAccountService) adoptOrCreate(ctx context.Context, acct *nickse
 func (s *NickServAccountService) mayAdopt(ctx context.Context, u *user.User, account string) (bool, error) {
 	if !strings.EqualFold(u.Username, account) {
 		return false, nil // RFC 1459 fold only ([a] vs {a})
+	}
+	if s.Federated != nil {
+		if fed, err := s.Federated(ctx, u.ID); err != nil || fed {
+			return false, err
+		}
 	}
 	switch s.Config.LinkExisting {
 	case config.LinkExistingAll:

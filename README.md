@@ -9,6 +9,9 @@ that other boson services (voice, later video and the admin panel) verify
 through a public JWKS. IRC SASL uses the internal password-check API.
 On an existing IRC network, accounts can instead be the network's NickServ
 accounts ([NickServ backend](docs/nickserv.md), `ACCOUNT_BACKEND=nickserv`).
+Users of other Boson servers can sign in with their home account
+([federated login](docs/federation.md)): auth issues assertions for its
+own users and accepts them from trusted servers.
 
 - Go 1.27, plain REST/JSON on `net/http`, Postgres via GORM, embedded
   golang-migrate migrations, zerolog, OpenTelemetry metrics (Prometheus).
@@ -65,6 +68,10 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
+| `GET /.well-known/boson-federation.json` | – | the `federation` section for boson.json `{version, issuer, jwks_uri, assertion_endpoint, login_endpoint, accepts}`; CORS `*` ([federation](docs/federation.md#discovery-bosonjson)) |
+| `POST /v1/federation/assertions` | bearer | `{audience}` → `{assertion, expires_in}`: a signed assertion (`typ boson-fed+jwt`, 5 min) about the caller for another Boson server; CORS `*` ([details](docs/federation.md#home-post-v1federationassertions)) |
+| `POST /v1/federation/login` | – | `{assertion, cookie?}` → the `/v1/login` response plus `{federated: true, identity, handle}`: sign in a user of another Boson server; CORS `*` ([details](docs/federation.md#remote-post-v1federationlogin)) |
+| `GET /v1/users/{handle}/identity`, `POST /v1/users/identities` `{handles}` | – | whether handles are [federated accounts](docs/federation.md#identity-lookup) and whose: `{handle, federated, identity, home_domain}` (batch: `{identities: {handle: …}}`, ≤ 200); unknown = local; CORS `*`, rate-limited per IP |
 | `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` (NickServ backend: registers a NickServ account and adds `verification: "nickserv_code"\|""`, `message`, or `403 registration_unavailable`; [details](docs/nickserv.md#sign-up)) |
 | `POST /v1/register/confirm` | – | `{username, password, code}` → 200: confirm a NickServ registration with the code the services emailed ([NickServ backend](docs/nickserv.md#sign-up)); `400 invalid_code`; `404` on the local backend |
 | `POST /v1/email/verify` | – | `{token, return_to?}` → `{user, redirect_to?}`: where the verify page sends the user next (see below) |
@@ -75,7 +82,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `POST /v1/password/forgot` | – | `{email}` → 202, identical whether or not the account exists |
 | `POST /v1/password/reset` | – | `{token, new_password}` → signs out every session |
 | `POST /v1/password/change` | bearer | `{current, new}` → signs out every *other* session |
-| `GET /v1/me` | bearer | `{user, session_id, roles: [{id, name, color, position}], permissions: [id]}` ([roles](docs/roles.md)) |
+| `GET /v1/me` | bearer | `{user, session_id, roles: [{id, name, color, position}], permissions: [id], federation}` ([roles](docs/roles.md)); `federation` is `{identity, home_domain, issuer}` for a [federated account](docs/federation.md#federated-accounts), else `null` |
 | `PATCH /v1/me` | bearer | `{display_name}` → `{user}` |
 | `GET /v1/sessions` | bearer | `{sessions: [{id, auth_method, ip, user_agent, created_at, last_seen_at, expires_at, current}]}` |
 | `DELETE /v1/sessions/{id}` | bearer | revoke one of your sessions → 204 (other users' ids are 404) |
@@ -137,6 +144,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `POST /v1/admin/roles/reorder` | `roles.manage` | `{order: [id]}` (most senior first) → `{roles}` |
 | `GET /v1/admin/roles/{id}/members?cursor=&limit=` | `admin.panel` | `{users: [{id, username, display_name, disabled, assigned_at, assigned_by}], next_cursor}` |
 | `GET`, `PUT /v1/admin/roles/{id}/channels` | `admin.panel` \| `roles.manage` / `roles.manage` | a role's channels `{channels: [{channel, autojoin, private}]}` (`{id}` may be `everyone`) ([role channels](docs/roles.md#role-channels-channel-access-and-auto-join)) |
+| `GET`, `PATCH /v1/admin/federation`, `/v1/admin/federation/users[/{id}]`, `POST`/`DELETE …/users/{id}/ban`, `POST /v1/admin/federation/domains/{domain}/revoke-sessions`, `GET …/bans` | `settings.manage` / `users.view` / `users.moderate` | federation settings (`auth.federation` in the stack config file, else PATCH), remote users, bans, ending a home domain's sessions: see [docs/federation.md](docs/federation.md#admin-api) |
 | `GET`, `PUT /v1/admin/channel-access` | `admin.panel` \| `roles.manage` / `roles.manage` | private channels `{channels: [{channel, private, roles}]}`; PUT replaces the list ([role channels](docs/roles.md#role-channels-channel-access-and-auto-join)) |
 
 ### Internal listener (`INTERNAL_ADDR`, default `:8081`)
@@ -231,6 +239,13 @@ auth:
       verification: { subject: "Confirm your {{network}} account", body: "Hi {{username}},\n\n{{link}}" }
       invite: { mjml: emails/invite-7a8b.mjml, html: emails/invite-7a8b.html }   # whole-email override
     layout: { mjml: emails/layout-5e6f.mjml, html: emails/layout-5e6f.html }    # custom MJML layout, files in BOSON_EMAILS_DIR
+  federation:                       # FEDERATION_* ([federated login](docs/federation.md#settings))
+    mode: directory                 # off | allowlist | directory | open
+    allow: [boson.chat]
+    block: [spam.example]
+    directory_url: https://directory.boson.chat
+    remote_upload_quota: 1GB        # "" = the account quota
+    remote_voice: true
 branding:                           # GET /v1/branding ([details](docs/branding.md))
   theme: { base: dark, colors: { accent: "#7c3aed" } }
   images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
@@ -282,7 +297,7 @@ first signs in. `/v1/me` doesn't show them.
 | Field | Set when |
 |---|---|
 | `last_sign_in_at` | a session is created: password login, SSO cookie mode, SSO code exchange (`POST /v1/sso/exchange`) |
-| `last_sign_in_method` | with it: the session's `auth_method` (`password` \| `oidc:<slug>` \| `saml:<slug>`) |
+| `last_sign_in_method` | with it: the session's `auth_method` (`password` \| `oidc:<slug>` \| `saml:<slug>` \| `nickserv` \| `federation`) |
 | `last_sign_in_ip` | with it: the client IP the session records (`""` when unknown) |
 | `last_active_at` | a sign-in, and a token refresh (when the session's `last_seen_at` moves), written at most once per 5 minutes per user. Clients refresh about every `ACCESS_TOKEN_TTL`, so it is accurate to roughly that |
 
@@ -362,6 +377,8 @@ Keycloak, Okta and Entra ID.
 `409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account),
 `409 role_name_taken|builtin_role|last_owner` (roles), `412 precondition_failed` (`If-Match` on a role edit),
 `415 unsupported_media_type`, `429 rate_limited` (with `Retry-After`).
+Federated login ([details](docs/federation.md#errors)): `403 federation_off|domain_not_trusted|domain_blocked|identity_banned|federated_account|remote_voice_disabled`,
+`401 bad_assertion|replayed`, `502 discovery_failed`, `409 federated_account` (password reset of a federated account), `409 settings_managed` (federation PATCH in file mode).
 NickServ backend ([details](docs/nickserv.md#sign-in)): `403 account_suspended|nickserv_refused|registration_unavailable`,
 `409 password_managed_by_nickserv|account_name_conflict|account_name_unsupported|account_reregistered`,
 `400 registration_rejected|invalid_code`, `429 account_locked` (with `Retry-After`), `503 accounts_unavailable`.
@@ -560,6 +577,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | or `grpc` |
 | `OTEL_METRICS_EXPORTER` | – | `none` disables OTLP push |
 | `ACCOUNT_BACKEND` | `local` | `local` (auth's own accounts) \| `nickserv` (the IRC network's NickServ accounts; `NICKSERV_*` settings in [docs/nickserv.md](docs/nickserv.md#configuration)) |
+| `FEDERATION_MODE` | `directory` | federated login: `off` \| `allowlist` \| `directory` \| `open`; `FEDERATION_ALLOW`, `FEDERATION_BLOCK`, `FEDERATION_DIRECTORY_URL`, `FEDERATION_DOMAIN`, `FEDERATION_REMOTE_ROLE`, `FEDERATION_REMOTE_UPLOAD_QUOTA`, `FEDERATION_REMOTE_MAX_FILE`, `FEDERATION_REMOTE_VOICE`, `FILES_INTERNAL_URL` / `FILES_INTERNAL_TOKEN` and the rest in [docs/federation.md](docs/federation.md#configuration) |
 | `TEST_DATABASE_URL` | – | tests only: enables the integration suite |
 | `TEST_NICKSERV` | – | tests only: `1` runs `test/nickserv` against the real services from `make test-nickserv-up` |
 | `TEST_DEX_ISSUER` | – | tests only: run the OIDC flow against a real Dex (`make test-dex-up`) |
@@ -567,7 +585,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 Rate-limited endpoint groups: login (and password change), register,
 forgot, reset, verify/resend, internal verify-password, SSO browser
 endpoints (start/callback/ACS, per IP), SSO code exchange (per IP), public
-role lookups (per IP).
+role lookups (per IP), federated login (per IP), federation assertions (per
+user, `FEDERATION_ASSERT_*`).
 
 ### Per-account login limit (for admins)
 
@@ -607,7 +626,7 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 
 | Metric | Labels |
 |---|---|
-| `auth_login_attempts_total` | `method` (`password`, `nickserv`, `internal`, `oidc`, `saml`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`, `rejected`) |
+| `auth_login_attempts_total` | `method` (`password`, `nickserv`, `internal`, `oidc`, `saml`, `federation`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`, `rejected`) |
 | `auth_registrations_total` | `outcome` (`success`, `rejected`, `error`) |
 | `auth_token_refreshes_total` | `outcome` (`success`, `invalid`, `expired`, `reuse`, `disabled`, `error`) |
 | `auth_token_refresh_reuse_total` | – |
@@ -704,6 +723,7 @@ internal/services/ircaccounts removed-accounts feed for IRC (deleted / disabled)
 internal/services/stackconfig applies the stack config file live (BOSON_CONFIG)
 internal/services/nickserv   NickServ password checks: Anope/Atheme RPC, SASL, IDENTIFY; TLS pins; lockouts
 internal/services/nsaccount  NickServ account backend: sign-in, linking, sign-up (ACCOUNT_BACKEND=nickserv)
+internal/services/federation federated login: assertions, discovery/JWKS/directory, trust policy, remote users
 internal/services/branding   GET /v1/branding: theme + images from the config file
 internal/services/email      built-in and branded emails, preview / test
 internal/theme               boson-theme/1 rules (shared with directory and client)
@@ -717,6 +737,7 @@ docs/sso.md                  SSO flow, linking rules, admin API, IdP setup
 docs/roles.md                roles, permissions, hierarchy, Ergo/quicvoiced contract
 docs/branding.md             network theme, branding images, email templates
 docs/nickserv.md             NickServ account backend: strategies, config keys, security
+docs/federation.md           federated login: flow, trust policy, admin API, stack contract
 ```
 
 ## Roadmap

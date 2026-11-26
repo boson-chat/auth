@@ -289,3 +289,32 @@ func TestGuestVoiceToken(t *testing.T) {
 		t.Fatal("empty guest id accepted")
 	}
 }
+
+func TestFederationAssertion(t *testing.T) {
+	ctx := context.Background()
+	ts, ks, _ := setup(t)
+	email := "alice@example.org"
+	u := &user.User{ID: "usr_1", Username: "alice", DisplayName: "Alice", Email: &email}
+	raw, exp, err := ts.MintFederation(ctx, token.FederationAssertion{User: u, Audience: "https://auth.remote.example", Domain: "home.example", TTL: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(exp); d < 4*time.Minute || d > 5*time.Minute {
+		t.Fatalf("exp in %v", d)
+	}
+	mc := verifyWithJWKS(t, ks.JWKS(ctx), raw, "https://auth.remote.example")
+	if mc["sub"] != "usr_1" || mc["preferred_username"] != "alice" || mc["name"] != "Alice" || mc["boson_domain"] != "home.example" ||
+		mc["email_verified"] != false || mc["jti"] == nil || mc["picture"] != nil || mc["email"] != nil {
+		t.Fatalf("claims = %v", mc)
+	}
+	tok, _, _ := jwt.NewParser().ParseUnverified(raw, jwt.MapClaims{})
+	if tok.Header["typ"] != token.TypFederation {
+		t.Fatalf("typ = %v", tok.Header["typ"])
+	}
+	if _, err := ts.VerifyAccess(ctx, raw); err == nil {
+		t.Fatal("assertion accepted as an access token")
+	}
+	if _, _, err := ts.MintFederation(ctx, token.FederationAssertion{User: u, Domain: "home.example", TTL: time.Minute}); err == nil {
+		t.Fatal("no audience accepted")
+	}
+}

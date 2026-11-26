@@ -91,6 +91,21 @@ type TokenServiceImpl interface {
 	// GuestSubjectPrefix+guestID, name = nick, guest = true, role speaker,
 	// empty roles and perms.
 	MintGuestVoice(ctx context.Context, guestID, nick string, rooms []string) (string, time.Time, error)
+	// MintFederation mints a federation assertion (typ boson-fed+jwt) for
+	// another Boson server, the audience (docs/federation.md).
+	MintFederation(ctx context.Context, a FederationAssertion) (string, time.Time, error)
+}
+
+// TypFederation is the typ header of federation assertions.
+const TypFederation = "boson-fed+jwt"
+
+// FederationAssertion is what a federation assertion says about a user.
+type FederationAssertion struct {
+	User     *user.User
+	Audience string // the remote's issuer, exactly as requested
+	Domain   string // boson_domain: this install's domain
+	Picture  string // absolute avatar URL, or ""
+	TTL      time.Duration
 }
 
 type Options struct {
@@ -209,6 +224,36 @@ func (s *TokenService) MintGuestVoice(ctx context.Context, guestID, nick string,
 		c["rooms"] = rooms
 	}
 	tok, err := s.sign(ctx, "JWT", c)
+	return tok, exp, err
+}
+
+func (s *TokenService) MintFederation(ctx context.Context, a FederationAssertion) (string, time.Time, error) {
+	u := a.User
+	if u == nil || u.ID == "" || a.Audience == "" || a.Domain == "" || a.TTL <= 0 {
+		return "", time.Time{}, errors.New("token: incomplete federation assertion")
+	}
+	now := s.opts.Now().UTC().Truncate(time.Second)
+	exp := now.Add(a.TTL)
+	name := u.DisplayName
+	if name == "" {
+		name = u.Username
+	}
+	c := jwt.MapClaims{
+		"iss":                s.opts.Issuer,
+		"sub":                u.ID,
+		"aud":                a.Audience,
+		"iat":                now.Unix(),
+		"exp":                exp.Unix(),
+		"jti":                ids.New(ids.TokenID),
+		"boson_domain":       a.Domain,
+		"preferred_username": u.Username,
+		"name":               name,
+		"email_verified":     u.EmailVerified(),
+	}
+	if a.Picture != "" {
+		c["picture"] = a.Picture
+	}
+	tok, err := s.sign(ctx, TypFederation, c)
 	return tok, exp, err
 }
 
