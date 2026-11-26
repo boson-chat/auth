@@ -102,6 +102,16 @@ type FederationServiceImpl interface {
 	Unban(ctx context.Context, actorID, userID string) (*fedrepo.AccountView, error)
 	ListBans(ctx context.Context) ([]*fedrepo.Ban, error)
 	RevokeDomainSessions(ctx context.Context, actorID, domain string) (string, int64, error)
+	// DomainBlocked reports whether userID is a federated account whose
+	// home domain is blocked (false for local accounts).
+	DomainBlocked(ctx context.Context, userID string) (bool, error)
+	// ApplyBlocks brings the federated accounts in line with the block
+	// list: accounts of newly blocked domains lose their sessions and are
+	// queued for an IRC disconnect; those of unblocked domains are released.
+	ApplyBlocks(ctx context.Context) error
+	// Run applies the block list at start, after each stack config file
+	// change and every minute, until ctx is done.
+	Run(ctx context.Context)
 	Cleanup(ctx context.Context) error
 }
 
@@ -134,6 +144,8 @@ type FederationService struct {
 	settings *settingsStore
 	remote   *remote
 	files    *filesQuota
+	// blocksChanged wakes Run after a stack config file change.
+	blocksChanged chan struct{}
 }
 
 func NewFederationService(d Deps) *FederationService {
@@ -147,7 +159,7 @@ func NewFederationService(d Deps) *FederationService {
 	if d.Metrics == nil {
 		d.Metrics = metrics.Noop()
 	}
-	s := &FederationService{Deps: d}
+	s := &FederationService{Deps: d, blocksChanged: make(chan struct{}, 1)}
 	s.settings = newSettingsStore(d.Repo, d.Tx, d.Audit, d.Config, d.Now)
 	s.remote = newRemote(d.HTTPClient, d.Config.FederationConfig.AllowHTTP, d.Now)
 	s.files = newFilesQuota(d.Config.FilesInternalConfig, d.FilesClient)
@@ -177,20 +189,120 @@ func (s *FederationService) AdminSettings(ctx context.Context) (Settings, error)
 }
 
 // UpdateSettings applies an admin patch (409 settings_managed in file
-// mode). A domain added to block is refused from the next sign-in; its
-// users' sessions end with RevokeDomainSessions.
+// mode). A domain added to block is refused from the next sign-in, and its
+// users' sessions end and IRC drops them right away (ApplyBlocks).
 func (s *FederationService) UpdateSettings(ctx context.Context, actorID string, p Patch) (Settings, error) {
 	if _, err := s.settings.update(ctx, actorID, p); err != nil {
 		return Settings{}, err
+	}
+	if err := s.ApplyBlocks(ctx); err != nil {
+		// The settings are saved; Run retries within a minute.
+		logger.FromCtx(ctx).Warn().Err(err).Msg("federation: applying the block list")
 	}
 	return s.AdminSettings(ctx)
 }
 
 // SetFile switches the settings to the stack config file's values (env
 // with auth.federation applied; fields = the keys the file sets), or back
-// to the database with nil.
+// to the database with nil. Run applies a changed block list.
 func (s *FederationService) SetFile(cfg *config.FederationConfig, fields []string) {
 	s.settings.setFile(cfg, fields)
+	select {
+	case s.blocksChanged <- struct{}{}:
+	default:
+	}
+}
+
+// ---- domain blocks --------------------------------------------------------
+
+// blockInterval is how often Run re-applies the block list (picks up
+// another replica's change and retries failures).
+const blockInterval = time.Minute
+
+func (s *FederationService) Run(ctx context.Context) {
+	t := time.NewTicker(blockInterval)
+	defer t.Stop()
+	for {
+		if err := s.ApplyBlocks(ctx); err != nil && ctx.Err() == nil {
+			logger.FromCtx(ctx).Warn().Err(err).Msg("federation: applying the block list")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-s.blocksChanged:
+		}
+	}
+}
+
+// ApplyBlocks: a federated account whose home domain matches the
+// effective block list gets federated_accounts.domain_blocked_at, its
+// sessions end and a "domain_blocked" entry goes on the removed-accounts
+// feed, which IRC (the stack's boson-ergo helper) answers by disconnecting
+// it, as for a disabled account. Accounts already marked are left alone, so
+// this runs any number of times. When the domain leaves the list the mark
+// is cleared: the feed entry stops applying and the user can sign in
+// again. The local account is never disabled.
+func (s *FederationService) ApplyBlocks(ctx context.Context) error {
+	st, err := s.settings.fresh(ctx)
+	if err != nil {
+		return err
+	}
+	domains, err := s.Repo.HomeDomains(ctx)
+	if err != nil {
+		return err
+	}
+	blocked := []string{}
+	for _, d := range domains {
+		if config.DomainListMatches(st.Block, d) {
+			blocked = append(blocked, d)
+		}
+	}
+	var marked []string
+	var revoked, cleared int64
+	err = s.Tx.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		if marked, err = s.Repo.MarkDomainBlocked(ctx, blocked, s.now()); err != nil {
+			return err
+		}
+		for _, id := range marked {
+			n, err := s.Sessions.RevokeAll(ctx, id, "")
+			if err != nil {
+				return err
+			}
+			revoked += n
+		}
+		cleared, err = s.Repo.ClearDomainBlocked(ctx, blocked)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(marked) > 0 || cleared > 0 {
+		logger.FromCtx(ctx).Info().Strs("blocked_domains", blocked).Int("accounts_blocked", len(marked)).
+			Int64("sessions_revoked", revoked).Int64("accounts_unblocked", cleared).Msg("federation: block list applied")
+	}
+	if len(marked) > 0 {
+		s.Audit.Record(ctx, "", audit.EventFederationDomainBlocked, map[string]any{
+			"domains": blocked, "accounts": len(marked), "sessions_revoked": revoked,
+		})
+	}
+	return nil
+}
+
+func (s *FederationService) DomainBlocked(ctx context.Context, userID string) (bool, error) {
+	a, err := s.Account(ctx, userID)
+	if err != nil || a == nil {
+		return false, err
+	}
+	if a.DomainBlockedAt != nil {
+		return true, nil
+	}
+	st, err := s.Settings(ctx)
+	if err != nil {
+		return false, err
+	}
+	return config.DomainListMatches(st.Block, a.HomeDomain), nil
 }
 
 // Metadata is what the stack publishes as boson.json's federation section.
@@ -829,7 +941,9 @@ func (s *FederationService) ListBans(ctx context.Context) ([]*fedrepo.Ban, error
 }
 
 // RevokeDomainSessions ends every session of the federated accounts from
-// domain (or *.domain). Returns how many sessions ended.
+// domain (or *.domain) and queues an IRC disconnect for each of them
+// (removed-accounts feed, until they sign in again). Returns how many
+// sessions ended.
 func (s *FederationService) RevokeDomainSessions(ctx context.Context, actorID, domain string) (string, int64, error) {
 	list, err := config.ParseDomainList([]string{domain})
 	if err != nil || len(list) != 1 {
@@ -842,14 +956,16 @@ func (s *FederationService) RevokeDomainSessions(ctx context.Context, actorID, d
 		if err != nil {
 			return err
 		}
+		ids := make([]string, 0, len(accts))
 		for _, a := range accts {
 			n, err := s.Sessions.RevokeAll(ctx, a.UserID, "")
 			if err != nil {
 				return err
 			}
 			total += n
+			ids = append(ids, a.UserID)
 		}
-		return nil
+		return s.Repo.QueueIRCDisconnect(ctx, ids, s.now())
 	})
 	if err != nil {
 		return "", 0, err

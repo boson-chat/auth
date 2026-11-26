@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -597,7 +598,7 @@ func TestFederationBlockAndBan(t *testing.T) {
 	f.remote.expect(f.remote.api("POST", "/v1/token/refresh", map[string]string{"refresh_token": al.str("refresh_token")}), 401, "")
 	f.remote.expect(f.login(f.assertion(aliceTok, remoteIssuer)), 403, "identity_banned")
 	rm := f.remote.do(f.remote.internal, "GET", "/internal/v1/irc/accounts/removed", nil, internal)
-	if !strings.Contains(string(rm.raw), `"username":"alice","reason":"disabled"`) {
+	if !strings.Contains(string(rm.raw), `"username":"alice","reason":"disabled","at"`) {
 		t.Fatalf("removed feed: %s", rm.raw)
 	}
 	bans := f.remote.api("GET", "/v1/admin/federation/bans", nil, bearer(adm))
@@ -615,30 +616,70 @@ func TestFederationBlockAndBan(t *testing.T) {
 	al = f.login(f.assertion(aliceTok, remoteIssuer))
 	f.remote.expect(al, 200, "")
 
-	// Block the domain (the admin panel: block list, then revoke-sessions).
+	// Block the domain: sign-ins are refused, sessions end at once and IRC
+	// is told to drop both (feed reason "disabled", cause domain_blocked),
+	// but the accounts aren't disabled.
 	f.remote.expect(f.remote.api("PATCH", "/v1/admin/federation", map[string]any{"block": []string{"home.test"}}, bearer(adm)), 200, "")
 	f.remote.expect(f.login(f.assertion(bobTok, remoteIssuer)), 403, "domain_blocked")
 	ul := f.remote.api("GET", "/v1/admin/federation/users?domain=home.test", nil, bearer(adm))
-	if users := ul.list("users"); len(users) != 2 || users[0]["domain_blocked"] != true || users[0]["sessions"].(float64) < 1 {
+	if users := ul.list("users"); len(users) != 2 || users[0]["domain_blocked"] != true || users[0]["sessions"] != float64(0) ||
+		users[0]["disabled"] != false || users[1]["disabled"] != false {
 		t.Fatalf("users: %s", ul.raw)
-	}
-	rv := f.remote.api("POST", "/v1/admin/federation/domains/Home.Test/revoke-sessions", nil, bearer(adm))
-	f.remote.expect(rv, 200, "")
-	if rv.str("domain") != "home.test" || rv.body["revoked"] != float64(2) {
-		t.Fatalf("revoke: %s", rv.raw)
 	}
 	f.remote.expect(f.remote.api("GET", "/v1/me", nil, bearer(bl.str("access_token"))), 401, "")
 	f.remote.expect(f.remote.api("GET", "/v1/me", nil, bearer(al.str("access_token"))), 401, "")
+	f.remote.expect(f.remote.api("POST", "/v1/token/refresh", map[string]string{"refresh_token": bl.str("refresh_token")}), 401, "")
+	// alice's ban entry no longer applies (unbanned); radmin (local) is never there.
+	if got := fedFeed(f.remote); got != "alice:disabled:domain_blocked bob:disabled:domain_blocked" {
+		t.Fatalf("feed after block: %q", got)
+	}
+	// Blocking again (or any other settings change) queues nothing more.
+	f.remote.expect(f.remote.api("PATCH", "/v1/admin/federation", map[string]any{"block": []string{"*.home.test"}}, bearer(adm)), 200, "")
+	if got := fedFeed(f.remote); got != "alice:disabled:domain_blocked bob:disabled:domain_blocked" {
+		t.Fatalf("feed after re-block: %q", got)
+	}
+	// The IRC auth-script's lookup says disabled, so OAUTHBEARER reconnects
+	// are refused even with a still-valid access token; local users are fine.
+	if u := f.remote.internalAPI("GET", "/internal/v1/users/bob/irc", nil); u.body["disabled"] != true {
+		t.Fatalf("blocked user irc: %s", u.raw)
+	}
+	if u := f.remote.internalAPI("GET", "/internal/v1/users/radmin/irc", nil); u.status != 200 || u.body["disabled"] != false {
+		t.Fatalf("local user irc: %s", u.raw)
+	}
+	blockAudit := f.remote.api("GET", "/v1/admin/audit?event=federation_domain_blocked", nil, bearer(adm))
+	if !strings.Contains(string(blockAudit.raw), `"accounts":2`) || !strings.Contains(string(blockAudit.raw), `"sessions_revoked":2`) {
+		t.Fatalf("block audit: %s", blockAudit.raw)
+	}
+	// revoke-sessions (the panel still calls it after blocking) finds
+	// nothing left to end, and queues another disconnect for each.
+	rv := f.remote.api("POST", "/v1/admin/federation/domains/Home.Test/revoke-sessions", nil, bearer(adm))
+	f.remote.expect(rv, 200, "")
+	if rv.str("domain") != "home.test" || rv.body["revoked"] != float64(0) {
+		t.Fatalf("revoke: %s", rv.raw)
+	}
+	if got := fedFeed(f.remote); got != "alice:disabled:domain_blocked bob:disabled:domain_blocked alice:disabled:sessions_revoked bob:disabled:sessions_revoked" {
+		t.Fatalf("feed after revoke: %q", got)
+	}
 	f.remote.expect(f.remote.api("POST", "/v1/admin/federation/domains/not%20a%20domain/revoke-sessions", nil, bearer(adm)), 400, "invalid_request")
 	audit := f.remote.api("GET", "/v1/admin/audit?event=federation_domain_sessions_revoked", nil, bearer(adm))
-	if !strings.Contains(string(audit.raw), `"revoked":2`) {
+	if !strings.Contains(string(audit.raw), `"revoked":0`) {
 		t.Fatalf("audit: %s", audit.raw)
 	}
-	// Unblock: both sign in again.
+	// Unblock: the block entries stop applying, the lookup says enabled
+	// and both sign in again, which retires the revoke entries too.
 	f.remote.expect(f.remote.api("PATCH", "/v1/admin/federation", map[string]any{"block": []string{}}, bearer(adm)), 200, "")
+	if got := fedFeed(f.remote); strings.Contains(got, "domain_blocked") {
+		t.Fatalf("feed after unblock: %q", got)
+	}
+	if u := f.remote.internalAPI("GET", "/internal/v1/users/bob/irc", nil); u.body["disabled"] != false {
+		t.Fatalf("unblocked user irc: %s", u.raw)
+	}
 	f.remote.expect(f.login(f.assertion(aliceTok, remoteIssuer)), 200, "")
 	bl2 := f.login(f.assertion(bobTok, remoteIssuer))
 	f.remote.expect(bl2, 200, "")
+	if got := fedFeed(f.remote); got != "" {
+		t.Fatalf("feed after signing in again: %q", got)
+	}
 
 	// An admin-disabled account stays disabled through ban + unban.
 	f.remote.expect(f.remote.api("POST", "/v1/admin/users/"+aliceID+"/disable", nil, bearer(adm)), 200, "")
@@ -655,6 +696,19 @@ func TestFederationBlockAndBan(t *testing.T) {
 	if !strings.Contains(string(audit.raw), `"identity":"bob@home.test"`) {
 		t.Fatalf("login audit: %s", audit.raw)
 	}
+}
+
+// fedFeed is the whole removed-accounts feed as "username:reason:cause".
+func fedFeed(e *env) string {
+	e.t.Helper()
+	r := e.internalAPI("GET", "/internal/v1/irc/accounts/removed", nil)
+	e.expect(r, 200, "")
+	var out []string
+	for _, a := range r.list("accounts") {
+		c, _ := a["cause"].(string)
+		out = append(out, fmt.Sprintf("%v:%v:%s", a["username"], a["reason"], c))
+	}
+	return strings.Join(out, " ")
 }
 
 func adminID(e *env, tok string) string {
@@ -700,6 +754,52 @@ func TestFederationConfigFile(t *testing.T) {
 	eventually(t, "database mode", func() bool {
 		return f.remote.api("GET", "/v1/admin/federation", nil, bearer(adm)).body["editable"] == true
 	})
+}
+
+// A block from the stack config file (live reload) or the env (at start)
+// drops the domain's users from IRC the same way as one made in the panel.
+func TestFederationBlockFromFileAndEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "boson.yaml")
+	writeConfig(t, path, "version: 1\nauth:\n  federation:\n    mode: open\n")
+	f := newFed(t, func(c *config.Config) {
+		c.AppConfig.ConfigFile = path
+		c.AppConfig.ConfigPoll = 200 * time.Millisecond
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go f.remote.app.StackConfig.Run(ctx)
+	go f.remote.app.Federation.Run(ctx)
+	f.remote.registerVerified("carol", "carol@example.com") // local
+	aliceTok := f.homeUser("alice")
+	eventually(t, "open mode", func() bool { return f.login(f.assertion(aliceTok, remoteIssuer)).status == 200 })
+	l := f.login(f.assertion(aliceTok, remoteIssuer))
+	f.remote.expect(l, 200, "")
+
+	writeConfig(t, path, "version: 1\nauth:\n  federation:\n    mode: open\n    block: [\"*.home.test\"]\n")
+	eventually(t, "block applied", func() bool { return fedFeed(f.remote) == "alice:disabled:domain_blocked" })
+	f.remote.expect(f.remote.api("POST", "/v1/token/refresh", map[string]string{"refresh_token": l.str("refresh_token")}), 401, "")
+	f.remote.expect(f.login(f.assertion(aliceTok, remoteIssuer)), 403, "domain_blocked")
+	if u := f.remote.internalAPI("GET", "/internal/v1/users/alice/irc", nil); u.body["disabled"] != true {
+		t.Fatalf("blocked user irc: %s", u.raw)
+	}
+
+	writeConfig(t, path, "version: 1\nauth:\n  federation:\n    mode: open\n")
+	eventually(t, "unblock applied", func() bool { return fedFeed(f.remote) == "" })
+	f.remote.expect(f.login(f.assertion(aliceTok, remoteIssuer)), 200, "")
+
+	// Env block, applied when the process starts.
+	cancel()
+	f.remote.cfg.AppConfig.ConfigFile = ""
+	f.remote.cfg.FederationConfig.Mode = config.FederationOpen
+	f.remote.cfg.FederationConfig.Block = "home.test"
+	f.remote.restart()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	t.Cleanup(cancel2)
+	go f.remote.app.Federation.Run(ctx2)
+	eventually(t, "env block applied", func() bool { return fedFeed(f.remote) == "alice:disabled:domain_blocked" })
+	if u := f.remote.internalAPI("GET", "/internal/v1/users/carol/irc", nil); u.body["disabled"] != false {
+		t.Fatalf("local user irc: %s", u.raw)
+	}
 }
 
 func TestFederationAssertionChecks(t *testing.T) {

@@ -285,7 +285,9 @@ Failures (`ok: false`) carry no `irc`.
 
 `username` is matched with RFC 1459 folding; `404 not_found` for unknown
 accounts. `disabled` is reported, not refused: Ergo should not log a
-disabled account in.
+disabled account in. It is also `true` for a federated account whose home
+domain is blocked ([federation](federation.md#irc-voice-and-files)), whose
+account isn't disabled otherwise.
 
 ### `GET /internal/v1/roles/{id}/members` (RoleServ `WHO`)
 
@@ -330,9 +332,18 @@ GET /internal/v1/irc/accounts/removed?since=<cursor>&limit=<n>
 ```json
 {"accounts": [
   {"username": "alice", "reason": "deleted", "at": "2026-11-14T12:57:13.527378Z"},
-  {"username": "bob", "reason": "disabled", "at": "2026-11-14T12:57:20.26056Z"}],
+  {"username": "bob", "reason": "disabled", "at": "2026-11-14T12:57:20.26056Z"},
+  {"username": "carol-bosonchat", "reason": "disabled", "cause": "domain_blocked", "at": "2026-11-14T13:02:01.1Z"}],
  "next": "3513.4"}
 ```
+
+`reason` is what IRC does with the account: `deleted` (erase it) or
+`disabled` (disconnect it, keep it). `cause` is only present on entries
+for [federated accounts](federation.md#irc-voice-and-files) that aren't
+disabled in auth but must still be dropped from IRC: `domain_blocked`
+(their home domain was blocked) and `sessions_revoked` (an admin ended
+their home domain's sessions). Consumers that don't know `cause` just
+treat them as `disabled`, which is exactly right.
 
 - `since`: the `next` of the previous response; empty or absent = from the
   beginning. The cursor is opaque (today `<txid>.<id>`); anything else is
@@ -354,10 +365,16 @@ them:
 - `disabled`: omitted once the account is enabled again, or deleted (its
   `deleted` entry covers it). Disabling an already disabled account adds
   nothing.
+- `cause: domain_blocked`: omitted once the domain is unblocked (or the
+  account is gone); blocking it again writes a new entry, the old one stays
+  omitted.
+- `cause: sessions_revoked`: omitted once the user has signed in again
+  after it.
 
 Source: `irc_account_removals` (migration 7), filled by triggers on `users`
 (`AFTER DELETE` → `deleted`; `disabled_at` going from `NULL` to a time →
-`disabled`). Each row stores the user id, the username at the time and the
+`disabled`), plus the federation entries auth writes itself (migration 16;
+stored with the cause as their reason). Each row stores the user id, the username at the time and the
 writing transaction's id (`xid8`). The feed is ordered by `(txid, id)` and
 only returns rows from transactions older than every transaction still in
 flight, so a slow transaction can never commit a row behind a cursor that

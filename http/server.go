@@ -379,6 +379,8 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
 	go a.StackConfig.Run(ctx)
+	// Blocked home domains: sessions end, IRC drops their users.
+	go a.Federation.Run(ctx)
 	go a.Social.Run(ctx)
 	if a.Bridge != nil {
 		go a.Bridge.Run(ctx)

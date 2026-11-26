@@ -69,13 +69,16 @@ const (
 	// (meta: audience). Remote side: a refused federated sign-in (meta:
 	// reason, domain) and a successful one (meta: identity, domain,
 	// created), ban / unban of an identity, sessions of a home domain
-	// ended (meta: domain, revoked), and settings changes (meta.old / meta.new).
+	// ended (meta: domain, revoked), a block list change that dropped accounts
+	// (meta: domains, accounts, sessions_revoked) and settings changes
+	// (meta.old / meta.new).
 	EventFederationAssertion       = "federation_assertion_issued"
 	EventFederationLoginFailed     = "federation_login_failed"
 	EventFederationBanned          = "federation_identity_banned"
 	EventFederationUnbanned        = "federation_identity_unbanned"
 	EventFederationLogin           = "federation_login"
 	EventFederationSessionsRevoked = "federation_domain_sessions_revoked"
+	EventFederationDomainBlocked   = "federation_domain_blocked"
 	EventFederationSettingsUpdated = "federation_settings_updated"
 )
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/boson-chat/auth/internal/db"
 	"github.com/boson-chat/auth/internal/db/repositories"
+	"github.com/boson-chat/auth/internal/db/repositories/accountremoval"
 	"gorm.io/gorm/clause"
 )
 
@@ -30,8 +31,11 @@ type Account struct {
 	EmailVerified bool
 	SuspendedBy   *string
 	QuotaApplied  *string
-	CreatedAt     time.Time
-	LastLoginAt   time.Time
+	// DomainBlockedAt: set while the home domain is blocked (and the IRC
+	// disconnect was queued); see MarkDomainBlocked.
+	DomainBlockedAt *time.Time
+	CreatedAt       time.Time
+	LastLoginAt     time.Time
 }
 
 func (Account) TableName() string { return "federated_accounts" }
@@ -114,6 +118,20 @@ type FederationRepositoryImpl interface {
 	// ByDomain returns the accounts whose home domain matches (see
 	// config.DomainListMatches): "*.x" matches x and its subdomains.
 	ByDomain(ctx context.Context, entry string) ([]*Account, error)
+	// HomeDomains lists the distinct home domains of all federated accounts.
+	HomeDomains(ctx context.Context) ([]string, error)
+	// MarkDomainBlocked sets domain_blocked_at on the accounts from domains
+	// (exact home domains) that don't have it yet, queues a
+	// "domain_blocked" IRC disconnect for each (irc_account_removals) and
+	// returns their user ids.
+	MarkDomainBlocked(ctx context.Context, domains []string, at time.Time) ([]string, error)
+	// ClearDomainBlocked clears domain_blocked_at on the accounts whose home
+	// domain is not in domains (no longer blocked); their queued
+	// "domain_blocked" disconnects stop applying.
+	ClearDomainBlocked(ctx context.Context, domains []string) (int64, error)
+	// QueueIRCDisconnect writes a "sessions_revoked" IRC disconnect for
+	// each of userIDs (federated accounts only).
+	QueueIRCDisconnect(ctx context.Context, userIDs []string, at time.Time) error
 
 	Ban(ctx context.Context, b *Ban) error
 	Unban(ctx context.Context, issuer, subject string) error
@@ -240,6 +258,51 @@ func (r *FederationRepository) ByDomain(ctx context.Context, entry string) ([]*A
 	}
 	var out []*Account
 	return out, q.Find(&out).Error
+}
+
+func (r *FederationRepository) HomeDomains(ctx context.Context) ([]string, error) {
+	var out []string
+	return out, r.db.Conn(ctx).Model(&Account{}).Distinct("home_domain").Order("home_domain").Pluck("home_domain", &out).Error
+}
+
+func (r *FederationRepository) MarkDomainBlocked(ctx context.Context, domains []string, at time.Time) ([]string, error) {
+	if len(domains) == 0 {
+		return nil, nil
+	}
+	var ids []string
+	err := r.db.Conn(ctx).Raw(`
+WITH marked AS (
+    UPDATE federated_accounts SET domain_blocked_at = ?
+    WHERE domain_blocked_at IS NULL AND home_domain IN ?
+    RETURNING user_id
+), queued AS (
+    INSERT INTO irc_account_removals (user_id, username, username_folded, reason, at)
+    SELECT u.id, u.username, u.username_folded, ?, ? FROM users u JOIN marked m ON m.user_id = u.id ORDER BY u.id
+    RETURNING user_id
+)
+SELECT user_id FROM queued ORDER BY user_id`, at, domains, accountremoval.ReasonDomainBlocked, at).Scan(&ids).Error
+	return ids, err
+}
+
+func (r *FederationRepository) ClearDomainBlocked(ctx context.Context, domains []string) (int64, error) {
+	q := r.db.Conn(ctx).Model(&Account{}).Where("domain_blocked_at IS NOT NULL")
+	if len(domains) > 0 {
+		q = q.Where("home_domain NOT IN ?", domains)
+	}
+	res := q.Update("domain_blocked_at", nil)
+	return res.RowsAffected, res.Error
+}
+
+func (r *FederationRepository) QueueIRCDisconnect(ctx context.Context, userIDs []string, at time.Time) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	return r.db.Conn(ctx).Exec(`
+INSERT INTO irc_account_removals (user_id, username, username_folded, reason, at)
+SELECT u.id, u.username, u.username_folded, ?, ?
+FROM users u JOIN federated_accounts f ON f.user_id = u.id
+WHERE u.id IN ?
+ORDER BY u.id`, accountremoval.ReasonSessionsRevoked, at, userIDs).Error
 }
 
 func (r *FederationRepository) Ban(ctx context.Context, b *Ban) error {

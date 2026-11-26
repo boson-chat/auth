@@ -14,6 +14,10 @@ import (
 const (
 	ReasonDeleted  = "deleted"
 	ReasonDisabled = "disabled"
+	// Written by auth for federated accounts (migration 16), not by triggers:
+	// a blocked home domain, and an admin's revoke-sessions for a domain.
+	ReasonDomainBlocked   = "domain_blocked"
+	ReasonSessionsRevoked = "sessions_revoked"
 )
 
 // Position is a place in the log: entries are ordered by the writing
@@ -36,6 +40,14 @@ type Entry struct {
 	UsernameInUse bool
 	// StillDisabled: user_id still exists and is disabled now.
 	StillDisabled bool
+	// StillDomainBlocked: user_id is a federated account whose home domain
+	// is blocked now, by the block this entry was written for
+	// (federated_accounts.domain_blocked_at <= at: an entry from an earlier,
+	// lifted block doesn't come back when the domain is blocked again).
+	StillDomainBlocked bool
+	// NoLoginSince: user_id is a federated account that hasn't signed in
+	// since the entry was written.
+	NoLoginSince bool
 }
 
 type AccountRemovalRepositoryImpl interface {
@@ -65,6 +77,9 @@ type row struct {
 	At             time.Time
 	UsernameInUse  bool
 	StillDisabled  bool
+	// StillDomainBlocked / NoLoginSince: see Entry.
+	StillDomainBlocked bool
+	NoLoginSince       bool
 }
 
 func (r *AccountRemovalRepository) After(ctx context.Context, pos Position, limit int) ([]*Entry, error) {
@@ -72,7 +87,9 @@ func (r *AccountRemovalRepository) After(ctx context.Context, pos Position, limi
 	err := r.db.Conn(ctx).Raw(`
 SELECT r.id, r.txid::text AS tx_id, r.user_id, r.username, r.username_folded, r.reason, r.at,
        EXISTS (SELECT 1 FROM users u WHERE u.username_folded = r.username_folded) AS username_in_use,
-       EXISTS (SELECT 1 FROM users u WHERE u.id = r.user_id AND u.disabled_at IS NOT NULL) AS still_disabled
+       EXISTS (SELECT 1 FROM users u WHERE u.id = r.user_id AND u.disabled_at IS NOT NULL) AS still_disabled,
+       EXISTS (SELECT 1 FROM federated_accounts f WHERE f.user_id = r.user_id AND f.domain_blocked_at <= r.at) AS still_domain_blocked,
+       EXISTS (SELECT 1 FROM federated_accounts f WHERE f.user_id = r.user_id AND f.last_login_at <= r.at) AS no_login_since
 FROM irc_account_removals r
 WHERE (r.txid, r.id) > (CAST(? AS text)::xid8, ?)
   AND r.txid < pg_snapshot_xmin(pg_current_snapshot())
@@ -91,6 +108,7 @@ LIMIT ?`, strconv.FormatUint(pos.TxID, 10), pos.ID, limit).Scan(&rows).Error
 			Position: Position{TxID: txid, ID: x.ID}, UserID: x.UserID, Username: x.Username,
 			UsernameFolded: x.UsernameFolded, Reason: x.Reason, At: x.At,
 			UsernameInUse: x.UsernameInUse, StillDisabled: x.StillDisabled,
+			StillDomainBlocked: x.StillDomainBlocked, NoLoginSince: x.NoLoginSince,
 		})
 	}
 	return out, nil
