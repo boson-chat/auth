@@ -32,6 +32,8 @@ type Config struct {
 	RolesConfig     RolesConfig
 	IRCConfig       IRCConfig
 	SocialConfig    SocialConfig
+	AccountsConfig  AccountsConfig
+	NickServConfig  NickServConfig
 }
 
 // SocialConfig is friends and private calls (docs/friends-calls.md).
@@ -447,6 +449,15 @@ func (c Config) Validate() error {
 		if p, err := url.Parse(u); err != nil || (p.Scheme != "https" && p.Scheme != "http") || p.Host == "" || p.Fragment != "" || p.User != nil {
 			return fmt.Errorf("WEB_CLIENT_URL must be an http(s) URL such as https://chat.example.com/, got %q", u)
 		}
+	}
+	switch c.AccountsConfig.Backend {
+	case AccountBackendLocal, "": // "" = local (struct literals)
+	case AccountBackendNickServ:
+		if err := c.NickServConfig.Validate(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("ACCOUNT_BACKEND must be local or nickserv, got %q", c.AccountsConfig.Backend)
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
 		return errors.New("SSO_STATE_TTL, SSO_CODE_TTL and SSO_HTTP_TIMEOUT must be positive")

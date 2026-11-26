@@ -17,6 +17,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/nsaccount"
 	"github.com/boson-chat/auth/internal/services/rolechannels"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
@@ -54,6 +55,8 @@ type Handlers struct {
 	Branding branding.BrandingServiceImpl
 	// Social is friends, blocks, privacy and private calls (nil: off).
 	Social social.SocialServiceImpl
+	// NickServ is the NickServ account backend (nil: local accounts).
+	NickServ nsaccount.NickServAccountServiceImpl
 	// Email serves the internal email preview / test endpoints.
 	Email email.EmailServiceImpl
 	// ReturnTo checks the verification page's return_to (the SSO policy:

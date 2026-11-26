@@ -87,6 +87,9 @@ type UserRepositoryImpl interface {
 	FindByUsernameFolded(ctx context.Context, folded string) (*User, error)
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	SetEmailVerified(ctx context.Context, id string, at time.Time) error
+	// SetEmail replaces the email and its verified time (ErrEmailTaken if
+	// another account has it).
+	SetEmail(ctx context.Context, id string, email *string, verifiedAt *time.Time) error
 	SetDisplayName(ctx context.Context, id, name string) error
 	SetDisabled(ctx context.Context, id string, at *time.Time) error
 	List(ctx context.Context, f ListFilter) ([]*User, int64, error)
@@ -170,6 +173,14 @@ func (r *UserRepository) update(ctx context.Context, id string, fields map[strin
 		return repositories.ErrNotFound
 	}
 	return nil
+}
+
+func (r *UserRepository) SetEmail(ctx context.Context, id string, email *string, verifiedAt *time.Time) error {
+	err := r.update(ctx, id, map[string]any{"email": email, "email_verified_at": verifiedAt})
+	if repositories.UniqueViolation(err) != "" {
+		return ErrEmailTaken
+	}
+	return err
 }
 
 func (r *UserRepository) SetEmailVerified(ctx context.Context, id string, at time.Time) error {

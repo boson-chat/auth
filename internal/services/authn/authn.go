@@ -20,6 +20,7 @@ import (
 	"github.com/boson-chat/auth/internal/nick"
 	"github.com/boson-chat/auth/internal/password"
 	"github.com/boson-chat/auth/internal/services/audit"
+	"github.com/boson-chat/auth/internal/services/nsaccount"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
@@ -89,6 +90,9 @@ type Deps struct {
 	Settings settings.SettingsServiceImpl
 	// Roles supplies the roles / perms token claims.
 	Roles roles.RolesServiceImpl
+	// NickServ, when set (ACCOUNT_BACKEND=nickserv), checks passwords with
+	// the IRC network's services instead of the local credentials.
+	NickServ nsaccount.NickServAccountServiceImpl
 }
 
 type AuthnService struct {
@@ -188,15 +192,23 @@ func (s *AuthnService) checkPassword(ctx context.Context, method string, u *user
 }
 
 func (s *AuthnService) Login(ctx context.Context, login, pw string) (*Tokens, error) {
-	u, err := s.findLogin(ctx, login)
-	if err != nil {
-		u = nil
+	method := session.MethodPassword
+	var u *user.User
+	var err error
+	if s.NickServ != nil {
+		method = nsaccount.Method
+		u, err = s.NickServ.Authenticate(ctx, login, pw, method)
+	} else {
+		u, err = s.findLogin(ctx, login)
+		if err != nil {
+			u = nil
+		}
+		u, err = s.checkPassword(ctx, method, u, err, pw)
 	}
-	u, err = s.checkPassword(ctx, session.MethodPassword, u, err, pw)
 	if err != nil {
 		return nil, err
 	}
-	issued, err := s.Sessions.Create(ctx, u.ID, session.MethodPassword)
+	issued, err := s.Sessions.Create(ctx, u.ID, method)
 	if err != nil {
 		return nil, err
 	}
@@ -204,8 +216,8 @@ func (s *AuthnService) Login(ctx context.Context, login, pw string) (*Tokens, er
 	if err != nil {
 		return nil, err
 	}
-	s.Metrics.LoginAttempt(ctx, session.MethodPassword, metrics.OutcomeSuccess)
-	s.Audit.Record(ctx, u.ID, audit.EventLogin, map[string]any{"method": session.MethodPassword, "session_id": issued.Session.ID})
+	s.Metrics.LoginAttempt(ctx, method, metrics.OutcomeSuccess)
+	s.Audit.Record(ctx, u.ID, audit.EventLogin, map[string]any{"method": method, "session_id": issued.Session.ID})
 	return &Tokens{
 		AccessToken: access, AccessExpiresAt: exp,
 		RefreshToken: issued.RefreshToken, RefreshExpiresAt: issued.RefreshExpiresAt,
@@ -256,6 +268,9 @@ func (s *AuthnService) Refresh(ctx context.Context, refreshToken string) (*Token
 func (s *AuthnService) Logout(ctx context.Context, p *Principal) error {
 	if err := s.Sessions.Revoke(ctx, p.UserID, p.SessionID); err != nil && !errors.Is(err, apperr.ErrNotFound) {
 		return err
+	}
+	if s.NickServ != nil {
+		s.NickServ.EndSession(ctx, p.UserID)
 	}
 	s.Audit.Record(ctx, p.UserID, audit.EventLogout, map[string]any{"session_id": p.SessionID})
 	return nil
@@ -390,6 +405,15 @@ func (s *AuthnService) guestVoiceToken(ctx context.Context, nickname, guestID st
 }
 
 func (s *AuthnService) VerifyPassword(ctx context.Context, username, pw string) (*user.User, error) {
+	if s.NickServ != nil {
+		u, err := s.NickServ.Authenticate(ctx, username, pw, "internal")
+		if err != nil {
+			return nil, err
+		}
+		s.Metrics.LoginAttempt(ctx, "internal", metrics.OutcomeSuccess)
+		s.Audit.Record(ctx, u.ID, audit.EventInternalVerify, map[string]any{"method": nsaccount.Method})
+		return u, nil
+	}
 	var (
 		u   *user.User
 		err = repositories.ErrNotFound

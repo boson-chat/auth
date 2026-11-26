@@ -27,6 +27,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/audit"
 	"github.com/boson-chat/auth/internal/services/email"
 	"github.com/boson-chat/auth/internal/services/invite"
+	"github.com/boson-chat/auth/internal/services/nsaccount"
 	"github.com/boson-chat/auth/internal/services/session"
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/textutil"
@@ -40,6 +41,23 @@ const (
 )
 
 var ErrInvalidPassword = apperr.New(403, "invalid_password", "current password is wrong")
+
+// RegisterResult is a new account.
+type RegisterResult struct {
+	User *user.User
+	// Verification is how the email gets verified: "email" (a Boson link
+	// was sent) or "nickserv_code" (the services emailed a code for
+	// POST /v1/register/confirm), "" = nothing to verify.
+	Verification string
+	// Message is the NickServ reply, NickServ backend only.
+	Message string
+}
+
+// Verification kinds of RegisterResult.
+const (
+	VerificationEmail        = "email"
+	VerificationNickServCode = "nickserv_code"
+)
 
 type RegisterInput struct {
 	Username   string
@@ -62,7 +80,10 @@ type CreateUserInput struct {
 }
 
 type AccountServiceImpl interface {
-	Register(ctx context.Context, in RegisterInput) (*user.User, error)
+	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
+	// ConfirmRegistration submits a NickServ registration code (NickServ
+	// backend); otherwise not_found.
+	ConfirmRegistration(ctx context.Context, account, code string) error
 	// CreateUser is the admin/CLI path: no registration mode or invite checks.
 	CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, error)
 	VerifyEmail(ctx context.Context, token string) (*user.User, error)
@@ -104,6 +125,10 @@ type Deps struct {
 	Metrics     *metrics.Metrics
 	Config      config.AccountConfig
 	Now         func() time.Time
+	// NickServ, when set (ACCOUNT_BACKEND=nickserv), owns passwords:
+	// sign-up registers a NickServ account (if the services can) and
+	// password changes / resets are refused.
+	NickServ nsaccount.NickServAccountServiceImpl
 }
 
 type AccountService struct {
@@ -194,7 +219,93 @@ func (s *AccountService) newEmailToken(ctx context.Context, userID, purpose stri
 	return raw, err
 }
 
-func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*user.User, error) {
+func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*RegisterResult, error) {
+	if s.NickServ != nil {
+		return s.registerNickServ(ctx, in)
+	}
+	u, err := s.registerLocal(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	return &RegisterResult{User: u, Verification: VerificationEmail}, nil
+}
+
+// checkRegistrationMode applies the registration setting.
+func (s *AccountService) checkRegistrationMode(ctx context.Context, in RegisterInput) (settings.Settings, error) {
+	st, err := s.Settings.Get(ctx)
+	if err != nil {
+		return st, err
+	}
+	switch st.Registration {
+	case config.RegistrationClosed:
+		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+		return st, apperr.ErrRegistrationClosed
+	case config.RegistrationInvite:
+		if in.InviteCode == "" {
+			s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+			return st, apperr.ErrInviteRequired
+		}
+	}
+	return st, nil
+}
+
+// registerNickServ registers a NickServ account through the services. The
+// invite is redeemed in the same transaction, so a refused registration
+// doesn't use it up.
+func (s *AccountService) registerNickServ(ctx context.Context, in RegisterInput) (*RegisterResult, error) {
+	if !s.NickServ.Signup().Available {
+		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+		return nil, nsaccount.ErrSignupUnavailable.WithMessage(s.NickServ.Signup().Message)
+	}
+	st, err := s.checkRegistrationMode(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := nick.Validate(in.Username); err != nil {
+		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+		return nil, apperr.New(400, "invalid_username", err.Error())
+	}
+	addr, err := NormalizeEmail(in.Email)
+	if err != nil {
+		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+		return nil, err
+	}
+	var res *nsaccount.RegisterResult
+	err = s.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if st.Registration == config.RegistrationInvite {
+			if err := s.Invites.Redeem(ctx, in.InviteCode); err != nil {
+				return err
+			}
+		}
+		var err error
+		res, err = s.NickServ.Register(ctx, nsaccount.RegisterInput{Username: in.Username, Email: addr, Password: in.Password})
+		return err
+	})
+	if err != nil {
+		if _, ok := apperr.As(err); ok {
+			s.Metrics.Registration(ctx, metrics.OutcomeRejected)
+		} else {
+			s.Metrics.Registration(ctx, metrics.OutcomeError)
+		}
+		return nil, err
+	}
+	s.Metrics.Registration(ctx, metrics.OutcomeSuccess)
+	s.Audit.Record(ctx, res.User.ID, audit.EventRegister, map[string]any{"method": nsaccount.Method})
+	out := &RegisterResult{User: res.User, Message: res.Message}
+	if res.VerificationRequired {
+		out.Verification = VerificationNickServCode
+	}
+	return out, nil
+}
+
+func (s *AccountService) ConfirmRegistration(ctx context.Context, account, code string) error {
+	if s.NickServ == nil {
+		return apperr.ErrNotFound
+	}
+	return s.NickServ.ConfirmRegistration(ctx, account, code)
+}
+
+func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*user.User, error) {
 	st, err := s.Settings.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -254,6 +365,10 @@ func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*user.
 }
 
 func (s *AccountService) CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, error) {
+	if s.NickServ != nil && in.Password != "" {
+		// The account signs in with NickServ; it's linked on first sign-in.
+		return nil, nsaccount.ErrPasswordManaged
+	}
 	addr, err := validateIdentity(in.Username, in.Email, in.Password, false)
 	if err != nil {
 		return nil, err
@@ -373,6 +488,9 @@ func (s *AccountService) VerifyEmail(ctx context.Context, raw string) (*user.Use
 }
 
 func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAddr, returnTo string) error {
+	if s.NickServ != nil {
+		return nil // the services verify emails
+	}
 	var (
 		u   *user.User
 		err error
@@ -407,6 +525,9 @@ func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAd
 }
 
 func (s *AccountService) ForgotPassword(ctx context.Context, emailAddr string) error {
+	if s.NickServ != nil {
+		return nsaccount.ErrPasswordManaged
+	}
 	addr, err := NormalizeEmail(emailAddr)
 	if err != nil {
 		return err // malformed input is safe to reject: says nothing about accounts
@@ -458,6 +579,9 @@ func (s *AccountService) adminTarget(ctx context.Context, userID string) (*user.
 }
 
 func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, setup bool) error {
+	if s.NickServ != nil {
+		return nsaccount.ErrPasswordManaged
+	}
 	u, err := s.adminTarget(ctx, userID)
 	if err != nil {
 		return err
@@ -487,6 +611,9 @@ func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, s
 }
 
 func (s *AccountService) SendVerification(ctx context.Context, userID string) error {
+	if s.NickServ != nil {
+		return nsaccount.ErrPasswordManaged.WithMessage("emails are verified by NickServ on IRC")
+	}
 	u, err := s.adminTarget(ctx, userID)
 	if err != nil {
 		return err
@@ -503,6 +630,9 @@ func (s *AccountService) SendVerification(ctx context.Context, userID string) er
 }
 
 func (s *AccountService) ResetPassword(ctx context.Context, raw, newPassword string) error {
+	if s.NickServ != nil {
+		return nsaccount.ErrPasswordManaged
+	}
 	var u *user.User
 	var revoked int64
 	err := s.Tx.WithTx(ctx, func(ctx context.Context) error {
@@ -554,6 +684,9 @@ func (s *AccountService) ResetPassword(ctx context.Context, raw, newPassword str
 }
 
 func (s *AccountService) ChangePassword(ctx context.Context, userID, keepSessionID, current, newPassword string) error {
+	if s.NickServ != nil {
+		return nsaccount.ErrPasswordManaged
+	}
 	u, err := s.Users.FindByID(ctx, userID)
 	if err != nil {
 		return err

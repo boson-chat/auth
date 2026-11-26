@@ -1,4 +1,4 @@
-.PHONY: setup deps run build test test-unit test-integration test-pg-up test-pg-down test-dex-up test-dex-down lint migrate-up migrate-down migrate-create docker
+.PHONY: setup deps run build test test-unit test-integration test-pg-up test-pg-down test-dex-up test-dex-down test-nickserv test-nickserv-up test-nickserv-down test-nickserv-clean lint migrate-up migrate-down migrate-create docker
 
 # Load .env (if present) for run / migrate targets.
 ifneq (,$(wildcard .env))
@@ -50,6 +50,25 @@ test-dex-up:
 
 test-dex-down:
 	docker stop $(TEST_DEX_CONTAINER)
+
+# Real services for the NickServ account backend (test/nickserv): Anope 2.1
+# behind InspIRCd 4, Atheme 7.2 behind ngircd 27. Everything is in the
+# compose project auth-nickserv-test (and labelled auth-nickserv-test=1).
+NICKSERV_COMPOSE = docker compose -p auth-nickserv-test -f test/nickserv/compose.yaml
+
+test-nickserv-up:
+	$(NICKSERV_COMPOSE) up -d --build
+
+test-nickserv-down:
+	$(NICKSERV_COMPOSE) down -v --remove-orphans
+
+# Also remove the fixture images built from test/nickserv.
+test-nickserv-clean: test-nickserv-down
+	$(NICKSERV_COMPOSE) down -v --rmi local --remove-orphans
+	rm -rf test/nickserv/.certs
+
+test-nickserv: test-nickserv-up
+	TEST_NICKSERV=1 go test -race -count=1 -v ./test/nickserv/; s=$$?; $(MAKE) test-nickserv-down; exit $$s
 
 test-integration:
 	@if curl -sf -o /dev/null $(DEX_DISCOVERY); then export TEST_DEX_ISSUER=http://127.0.0.1:5556/dex; fi; \

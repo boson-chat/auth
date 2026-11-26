@@ -19,6 +19,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories/emailtoken"
 	"github.com/boson-chat/auth/internal/db/repositories/identity"
 	"github.com/boson-chat/auth/internal/db/repositories/invite"
+	"github.com/boson-chat/auth/internal/db/repositories/nickservacct"
 	"github.com/boson-chat/auth/internal/db/repositories/refreshtoken"
 	"github.com/boson-chat/auth/internal/db/repositories/role"
 	"github.com/boson-chat/auth/internal/db/repositories/rolechannel"
@@ -43,6 +44,8 @@ import (
 	invitesvc "github.com/boson-chat/auth/internal/services/invite"
 	"github.com/boson-chat/auth/internal/services/ircaccounts"
 	"github.com/boson-chat/auth/internal/services/keys"
+	"github.com/boson-chat/auth/internal/services/nickserv"
+	"github.com/boson-chat/auth/internal/services/nsaccount"
 	"github.com/boson-chat/auth/internal/services/rolechannels"
 	"github.com/boson-chat/auth/internal/services/roles"
 	"github.com/boson-chat/auth/internal/services/session"
@@ -87,7 +90,10 @@ type App struct {
 	Branding branding.BrandingServiceImpl
 	// Social is friends, blocks, privacy and private calls.
 	Social social.SocialServiceImpl
-	limits *handlers.Limits
+	// NickServ is the NickServ account backend (nil: local accounts).
+	NickServ      nsaccount.NickServAccountServiceImpl
+	nickServGuard *nickserv.Guard
+	limits        *handlers.Limits
 }
 
 // Build constructs everything: database → repositories → services → handlers.
@@ -180,14 +186,40 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		SetupTTL: cfg.AccountConfig.AccountSetupTTL, InviteTTL: 7 * 24 * time.Hour, Audit: auditService,
 	})
 	inviteService := invitesvc.NewInviteService(inviteRepo, opts.Now)
+	var nickServService nsaccount.NickServAccountServiceImpl
+	var nickServGuard *nickserv.Guard
+	nickServRepo := nickservacct.NewNickServAccountRepository(database)
+	if cfg.AccountsConfig.NickServ() {
+		nc := cfg.NickServConfig
+		backend, err := nickserv.New(nc)
+		if err != nil {
+			_ = database.Close()
+			return nil, err
+		}
+		nickServGuard = nickserv.NewGuard(nickserv.GuardConfig{
+			AccountBurst: nc.RateAccountBurst, AccountPerMinute: nc.RateAccountPerMinute,
+			IPBurst: nc.RateIPBurst, IPPerMinute: nc.RateIPPerMinute,
+			AccountThreshold: nc.LockoutThreshold, IPThreshold: nc.LockoutIPThreshold,
+			Window: nc.LockoutWindow, LockFor: nc.LockoutDuration,
+		}, nickServRepo, opts.Now)
+		nickServService = nsaccount.NewNickServAccountService(nsaccount.Deps{
+			Backend: backend, Guard: nickServGuard, Users: userRepo, Links: nickServRepo,
+			Credentials: credRepo, Identities: identityRepo, Tx: database, Settings: settingsService,
+			Audit: auditService, Metrics: m, Config: nc, SessionKey: kek, Now: opts.Now,
+		})
+		logger.FromCtx(ctx).Info().Str("strategy", nc.Strategy).Bool("signup", nickServService.Signup().Available).
+			Msg("accounts: NickServ backend")
+	}
 	accountService := account.NewAccountService(account.Deps{
 		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Roles: roleRepo, Tx: database,
 		Invites: inviteService, Sessions: sessionService, Email: emailService, Audit: auditService,
 		Settings: settingsService, Hasher: hasher, Metrics: m, Config: cfg.AccountConfig, Now: opts.Now,
+		NickServ: nickServService,
 	})
 	authnService := authn.NewAuthnService(authn.Deps{
 		Users: userRepo, Credentials: credRepo, Sessions: sessionService, Tokens: tokenService,
 		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService, Roles: rolesService,
+		NickServ: nickServService,
 	})
 	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, rolesService, opts.Now)
 	ssoClient := opts.SSOHTTPClient
@@ -250,6 +282,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
+		NickServ:        nickServService,
 		ReturnTo:        returnTo,
 		FilesURL:        func() string { return stackConfig.Effective().FilesConfig.URL() },
 		NetworkChannels: func() []config.NetworkChannel { return stackConfig.Effective().IRCConfig.Channels },
@@ -279,6 +312,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
 		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, Social: socialService, limits: limits,
+		NickServ: nickServService, nickServGuard: nickServGuard,
 	}, nil
 }
 
@@ -288,6 +322,9 @@ func (a *App) RunBackground(ctx context.Context) {
 	go a.StackConfig.Run(ctx)
 	go a.Social.Run(ctx)
 	a.limits.RunPruner(ctx)
+	if a.nickServGuard != nil {
+		a.nickServGuard.RunPruner(ctx)
+	}
 	// Pick up provider changes made on other replicas.
 	go func() {
 		t := time.NewTicker(30 * time.Second)
@@ -322,6 +359,11 @@ func (a *App) RunBackground(ctx context.Context) {
 				}
 				if err := a.IRCAccounts.Cleanup(ctx); err != nil && ctx.Err() == nil {
 					logger.FromCtx(ctx).Warn().Err(err).Msg("irc account removals cleanup")
+				}
+				if a.NickServ != nil {
+					if err := a.NickServ.Cleanup(ctx); err != nil && ctx.Err() == nil {
+						logger.FromCtx(ctx).Warn().Err(err).Msg("nickserv lockout cleanup")
+					}
 				}
 			}
 		}
