@@ -17,6 +17,7 @@ import (
 	"github.com/boson-chat/auth/internal/db/repositories/audit"
 	"github.com/boson-chat/auth/internal/db/repositories/credential"
 	"github.com/boson-chat/auth/internal/db/repositories/emailtoken"
+	fedrepo "github.com/boson-chat/auth/internal/db/repositories/federation"
 	"github.com/boson-chat/auth/internal/db/repositories/identity"
 	"github.com/boson-chat/auth/internal/db/repositories/invite"
 	"github.com/boson-chat/auth/internal/db/repositories/nickservacct"
@@ -38,6 +39,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/authn"
 	"github.com/boson-chat/auth/internal/services/branding"
 	"github.com/boson-chat/auth/internal/services/email"
+	"github.com/boson-chat/auth/internal/services/federation"
 	"github.com/boson-chat/auth/internal/services/idp"
 	"github.com/boson-chat/auth/internal/services/idp/oidc"
 	"github.com/boson-chat/auth/internal/services/idp/saml"
@@ -65,6 +67,11 @@ type Options struct {
 	Now            func() time.Time
 	// SSOHTTPClient is used for calls to identity providers (tests).
 	SSOHTTPClient *nethttp.Client
+	// FederationHTTPClient fetches other servers' boson.json and JWKS and
+	// the directory (tests; nil: federation.NewHTTPClient).
+	FederationHTTPClient *nethttp.Client
+	// FilesHTTPClient calls the files service's internal API (tests).
+	FilesHTTPClient *nethttp.Client
 }
 
 // App is the wired service.
@@ -91,7 +98,9 @@ type App struct {
 	// Social is friends, blocks, privacy and private calls.
 	Social social.SocialServiceImpl
 	// NickServ is the NickServ account backend (nil: local accounts).
-	NickServ      nsaccount.NickServAccountServiceImpl
+	NickServ nsaccount.NickServAccountServiceImpl
+	// Federation is Boson federated login.
+	Federation    federation.FederationServiceImpl
 	nickServGuard *nickserv.Guard
 	limits        *handlers.Limits
 }
@@ -153,6 +162,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	roleRepo := role.NewRoleRepository(database)
 	removalRepo := accountremoval.NewAccountRemovalRepository(database)
 	roleChannelRepo := rolechannel.NewRoleChannelRepository(database)
+	fedRepo := fedrepo.NewFederationRepository(database)
 
 	// 3. Services
 	auditService := auditsvc.NewAuditService(auditRepo)
@@ -205,7 +215,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		nickServService = nsaccount.NewNickServAccountService(nsaccount.Deps{
 			Backend: backend, Guard: nickServGuard, Users: userRepo, Links: nickServRepo,
 			Credentials: credRepo, Identities: identityRepo, Tx: database, Settings: settingsService,
-			Audit: auditService, Metrics: m, Config: nc, SessionKey: kek, Now: opts.Now,
+			Audit: auditService, Metrics: m, Config: nc, SessionKey: kek, Federated: fedRepo.IsFederated, Now: opts.Now,
 		})
 		logger.FromCtx(ctx).Info().Str("strategy", nc.Strategy).Bool("signup", nickServService.Signup().Available).
 			Msg("accounts: NickServ backend")
@@ -214,13 +224,19 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Users: userRepo, Credentials: credRepo, EmailTokens: emailTokenRepo, Roles: roleRepo, Tx: database,
 		Invites: inviteService, Sessions: sessionService, Email: emailService, Audit: auditService,
 		Settings: settingsService, Hasher: hasher, Metrics: m, Config: cfg.AccountConfig, Now: opts.Now,
-		NickServ: nickServService,
+		NickServ: nickServService, Federated: fedRepo.IsFederated,
+	})
+	federationService := federation.NewFederationService(federation.Deps{
+		Repo: fedRepo, Users: userRepo, Roles: roleRepo, Tx: database, Sessions: sessionService, Tokens: tokenService,
+		Audit: auditService, Metrics: m, Config: cfg, HTTPClient: opts.FederationHTTPClient,
+		FilesClient: opts.FilesHTTPClient, Now: opts.Now,
 	})
 	authnService := authn.NewAuthnService(authn.Deps{
 		Users: userRepo, Credentials: credRepo, Sessions: sessionService, Tokens: tokenService,
 		Audit: auditService, Hasher: hasher, Metrics: m, Settings: settingsService, Roles: rolesService,
-		NickServ: nickServService,
+		NickServ: nickServService, Federation: federationService,
 	})
+	federationService.Authn = authnService
 	adminService := admin.NewAdminService(accountService, userRepo, database, sessionService, inviteService, auditService, rolesService, opts.Now)
 	ssoClient := opts.SSOHTTPClient
 	if ssoClient == nil {
@@ -250,7 +266,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
 	}
 	stackConfig := stackconfig.NewStackConfigService(stackconfig.Deps{
-		Env: cfg, Settings: settingsService, Email: emailService, Branding: brandingService, Mailer: swapMailer, ReturnTo: returnTo,
+		Env: cfg, Settings: settingsService, Federation: federationService, Email: emailService, Branding: brandingService, Mailer: swapMailer, ReturnTo: returnTo,
 		Audit: auditService, Now: opts.Now,
 	})
 	if err := stackConfig.Load(ctx); err != nil {
@@ -278,11 +294,14 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 
 	// 4. Handlers
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
+	assertBurst, assertRate := cfg.FederationConfig.AssertLimit()
+	limits.SetAccountLimit(handlers.BucketFederationAssert, assertBurst, assertRate)
 	h := &handlers.Handlers{
 		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		NickServ:        nickServService,
+		Federation:      federationService,
 		ReturnTo:        returnTo,
 		FilesURL:        func() string { return stackConfig.Effective().FilesConfig.URL() },
 		NetworkChannels: func() []config.NetworkChannel { return stackConfig.Effective().IRCConfig.Channels },
@@ -306,13 +325,15 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 			middleware.Recover, middleware.ClientIP(trusted), middleware.Logging,
 			middleware.SecurityHeaders,
 			// The branding is public: any origin, no credentials.
-			middleware.PublicCORS(middleware.PathPrefix(branding.DocumentPath), middleware.DynamicCORS(stackConfig.CORSOrigins))),
+			// Federated login: any origin, bearer / assertion only, no cookies.
+			middleware.BearerCORS(handlers.FederationPaths,
+				middleware.PublicCORS(middleware.PathPrefix(branding.DocumentPath), middleware.DynamicCORS(stackConfig.CORSOrigins)))),
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
 		Keys: keyService, Account: accountService, Admin: adminService, Sessions: sessionService,
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
 		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, Social: socialService, limits: limits,
-		NickServ: nickServService, nickServGuard: nickServGuard,
+		NickServ: nickServService, nickServGuard: nickServGuard, Federation: federationService,
 	}, nil
 }
 
@@ -359,6 +380,9 @@ func (a *App) RunBackground(ctx context.Context) {
 				}
 				if err := a.IRCAccounts.Cleanup(ctx); err != nil && ctx.Err() == nil {
 					logger.FromCtx(ctx).Warn().Err(err).Msg("irc account removals cleanup")
+				}
+				if err := a.Federation.Cleanup(ctx); err != nil && ctx.Err() == nil {
+					logger.FromCtx(ctx).Warn().Err(err).Msg("federation replay cache cleanup")
 				}
 				if a.NickServ != nil {
 					if err := a.NickServ.Cleanup(ctx); err != nil && ctx.Err() == nil {

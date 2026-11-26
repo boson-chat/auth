@@ -34,6 +34,9 @@ type Config struct {
 	SocialConfig    SocialConfig
 	AccountsConfig  AccountsConfig
 	NickServConfig  NickServConfig
+	// FederationConfig is Boson federated login (docs/federation.md).
+	FederationConfig    FederationConfig
+	FilesInternalConfig FilesInternalConfig
 }
 
 // SocialConfig is friends and private calls (docs/friends-calls.md).
@@ -206,8 +209,11 @@ type TokenConfig struct {
 
 // MaxTokenTTL is the longest lifetime of any JWT this service signs.
 func (c TokenConfig) MaxTokenTTL() time.Duration {
-	return max(c.AccessTokenTTL, c.VoiceTokenTTL)
+	return max(c.AccessTokenTTL, c.VoiceTokenTTL, FederationAssertionTTL)
 }
+
+// FederationAssertionTTL is the lifetime of a federation assertion (spec: at most 5 min).
+const FederationAssertionTTL = 5 * time.Minute
 
 // DecodeKeyEncryptionKey parses AUTH_KEY_ENCRYPTION_KEY.
 func (c TokenConfig) DecodeKeyEncryptionKey() ([]byte, error) {
@@ -458,6 +464,9 @@ func (c Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("ACCOUNT_BACKEND must be local or nickserv, got %q", c.AccountsConfig.Backend)
+	}
+	if err := c.ValidateFederation(); err != nil {
+		return err
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
 		return errors.New("SSO_STATE_TTL, SSO_CODE_TTL and SSO_HTTP_TIMEOUT must be positive")

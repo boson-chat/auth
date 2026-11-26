@@ -42,6 +42,11 @@ const (
 	BucketEmailTest = "email_test"
 	// BucketEmailPreview limits POST /internal/email/preview per admin.
 	BucketEmailPreview = "email_preview"
+	// BucketFederationAssert limits POST /v1/federation/assertions per user
+	// (FEDERATION_ASSERT_BURST / _PER_MINUTE).
+	BucketFederationAssert = "federation_assert"
+	// BucketFederationLogin limits POST /v1/federation/login per client IP.
+	BucketFederationLogin = "federation_login"
 )
 
 // Test emails per admin: a burst of 5, then one every 6 minutes.
@@ -104,7 +109,16 @@ func NewLimits(cfg config.RateLimitConfig, m *metrics.Metrics) *Limits {
 	l.buckets[BucketSocial] = bucketPair{account: ratelimit.New(socialBurst, socialPerMinute)}
 	l.buckets[BucketEmailTest] = bucketPair{account: ratelimit.New(emailTestBurst, emailTestPerMinute)}
 	l.buckets[BucketEmailPreview] = bucketPair{account: ratelimit.New(emailPreviewBurst, emailPreviewPerMinute)}
+	l.buckets[BucketFederationLogin] = bucketPair{ip: ratelimit.New(cfg.IPBurst, cfg.IPPerMinute)}
+	l.buckets[BucketFederationAssert] = bucketPair{account: ratelimit.New(10, 10)}
 	return l
+}
+
+// SetAccountLimit replaces bucket's per-account limiter (call before RunPruner).
+func (l *Limits) SetAccountLimit(bucket string, burst int, perMinute float64) {
+	b := l.buckets[bucket]
+	b.account = ratelimit.New(burst, perMinute)
+	l.buckets[bucket] = b
 }
 
 // RunPruner drops idle buckets until ctx is done.

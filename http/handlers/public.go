@@ -41,6 +41,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("POST /v1/voice/token", h.authed(h.voiceToken))
 	mux.HandleFunc("POST /v1/voice/guest-token", h.guestVoiceToken)
 
+	h.registerFederation(mux)
 	h.registerSocial(mux)
 	h.registerBranding(mux)
 	h.registerSSO(mux)
@@ -477,10 +478,21 @@ func (h *Handlers) me(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusOK, map[string]any{
+	out := map[string]any{
 		"user": toUser(p.User), "session_id": p.SessionID,
 		"roles": toRoleSummaries(a.Assigned()), "permissions": a.Permissions,
-	})
+	}
+	if h.Federation != nil {
+		// federation: {identity, home_domain, issuer} for an account of
+		// another Boson server, null for a local one.
+		fa, err := h.Federation.Account(r.Context(), p.UserID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		out["federation"] = toFederation(fa)
+	}
+	writeJSON(w, nethttp.StatusOK, out)
 }
 
 type updateMeReq struct {

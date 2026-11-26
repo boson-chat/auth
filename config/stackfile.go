@@ -29,6 +29,13 @@ import (
 //	  channel_expiry_days: 0
 //	  cors_allowed_origins: [https://app.example.com]   # CORS_ALLOWED_ORIGINS
 //	  smtp: { host: smtp.example.com, port: 587, from: "Boson <hi@example.com>", tls: starttls }
+//	  federation:                   # FEDERATION_* (docs/federation.md)
+//	    mode: directory             # off | allowlist | directory | open
+//	    allow: [boson.chat]
+//	    block: [spam.example]
+//	    directory_url: https://directory.boson.chat
+//	    remote_upload_quota: 1GB    # "" = the account quota
+//	    remote_voice: true
 //	files:
 //	  enabled: true                 # FILES_ENABLED; only this key is auth's (files_url)
 //	irc:                            # only these keys are auth's (irc.go)
@@ -74,6 +81,9 @@ type FileConfig struct {
 	IRCChannelsSet    bool
 	IRCChannelFounder *string
 	IRCAutojoinGuests *bool
+
+	// Federation is auth.federation (docs/federation.md).
+	Federation FederationFile
 
 	// Branding is the branding: section; nil when absent.
 	Branding *BrandingConfig
@@ -261,6 +271,9 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 	if err := loadIRC(doc, &f); err != nil {
 		return FileConfig{}, err
 	}
+	if err := loadFederation(auth, &f); err != nil {
+		return FileConfig{}, err
+	}
 	email, unknownEmail, err := loadEmail(auth)
 	if err != nil {
 		return FileConfig{}, err
@@ -278,7 +291,7 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 	}
 	f.Unknown = append(f.Unknown, network.Unknown("name")...)
 	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "guest_voice", "channel_creation",
-		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email")...)
+		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email", "federation")...)
 	f.Unknown = append(f.Unknown, smtp.Unknown("host", "port", "from", "tls")...)
 	f.Unknown = append(f.Unknown, rolesSection.Unknown("channels")...)
 	f.Unknown = append(f.Unknown, roleChannels.Unknown("autojoin", "rejoin")...)
@@ -326,6 +339,7 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeyRolesChannelsAutojoin, f.RolesChannelsAutojoin != nil, deref(f.RolesChannelsAutojoin))
 	put(KeyRolesChannelsRejoin, f.RolesChannelsRejoin != nil, deref(f.RolesChannelsRejoin))
 	f.flattenIRC(m)
+	f.Federation.flatten(m)
 	f.flattenBranding(m)
 	return m
 }
@@ -377,6 +391,7 @@ func (c Config) WithFile(f FileConfig) Config {
 		c.RolesConfig.ChannelsAutojoin = *f.RolesChannelsAutojoin
 	}
 	set(&c.RolesConfig.ChannelsRejoin, f.RolesChannelsRejoin)
+	c.withFederation(f.Federation)
 	return c.withIRC(f)
 }
 

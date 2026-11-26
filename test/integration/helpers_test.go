@@ -105,9 +105,16 @@ type env struct {
 	mail     *captureMailer
 	cfg      config.Config
 	client   *nethttp.Client
+	opts     authhttp.Options
 }
 
 func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
+	t.Helper()
+	return newEnvOpts(t, authhttp.Options{}, mutate...)
+}
+
+// newEnvOpts is newEnv with Build options (the mailer is always the capture one).
+func newEnvOpts(t *testing.T, opts authhttp.Options, mutate ...func(*config.Config)) *env {
 	t.Helper()
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
@@ -145,14 +152,15 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 	}
 
 	mail := newCaptureMailer()
-	app, err := authhttp.Build(context.Background(), cfg, authhttp.Options{Mailer: mail})
+	opts.Mailer = mail
+	app, err := authhttp.Build(context.Background(), cfg, opts)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if err := app.Keys.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, app: app, mail: mail, cfg: cfg,
+	e := &env{t: t, app: app, mail: mail, cfg: cfg, opts: opts,
 		public: httptest.NewServer(app.Public), internal: httptest.NewServer(app.Internal)}
 	jar, _ := cookiejar.New(nil)
 	e.client = &nethttp.Client{Jar: jar}
@@ -172,7 +180,7 @@ func (e *env) restart() {
 	e.public.Close()
 	e.internal.Close()
 	_ = e.app.Close()
-	app, err := authhttp.Build(context.Background(), e.cfg, authhttp.Options{Mailer: e.mail})
+	app, err := authhttp.Build(context.Background(), e.cfg, e.opts)
 	if err != nil {
 		e.t.Fatalf("build: %v", err)
 	}

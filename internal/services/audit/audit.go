@@ -65,6 +65,18 @@ const (
 	// account, old/new services ids).
 	EventNickServLinked       = "nickserv_account_linked"
 	EventNickServReregistered = "nickserv_account_reregistered"
+	// Federated login (docs/federation.md). Home side: an assertion issued
+	// (meta: audience). Remote side: a refused federated sign-in (meta:
+	// reason, domain) and a successful one (meta: identity, domain,
+	// created), ban / unban of an identity, sessions of a home domain
+	// ended (meta: domain, revoked), and settings changes (meta.old / meta.new).
+	EventFederationAssertion       = "federation_assertion_issued"
+	EventFederationLoginFailed     = "federation_login_failed"
+	EventFederationBanned          = "federation_identity_banned"
+	EventFederationUnbanned        = "federation_identity_unbanned"
+	EventFederationLogin           = "federation_login"
+	EventFederationSessionsRevoked = "federation_domain_sessions_revoked"
+	EventFederationSettingsUpdated = "federation_settings_updated"
 )
 
 type AuditServiceImpl interface {
