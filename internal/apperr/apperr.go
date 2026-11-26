@@ -6,6 +6,7 @@ package apperr
 import (
 	"errors"
 	"net/http"
+	"time"
 )
 
 type Error struct {
@@ -14,6 +15,8 @@ type Error struct {
 	Message string
 	// Field names the request field Message is about (400s), if one.
 	Field string
+	// RetryAfter, when set, is sent as the Retry-After header (429s).
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -32,6 +35,20 @@ func InvalidField(field, msg string) *Error {
 	e := Invalid(field + " " + msg)
 	e.Field = field
 	return e
+}
+
+// WithRetryAfter returns a copy of e with RetryAfter d.
+func (e *Error) WithRetryAfter(d time.Duration) *Error {
+	c := *e
+	c.RetryAfter = d
+	return &c
+}
+
+// WithMessage returns a copy of e with another message.
+func (e *Error) WithMessage(msg string) *Error {
+	c := *e
+	c.Message = msg
+	return &c
 }
 
 // As extracts an *Error.

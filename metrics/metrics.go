@@ -28,6 +28,13 @@ const (
 	OutcomeError              = "error"
 	// OutcomeTaken: a guest asked for a nick that belongs to an account.
 	OutcomeTaken = "taken"
+	// NickServ checks: the services refused, couldn't be reached, or the
+	// attempt was stopped by a lockout / rate limit before reaching them.
+	OutcomeSuspended   = "suspended"
+	OutcomeRefused     = "refused"
+	OutcomeUnavailable = "unavailable"
+	OutcomeLocked      = "locked"
+	OutcomeRateLimited = "rate_limited"
 )
 
 // Metrics holds the instruments. The zero value is not usable; use New or Noop.
@@ -40,6 +47,7 @@ type Metrics struct {
 	rateLimitHits  metric.Int64Counter
 	passwordResets metric.Int64Counter
 	guestVoice     metric.Int64Counter
+	nickservCheck  metric.Int64Counter
 }
 
 // New creates the instruments on mp.
@@ -63,6 +71,7 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		rateLimitHits:  c("auth.rate_limit.hits", "Requests rejected by the rate limiter, by bucket."),
 		passwordResets: c("auth.password.resets", "Password reset completions by outcome."),
 		guestVoice:     c("auth.voice.guest_tokens", "Guest voice token requests by outcome."),
+		nickservCheck:  c("auth.nickserv.checks", "NickServ password checks by strategy and outcome."),
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
@@ -109,4 +118,9 @@ func (m *Metrics) PasswordReset(ctx context.Context, o string) {
 
 func (m *Metrics) GuestVoiceToken(ctx context.Context, o string) {
 	m.guestVoice.Add(ctx, 1, outcome(o))
+}
+
+// NickServCheck counts one NickServ verification (strategy: anope_rpc, ...).
+func (m *Metrics) NickServCheck(ctx context.Context, strategy, o string) {
+	m.nickservCheck.Add(ctx, 1, metric.WithAttributes(attribute.String("strategy", strategy), attribute.String("outcome", o)))
 }

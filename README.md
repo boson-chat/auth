@@ -7,6 +7,8 @@ providers, runtime network settings, network roles and permissions (mapped
 to IRC oper classes and vhosts), an admin API, and Ed25519-signed JWTs
 that other boson services (voice, later video and the admin panel) verify
 through a public JWKS. IRC SASL uses the internal password-check API.
+On an existing IRC network, accounts can instead be the network's NickServ
+accounts ([NickServ backend](docs/nickserv.md), `ACCOUNT_BACKEND=nickserv`).
 
 - Go 1.27, plain REST/JSON on `net/http`, Postgres via GORM, embedded
   golang-migrate migrations, zerolog, OpenTelemetry metrics (Prometheus).
@@ -36,6 +38,7 @@ Tests:
 make test                                  # unit tests (integration tests skip)
 make test-pg-up test-integration test-pg-down   # + full HTTP flows on a throwaway Postgres
 make test-dex-up                           # optional: a real OIDC IdP (Dex) for TestOIDCAgainstDex
+make test-nickserv                         # NickServ strategies vs real Anope/Atheme/InspIRCd/ngircd in Docker
 ```
 
 The integration suite needs `TEST_DATABASE_URL` pointing at a Postgres
@@ -59,10 +62,11 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
-| `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` |
+| `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` (NickServ backend: registers a NickServ account and adds `verification: "nickserv_code"\|""`, `message`, or `403 registration_unavailable`; [details](docs/nickserv.md#sign-up)) |
+| `POST /v1/register/confirm` | – | `{username, password, code}` → 200: confirm a NickServ registration with the code the services emailed ([NickServ backend](docs/nickserv.md#sign-up)); `400 invalid_code`; `404` on the local backend |
 | `POST /v1/email/verify` | – | `{token, return_to?}` → `{user, redirect_to?}`: where the verify page sends the user next (see below) |
 | `POST /v1/email/resend` | optional | `{email, return_to?}` (or a bearer token) → 202, same response whether or not the account exists |
 | `POST /v1/login` | – | `{login, password, cookie?}` (`login` = username or email) → `{token_type, access_token, expires_in, refresh_token, refresh_expires_in, session_id, user}` |
@@ -358,6 +362,9 @@ Keycloak, Okta and Entra ID.
 `409 username_taken|email_taken|already_verified|slug_taken|last_login_method|account_disabled` (the last for admin actions on a disabled account),
 `409 role_name_taken|builtin_role|last_owner` (roles), `412 precondition_failed` (`If-Match` on a role edit),
 `415 unsupported_media_type`, `429 rate_limited` (with `Retry-After`).
+NickServ backend ([details](docs/nickserv.md#sign-in)): `403 account_suspended|nickserv_refused|registration_unavailable`,
+`409 password_managed_by_nickserv|account_name_conflict|account_name_unsupported|account_reregistered`,
+`400 registration_rejected|invalid_code`, `429 account_locked` (with `Retry-After`), `503 accounts_unavailable`.
 
 Error bodies are `{"error": code, "message": text, "code": code}` (`code`
 repeats `error` for clients that read it from there).
@@ -552,7 +559,9 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | – | enable OTLP push in addition to Prometheus |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/protobuf` | or `grpc` |
 | `OTEL_METRICS_EXPORTER` | – | `none` disables OTLP push |
+| `ACCOUNT_BACKEND` | `local` | `local` (auth's own accounts) \| `nickserv` (the IRC network's NickServ accounts; `NICKSERV_*` settings in [docs/nickserv.md](docs/nickserv.md#configuration)) |
 | `TEST_DATABASE_URL` | – | tests only: enables the integration suite |
+| `TEST_NICKSERV` | – | tests only: `1` runs `test/nickserv` against the real services from `make test-nickserv-up` |
 | `TEST_DEX_ISSUER` | – | tests only: run the OIDC flow against a real Dex (`make test-dex-up`) |
 
 Rate-limited endpoint groups: login (and password change), register,
@@ -598,13 +607,14 @@ On the internal listener's `/metrics` (and OTLP if configured), plus Go runtime 
 
 | Metric | Labels |
 |---|---|
-| `auth_login_attempts_total` | `method` (`password`, `internal`, `oidc`, `saml`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`, `rejected`) |
+| `auth_login_attempts_total` | `method` (`password`, `nickserv`, `internal`, `oidc`, `saml`), `outcome` (`success`, `invalid_credentials`, `disabled`, `unverified`, `rejected`) |
 | `auth_registrations_total` | `outcome` (`success`, `rejected`, `error`) |
 | `auth_token_refreshes_total` | `outcome` (`success`, `invalid`, `expired`, `reuse`, `disabled`, `error`) |
 | `auth_token_refresh_reuse_total` | – |
 | `auth_emails_sent_total` | `purpose` (`verify_email`, `reset_password`), `outcome` |
 | `auth_rate_limit_hits_total` | `bucket` |
 | `auth_password_resets_total` | `outcome` |
+| `auth_nickserv_checks_total` | `strategy`, `outcome` (`success`, `invalid_credentials`, `suspended`, `refused`, `unavailable`, `locked`, `rate_limited`, `rejected`) ([NickServ backend](docs/nickserv.md#security)) |
 | `auth_voice_guest_tokens_total` | `outcome` (`success`, `rejected` (disabled), `invalid`, `taken` (registered / reserved nick), `error`) |
 
 ## Security notes
@@ -692,6 +702,8 @@ internal/services/sso        SSO flow, linking, code exchange, provider admin
 internal/services/roles      roles, permissions, hierarchy, IRC oper class / vhost
 internal/services/ircaccounts removed-accounts feed for IRC (deleted / disabled)
 internal/services/stackconfig applies the stack config file live (BOSON_CONFIG)
+internal/services/nickserv   NickServ password checks: Anope/Atheme RPC, SASL, IDENTIFY; TLS pins; lockouts
+internal/services/nsaccount  NickServ account backend: sign-in, linking, sign-up (ACCOUNT_BACKEND=nickserv)
 internal/services/branding   GET /v1/branding: theme + images from the config file
 internal/services/email      built-in and branded emails, preview / test
 internal/theme               boson-theme/1 rules (shared with directory and client)
@@ -700,9 +712,11 @@ internal/perm                the permission catalog
 internal/{nick,password,keycrypt,ratelimit,opaque,ids,mailer,...}
 metrics/                     OpenTelemetry instruments + Prometheus exporter
 test/integration/            HTTP flows against real Postgres
+test/nickserv/               real Anope 2.1 + InspIRCd 4, Atheme 7.2 + ngircd 27 (compose) for the NickServ strategies
 docs/sso.md                  SSO flow, linking rules, admin API, IdP setup
 docs/roles.md                roles, permissions, hierarchy, Ergo/quicvoiced contract
 docs/branding.md             network theme, branding images, email templates
+docs/nickserv.md             NickServ account backend: strategies, config keys, security
 ```
 
 ## Roadmap

@@ -59,6 +59,12 @@ const (
 	// EventEmailTestSent: POST /internal/email/test (meta: template, to,
 	// outcome, logged_only).
 	EventEmailTestSent = "email_test_sent"
+	// NickServ account backend (docs/nickserv.md): a local record created
+	// for / linked to a NickServ account (meta: account, existing), and a
+	// sign-in refused because the name was registered again on IRC (meta:
+	// account, old/new services ids).
+	EventNickServLinked       = "nickserv_account_linked"
+	EventNickServReregistered = "nickserv_account_reregistered"
 )
 
 type AuditServiceImpl interface {

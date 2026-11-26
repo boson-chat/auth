@@ -24,6 +24,7 @@ func (h *Handlers) RegisterPublic(mux *nethttp.ServeMux) {
 	mux.HandleFunc("GET /v1/config", h.publicConfig)
 
 	mux.HandleFunc("POST /v1/register", h.register)
+	mux.HandleFunc("POST /v1/register/confirm", h.confirmRegistration)
 	mux.HandleFunc("POST /v1/email/verify", h.verifyEmail)
 	mux.HandleFunc("POST /v1/email/resend", h.resendVerification)
 	mux.HandleFunc("POST /v1/login", h.login)
@@ -140,7 +141,22 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
 		"channels":      public,
+		"accounts":      h.accountsInfo(),
 	})
+}
+
+// accountsInfo is GET /v1/config's accounts: where accounts live and what
+// sign-up / password reset do there.
+func (h *Handlers) accountsInfo() map[string]any {
+	if h.NickServ == nil {
+		return map[string]any{"backend": config.AccountBackendLocal, "signup": true, "signup_message": nil, "password_reset": true}
+	}
+	su := h.NickServ.Signup()
+	var msg *string
+	if su.Message != "" {
+		msg = &su.Message
+	}
+	return map[string]any{"backend": config.AccountBackendNickServ, "signup": su.Available, "signup_message": msg, "password_reset": false}
 }
 
 type registerReq struct {
@@ -162,7 +178,7 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !h.Limits.allow(w, r, BucketRegister, accountKey(req.Email)) {
 		return
 	}
-	u, err := h.Account.Register(r.Context(), account.RegisterInput{
+	res, err := h.Account.Register(r.Context(), account.RegisterInput{
 		Username: req.Username, Email: req.Email, Password: req.Password, InviteCode: req.InviteCode,
 		ReturnTo: h.verifyReturnTo(req.ReturnTo),
 	})
@@ -175,11 +191,42 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusCreated, map[string]any{
-		"user":                        toUser(u),
-		"email_verification_sent":     true,
-		"email_verification_required": st.RequireEmailVerification,
-	})
+	out := map[string]any{
+		"user":                        toUser(res.User),
+		"email_verification_sent":     res.Verification != "",
+		"email_verification_required": st.RequireEmailVerification && res.Verification != "",
+	}
+	if h.NickServ != nil {
+		// NickServ backend: the services verify (a code to confirm with
+		// POST /v1/register/confirm), or nothing needs verifying.
+		out["verification"] = res.Verification
+		out["message"] = res.Message
+	}
+	writeJSON(w, nethttp.StatusCreated, out)
+}
+
+type confirmRegistrationReq struct {
+	Username string `json:"username"`
+	// Password: Atheme 7.2 only takes the code from the account itself.
+	Password string `json:"password"`
+	Code     string `json:"code"`
+}
+
+// confirmRegistration submits the code NickServ emailed after sign-up.
+func (h *Handlers) confirmRegistration(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req confirmRegistrationReq
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !h.Limits.allow(w, r, BucketVerify, accountKey(req.Username)) {
+		return
+	}
+	if err := h.Account.ConfirmRegistration(r.Context(), req.Username, req.Password, req.Code); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, map[string]string{"status": "registration confirmed; you can sign in now"})
 }
 
 type tokenReq struct {
@@ -350,9 +397,13 @@ func (h *Handlers) logout(w nethttp.ResponseWriter, r *nethttp.Request) {
 			writeError(w, r, apperr.ErrUnauthenticated)
 			return
 		}
-		if _, _, err := h.Sessions.RevokeByRefreshToken(r.Context(), raw); err != nil {
+		userID, _, err := h.Sessions.RevokeByRefreshToken(r.Context(), raw)
+		if err != nil {
 			writeError(w, r, err)
 			return
+		}
+		if h.NickServ != nil && userID != "" {
+			h.NickServ.EndSession(r.Context(), userID)
 		}
 	}
 	h.clearTokenCookies(w)

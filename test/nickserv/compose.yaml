@@ -1,0 +1,87 @@
+# Real services for the nickserv account backend's integration tests
+# (go test ./test/nickserv/ with TEST_NICKSERV=1; `make test-nickserv`).
+#
+#   anope network:  InspIRCd 4 (SASL, TLS) <- Anope 2.1 (JSON-RPC :8080)
+#   atheme network: ngircd 27 (no SASL, TLS) <- Atheme 7.2 (JSON-RPC + XML-RPC :8080)
+#
+# Everything binds to 127.0.0.1 only and carries the label
+# auth-nickserv-test=1 so `make test-nickserv-down` can remove it by label.
+# Test fixtures only: the passwords and tokens here are not secrets.
+# Shareable later with boson-chat/stack test/ircds/ (see README.md).
+name: auth-nickserv-test
+
+x-labels: &labels
+  labels:
+    auth-nickserv-test: "1"
+
+services:
+  # Self-signed test CA + one server certificate for both IRC servers
+  # (SANs: localhost, 127.0.0.1, anope-ircd, atheme-ircd). Written to
+  # ./.certs (gitignored); the tests read ca.pem from there.
+  certgen:
+    <<: *labels
+    image: alpine:3.22
+    volumes:
+      - ./.certs:/certs
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null
+        cd /certs
+        if [ ! -s ca.pem ] || [ ! -s irc.pem ]; then
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
+            -subj "/CN=auth nickserv test CA" -keyout ca.key -out ca.pem 2>/dev/null
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -subj "/CN=localhost" -keyout irc.key -out irc.csr 2>/dev/null
+          printf 'subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:anope-ircd,DNS:atheme-ircd\nextendedKeyUsage=serverAuth\n' > ext.cnf
+          openssl x509 -req -in irc.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 30 \
+            -extfile ext.cnf -out irc.pem 2>/dev/null
+          rm -f irc.csr ext.cnf ca.srl
+        fi
+        chmod 0644 ./*.pem ./*.key
+        : > dhparams.pem
+
+  anope-ircd:
+    <<: *labels
+    image: inspircd/inspircd-docker:4.12.1
+    depends_on:
+      certgen: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:36667:6667"
+      - "127.0.0.1:36697:6697"
+    volumes:
+      - ./inspircd/inspircd.conf:/inspircd/conf/inspircd.conf:ro
+      - ./.certs/irc.pem:/inspircd/conf/cert.pem:ro
+      - ./.certs/irc.key:/inspircd/conf/key.pem:ro
+      - ./.certs/dhparams.pem:/inspircd/conf/dhparams.pem:ro
+
+  anope:
+    <<: *labels
+    build: ./anope
+    image: auth-nickserv-test/anope:2.1.28
+    depends_on: [anope-ircd]
+    restart: on-failure
+    ports:
+      - "127.0.0.1:38080:8080"
+
+  atheme-ircd:
+    <<: *labels
+    build: ./ngircd
+    image: auth-nickserv-test/ngircd:27
+    depends_on:
+      certgen: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:37667:6667"
+      - "127.0.0.1:37697:6697"
+    volumes:
+      - ./.certs:/certs:ro
+
+  atheme:
+    <<: *labels
+    build: ./atheme
+    image: auth-nickserv-test/atheme:7.2.12
+    depends_on: [atheme-ircd]
+    restart: on-failure
+    ports:
+      - "127.0.0.1:38081:8080"

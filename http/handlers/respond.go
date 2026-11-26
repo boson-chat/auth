@@ -5,9 +5,11 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"mime"
 	nethttp "net/http"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/boson-chat/auth/internal/apperr"
@@ -38,6 +40,9 @@ func writeJSON(w nethttp.ResponseWriter, status int, v any) {
 // writeError renders apperr errors as-is and everything else as a generic 500.
 func writeError(w nethttp.ResponseWriter, r *nethttp.Request, err error) {
 	if e, ok := apperr.As(err); ok {
+		if e.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(max(e.RetryAfter.Seconds(), 1)))))
+		}
 		writeJSON(w, e.Status, errorBody{Error: e.Code, Message: e.Message, Code: e.Code, Field: e.Field})
 		return
 	}

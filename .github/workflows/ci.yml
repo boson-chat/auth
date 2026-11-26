@@ -54,3 +54,25 @@ jobs:
           TEST_DEX_ISSUER: http://127.0.0.1:5556/dex
       - name: Docker build
         run: docker build --build-arg VERSION=ci -t auth:ci .
+
+  # The NickServ account backend against real services and IRC servers
+  # (test/nickserv/compose.yaml): Anope 2.1 + InspIRCd 4 (anope_rpc, sasl,
+  # identify), Atheme 7.2 + ngircd 27 (atheme_jsonrpc, atheme_xmlrpc, identify).
+  nickserv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start the fixtures
+        run: docker compose -p auth-nickserv-test -f test/nickserv/compose.yaml up -d --build
+      - run: go test -race -count=1 -v ./test/nickserv/
+        env:
+          TEST_NICKSERV: "1"
+      - name: Fixture logs
+        if: failure()
+        run: docker compose -p auth-nickserv-test -f test/nickserv/compose.yaml logs --no-color
+      - name: Stop the fixtures
+        if: always()
+        run: docker compose -p auth-nickserv-test -f test/nickserv/compose.yaml down -v --remove-orphans

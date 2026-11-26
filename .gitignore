@@ -15,3 +15,6 @@ go.work.sum
 
 # Environment
 .env
+
+# nickserv integration fixtures (generated test certs)
+test/nickserv/.certs/
