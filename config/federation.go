@@ -70,9 +70,33 @@ type FederationConfig struct {
 	HTTPTimeout time.Duration `default:"10s" env:"FEDERATION_HTTP_TIMEOUT"`
 	// Accept http:// discovery, JWKS and directory URLs (dev only).
 	AllowHTTP bool `default:"false" env:"FEDERATION_ALLOW_HTTP"`
+	// Whether a federated account's handle always carries its home
+	// domain (alice-bosonchat) or only when the home username is taken
+	// here: always | clash | auto (always when the evrd bridge is on, i.e.
+	// an existing IRC network whose registered nicks Boson can't see).
+	HandleSuffix string `default:"auto" env:"FEDERATION_HANDLE_SUFFIX"`
 	// Assertions issued per user: burst and per minute.
 	AssertBurst     int     `default:"10" env:"FEDERATION_ASSERT_BURST"`
 	AssertPerMinute float64 `default:"10" env:"FEDERATION_ASSERT_PER_MINUTE"`
+}
+
+// FEDERATION_HANDLE_SUFFIX values.
+const (
+	HandleSuffixAuto   = "auto"
+	HandleSuffixAlways = "always"
+	HandleSuffixClash  = "clash"
+)
+
+// AlwaysSuffixHandles reports whether federated handles always carry the
+// home domain (FEDERATION_HANDLE_SUFFIX; auto: when the bridge is on).
+func (c Config) AlwaysSuffixHandles() bool {
+	switch strings.ToLower(strings.TrimSpace(c.FederationConfig.HandleSuffix)) {
+	case HandleSuffixAlways:
+		return true
+	case HandleSuffixClash:
+		return false
+	}
+	return c.BridgeConfig.Enabled()
 }
 
 // Timeout is FEDERATION_HTTP_TIMEOUT (10 s when unset).
@@ -147,6 +171,11 @@ func (c Config) ValidateFederation() error {
 		if n, err := ParseSize(v); err != nil || n <= 0 {
 			return fmt.Errorf("%s must be a positive size such as 500MB, got %q", name, v)
 		}
+	}
+	switch strings.ToLower(strings.TrimSpace(f.HandleSuffix)) {
+	case "", HandleSuffixAuto, HandleSuffixAlways, HandleSuffixClash:
+	default:
+		return fmt.Errorf("FEDERATION_HANDLE_SUFFIX must be auto, always or clash, got %q", f.HandleSuffix)
 	}
 	// Zero values (struct literals) mean the defaults; negatives are errors.
 	if f.HTTPTimeout < 0 {

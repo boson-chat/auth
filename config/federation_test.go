@@ -129,3 +129,29 @@ auth:
 		t.Fatal("fields without a section")
 	}
 }
+
+func TestAlwaysSuffixHandles(t *testing.T) {
+	bridge := BridgeConfig{APIURL: "http://evrd-links:8098", Token: "t"}
+	for _, tc := range []struct {
+		mode   string
+		bridge bool
+		want   bool
+	}{
+		{"", false, false}, {"auto", false, false}, {"auto", true, true}, {"", true, true},
+		{"always", false, true}, {"Clash", true, false},
+	} {
+		c := Config{FederationConfig: FederationConfig{HandleSuffix: tc.mode}}
+		if tc.bridge {
+			c.BridgeConfig = bridge
+		}
+		if got := c.AlwaysSuffixHandles(); got != tc.want {
+			t.Errorf("%q bridge %v: %v", tc.mode, tc.bridge, got)
+		}
+		if err := c.ValidateFederation(); err != nil {
+			t.Errorf("%q: %v", tc.mode, err)
+		}
+	}
+	if err := (Config{FederationConfig: FederationConfig{HandleSuffix: "sometimes"}}).ValidateFederation(); err == nil || !strings.Contains(err.Error(), "FEDERATION_HANDLE_SUFFIX") {
+		t.Errorf("bad value: %v", err)
+	}
+}

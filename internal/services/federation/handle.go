@@ -45,12 +45,17 @@ func fit(base, suffix string) string {
 
 // handleCandidates lists local handles to try, in order: the home username
 // (alice), then with the home domain's label (alice-bosonchat), then that
-// with a number (alice-bosonchat2 … alice-bosonchat20). Every candidate is
-// a valid IRC account name.
-func handleCandidates(preferred, domain string) []string {
+// with a number (alice-bosonchat2 … alice-bosonchat20). With suffixed,
+// the bare home username isn't tried: next to an existing IRC network
+// (the bridge) it may be a nick someone registered there, which Boson
+// can't see. Every candidate is a valid IRC account name.
+func handleCandidates(preferred, domain string, suffixed bool) []string {
 	base := handleBase(preferred)
 	label := domainLabel(domain)
 	out := []string{base}
+	if suffixed && label != "" {
+		out = nil
+	}
 	if label != "" {
 		withDomain := fit(base, "-"+label)
 		out = append(out, withDomain)
