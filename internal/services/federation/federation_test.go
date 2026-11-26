@@ -22,24 +22,30 @@ import (
 )
 
 func TestHandleCandidates(t *testing.T) {
-	got := handleCandidates("alice", "boson.chat")
+	got := handleCandidates("alice", "boson.chat", false)
 	if got[0] != "alice" || got[1] != "alice-bosonchat" || got[2] != "alice-bosonchat2" || got[len(got)-1] != "alice-bosonchat20" {
 		t.Fatalf("%v", got)
 	}
 	long := strings.Repeat("a", 30)
-	for _, c := range handleCandidates(long, "a-very-long-domain-name.example.org") {
+	for _, c := range handleCandidates(long, "a-very-long-domain-name.example.org", false) {
 		if len(c) > nick.MaxLen || nick.Validate(c) != nil {
 			t.Fatalf("invalid candidate %q", c)
 		}
 	}
-	if c := handleCandidates("9lives.cat", "x.org"); c[0] != "u9lives_cat" {
+	if c := handleCandidates("9lives.cat", "x.org", false); c[0] != "u9lives_cat" {
 		t.Fatalf("%v", c)
 	}
-	if c := handleCandidates("日本", "x.org"); c[0] != "user" || c[1] != "user-xorg" {
+	if c := handleCandidates("日本", "x.org", false); c[0] != "user" || c[1] != "user-xorg" {
 		t.Fatalf("%v", c)
 	}
-	if c := handleCandidates("NickServ", "x.org"); c[0] != "NickServ_" {
+	if c := handleCandidates("NickServ", "x.org", false); c[0] != "NickServ_" {
 		t.Fatalf("reserved: %v", c)
+	}
+	if c := handleCandidates("alice", "boson.chat", true); c[0] != "alice-bosonchat" || c[1] != "alice-bosonchat2" {
+		t.Fatalf("suffixed: %v", c)
+	}
+	if c := handleCandidates("alice", "", true); c[0] != "alice" {
+		t.Fatalf("suffixed without a domain label: %v", c)
 	}
 	if domainLabel("Chat.Example-Site.org") != "chatexamplesiteo" {
 		t.Fatal(domainLabel("Chat.Example-Site.org"))

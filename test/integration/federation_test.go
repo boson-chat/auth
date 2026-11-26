@@ -821,6 +821,29 @@ func TestFederationHandleClashes(t *testing.T) {
 	f.remote.expect(f.remote.login("alice", pw), 200, "")
 }
 
+// Next to an existing IRC network (the bridge on, or
+// FEDERATION_HANDLE_SUFFIX=always) a federated handle always carries the
+// home domain: the bare home username may be someone's registered nick
+// there.
+func TestFederationHandleAlwaysSuffixed(t *testing.T) {
+	f := newFed(t, func(c *config.Config) {
+		c.FederationConfig.Mode = config.FederationOpen
+		c.FederationConfig.HandleSuffix = config.HandleSuffixAlways
+	})
+	homeTok := f.homeUser("alice")
+	a := f.login(f.assertion(homeTok, remoteIssuer))
+	f.remote.expect(a, 200, "")
+	if a.str("handle") != "alice-hometest" || a.str("identity") != "alice@home.test" {
+		t.Fatalf("alice: %s", a.raw)
+	}
+	// and the next sign-in keeps it
+	again := f.login(f.assertion(homeTok, remoteIssuer))
+	f.remote.expect(again, 200, "")
+	if again.str("handle") != "alice-hometest" {
+		t.Fatalf("again: %s", again.raw)
+	}
+}
+
 func TestFederationRemoteVoicePolicy(t *testing.T) {
 	f := newFed(t, func(c *config.Config) {
 		c.FederationConfig.Mode = config.FederationOpen

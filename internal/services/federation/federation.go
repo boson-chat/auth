@@ -563,8 +563,9 @@ func (s *FederationService) upsert(ctx context.Context, st Settings, prof profil
 	return u, acct, created, nil
 }
 
-// pickHandle chooses a free local handle (spec §3.5): the home username,
-// then with the domain label, then numbered; random as a last resort.
+// pickHandle chooses a free local handle (spec §3.5): the home username
+// (unless handles always carry the home domain, AlwaysSuffixHandles), then
+// with the domain label, then numbered; random as a last resort.
 func (s *FederationService) pickHandle(ctx context.Context, prof profile, attempt int) (string, error) {
 	free := func(h string) (bool, error) {
 		_, err := s.Users.FindByUsernameFolded(ctx, nick.Fold(h))
@@ -574,7 +575,7 @@ func (s *FederationService) pickHandle(ctx context.Context, prof profile, attemp
 		return false, err
 	}
 	if attempt == 0 {
-		for _, h := range handleCandidates(prof.username, prof.domain) {
+		for _, h := range handleCandidates(prof.username, prof.domain, s.Config.AlwaysSuffixHandles()) {
 			if ok, err := free(h); err != nil || ok {
 				return h, err
 			}

@@ -184,6 +184,15 @@ usual.
   (`alice-bosonchat2` … `20`); then a random 5-digit suffix. Always 1–30
   characters and never a services name. It doesn't change later (the user
   can change their IRC nick).
+- **Next to an existing IRC network** (the evrd bridge on: `BRIDGE_API_URL`
+  and `BRIDGE_TOKEN` set, [bridge.md](bridge.md)) the bare
+  `preferred_username` is skipped: the handle always carries the home
+  domain (`alice-bosonchat`). `alice` may be a nick someone registered with
+  NickServ on that network, which auth can't see; an account of that name
+  would also block its owner from signing in with NickServ accounts.
+  `FEDERATION_HANDLE_SUFFIX` sets it: `auto` (the default: always with the
+  bridge, else only on a clash), `always` or `clash`. The bridge itself
+  keeps federated users off registered nicks too (evrd's nick guard).
 - **Role**: new accounts get `FEDERATION_REMOTE_ROLE` (default `Remote`;
   created with no permissions at position 1 when no role of that name
   exists; empty = none). They also hold Member, like everyone. Admins grant
@@ -311,6 +320,7 @@ are never guests, so `guest_access` / `guest_voice` don't apply to them.
 | `FEDERATION_DIRECTORY_URL` | `https://directory.boson.chat` | directory for directory mode |
 | `FEDERATION_DOMAIN` | issuer host minus `auth.` | this install's `boson_domain` |
 | `FEDERATION_REMOTE_ROLE` | `Remote` | role new federated accounts get (by name; created when missing); empty = none |
+| `FEDERATION_HANDLE_SUFFIX` | `auto` | `always`: handles always carry the home domain (`alice-bosonchat`); `clash`: only when the home username is taken; `auto`: `always` with the bridge on |
 | `FEDERATION_REMOTE_UPLOAD_QUOTA` | – | upload quota per window for remote users (`500MB`, `2GiB`); empty = files default |
 | `FEDERATION_REMOTE_MAX_FILE` | – | largest file for remote users; empty = files default (env only) |
 | `FEDERATION_REMOTE_VOICE` | `true` | remote users may get voice tokens |

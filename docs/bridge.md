@@ -64,7 +64,7 @@ duplicated:
 | `{username}` | the Boson username in lower case. A username evrd can't use (`^[A-Za-z][A-Za-z0-9_-]{1,31}$`) is skipped. |
 | `subject` | the user id (the access token's `sub`) |
 | `email` | the account's email, or `""` |
-| `nick` / `altNick` | the username (a NickServ account: the services' spelling) / that plus `_` |
+| `nick` / `altNick` | the username (a NickServ account: the services' spelling; a federated account: its handle, which carries the home domain here, `alice-bosonchat`, [federation.md](federation.md)) / that plus `_` |
 | `ident` | the username lower-cased, only `a-z0-9`, at most 10 characters; `boson` if nothing is left |
 | `realname` | the display name, or the username |
 | `disabled` | the account is disabled (by an admin or a federation ban) |
@@ -73,7 +73,11 @@ duplicated:
 **Logins (`auth`).** Local and federated accounts have no password auth
 could hand on, so they get `{"method": "none"}` (evrd checks the Boson token
 when a client connects either way; federated users sign in to the bridge
-with their token like everyone else). An existing bridge account with
+with their token like everyone else). Accounts without a login are kept
+off nicks someone registered with NickServ on the network by evrd's nick
+guard (evrd `docs/managed.md`, `managed_nick_guard`, on by default): on
+services' notice, a forced rename or a kill it moves to `altNick`, then
+`altNick2`…, and never identifies. An existing bridge account with
 evrd's default login (`auto`, no password, which is what bridge-sync made)
 is left as it is, since changing it would reconnect every connected user
 once for nothing. A NickServ account's login is only ever set by its
