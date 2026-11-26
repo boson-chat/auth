@@ -368,8 +368,18 @@ func (h *Handlers) internalUserIRC(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeError(w, r, err)
 		return
 	}
+	// A federated account of a blocked home domain is reported disabled, so
+	// the IRC auth-script refuses its OAUTHBEARER logins (the account itself
+	// isn't disabled: unblocking lets it in again).
+	disabled := u.Disabled()
+	if !disabled && h.Federation != nil {
+		if disabled, err = h.Federation.DomainBlocked(r.Context(), u.ID); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"user_id": u.ID, "username": u.Username, "disabled": u.Disabled(),
+		"user_id": u.ID, "username": u.Username, "disabled": disabled,
 		"irc": irc, "roles": a.RoleNames(roles.MaxTokenRoles), "permissions": a.Permissions,
 	})
 }

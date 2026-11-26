@@ -142,3 +142,34 @@ func TestCleanupRetention(t *testing.T) {
 		t.Fatalf("pruned before %v", repo.prunedAt)
 	}
 }
+
+// Domain blocks and domain session revokes reach IRC as "disabled" (the
+// helper disconnects and keeps the account) with a cause, while they apply.
+func TestRemovedFederatedDomainEntries(t *testing.T) {
+	blocked := entry(20, 1, "fay", accountremoval.ReasonDomainBlocked, true, false)
+	blocked.StillDomainBlocked = true
+	unblocked := entry(20, 2, "gus", accountremoval.ReasonDomainBlocked, true, false) // domain unblocked since
+	revoked := entry(21, 3, "hal", accountremoval.ReasonSessionsRevoked, true, false)
+	revoked.NoLoginSince = true
+	back := entry(21, 4, "ida", accountremoval.ReasonSessionsRevoked, true, false) // signed in again since
+	banned := entry(22, 5, "jo", accountremoval.ReasonDisabled, true, true)
+	banned.StillDomainBlocked = true // a ban's entry doesn't depend on the domain
+	s := NewIRCAccountsService(&memRepo{entries: []*accountremoval.Entry{blocked, unblocked, revoked, back, banned}}, nil)
+	got, next, err := s.Removed(t.Context(), "", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Removal{
+		{Username: "fay", Reason: "disabled", Cause: "domain_blocked"},
+		{Username: "hal", Reason: "disabled", Cause: "sessions_revoked"},
+		{Username: "jo", Reason: "disabled"},
+	}
+	if len(got) != len(want) || next != "22.5" {
+		t.Fatalf("got %+v next %q", got, next)
+	}
+	for i, w := range want {
+		if got[i].Username != w.Username || got[i].Reason != w.Reason || got[i].Cause != w.Cause {
+			t.Fatalf("%d: got %+v want %+v", i, got[i], w)
+		}
+	}
+}

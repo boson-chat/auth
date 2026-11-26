@@ -28,9 +28,16 @@ var (
 )
 
 // Removal is one entry of the feed.
+//
+// Reason is what IRC does: "deleted" (erase the account) or "disabled"
+// (disconnect its clients, keep the account). Federated accounts of a
+// blocked home domain, and of a domain whose sessions an admin revoked,
+// come as "disabled" too (the account isn't disabled in auth, but IRC
+// treats them the same) with Cause saying why.
 type Removal struct {
 	Username string    `json:"username"`
-	Reason   string    `json:"reason"` // deleted | disabled
+	Reason   string    `json:"reason"`          // deleted | disabled
+	Cause    string    `json:"cause,omitempty"` // "" | domain_blocked | sessions_revoked
 	At       time.Time `json:"at"`
 }
 
@@ -39,7 +46,8 @@ type IRCAccountsServiceImpl interface {
 	// beginning) and the cursor to pass next time. Entries that no longer
 	// apply are skipped (the cursor still moves past them): a deletion whose
 	// username exists again (re-created account), and a disable whose user
-	// was re-enabled or deleted since.
+	// was re-enabled or deleted since, a domain block that was lifted, and
+	// a domain sessions revoke after which the user signed in again.
 	Removed(ctx context.Context, since string, limit int) ([]Removal, string, error)
 	// Cleanup prunes entries older than Retention.
 	Cleanup(ctx context.Context) error
@@ -99,7 +107,11 @@ func (s *IRCAccountsService) Removed(ctx context.Context, since string, limit in
 		if !applies(e) {
 			continue
 		}
-		out = append(out, Removal{Username: e.Username, Reason: e.Reason, At: e.At.UTC()})
+		r := Removal{Username: e.Username, Reason: e.Reason, At: e.At.UTC()}
+		if e.Reason == accountremoval.ReasonDomainBlocked || e.Reason == accountremoval.ReasonSessionsRevoked {
+			r.Reason, r.Cause = accountremoval.ReasonDisabled, e.Reason
+		}
+		out = append(out, r)
 	}
 	return out, next, nil
 }
@@ -113,6 +125,12 @@ func applies(e *accountremoval.Entry) bool {
 	case accountremoval.ReasonDisabled:
 		// Re-enabled, or deleted (a later "deleted" entry covers it).
 		return e.StillDisabled
+	case accountremoval.ReasonDomainBlocked:
+		// Unblocked since (or the account is gone).
+		return e.StillDomainBlocked
+	case accountremoval.ReasonSessionsRevoked:
+		// Signed in again since: that new session must not be dropped.
+		return e.NoLoginSince
 	}
 	return false
 }

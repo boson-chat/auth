@@ -14,7 +14,7 @@ accounts are local records too (see [NickServ](#nickserv-backend)).
 
 - [Flow](#flow) · [Discovery (boson.json)](#discovery-bosonjson) · [Home: assertions](#home-post-v1federationassertions)
 - [Remote: login](#remote-post-v1federationlogin) · [Trust policy](#trust-policy) · [Federated accounts](#federated-accounts)
-- [Admin API](#admin-api) · [Configuration](#configuration) · [IRC, voice, files](#irc-voice-and-files)
+- [Admin API](#admin-api) · [Domain blocks](#domain-blocks) · [Configuration](#configuration) · [IRC, voice, files](#irc-voice-and-files)
 - [What the stack needs](#what-the-stack-needs) · [Errors](#errors)
 
 ## Flow
@@ -152,7 +152,7 @@ federated account and `null` for a local one.
 | `directory` | it has a **verified** listing in the directory (`directory_url`, `FEDERATION_DIRECTORY_URL`, default `https://directory.boson.chat`) |
 | `open` | it has valid discovery |
 
-In every mode domains matching `block` (`FEDERATION_BLOCK`) and banned
+In every mode domains matching `block` (`FEDERATION_BLOCK`, see [domain blocks](#domain-blocks)) and banned
 identities are refused. List entries are domains (`boson.chat`, matching
 only that domain) or `*.example.org` (example.org and every subdomain);
 they are lower-cased and de-duplicated.
@@ -226,7 +226,7 @@ against the database on every request. The admin panel's Federation page
 | `GET /v1/admin/federation/users/{id}` | `users.view` \| `settings.manage` | RemoteUser; `404` for a local user |
 | `POST /v1/admin/federation/users/{id}/ban` | `users.moderate` \| `users.manage` | `{reason?}` (≤ 500 chars) → RemoteUser: bans the identity (iss, sub); it can't sign in again, its sessions end, and its local account is disabled so IRC drops it (removed-accounts feed); audit `federation_identity_banned` (`meta: identity, reason, sessions_revoked`) |
 | `DELETE /v1/admin/federation/users/{id}/ban` | `users.moderate` \| `users.manage` | → RemoteUser: lifts the ban and re-enables the account if the ban disabled it; audit `federation_identity_unbanned` |
-| `POST /v1/admin/federation/domains/{domain}/revoke-sessions` | `settings.manage` \| `users.moderate` \| `users.manage` | → `{domain, revoked}`: ends every session of the remote users from that home domain (`*.domain`: and its subdomains); audit `federation_domain_sessions_revoked` (`meta: domain, revoked`). Blocking a domain is putting it in `block` (PATCH or the config file), which refuses its sign-ins from then on; the panel calls this right after to end the existing sessions |
+| `POST /v1/admin/federation/domains/{domain}/revoke-sessions` | `settings.manage` \| `users.moderate` \| `users.manage` | → `{domain, revoked}`: ends every session of the remote users from that home domain (`*.domain`: and its subdomains) and drops them from IRC (removed-accounts feed, `cause: sessions_revoked`, until they sign in again); audit `federation_domain_sessions_revoked` (`meta: domain, revoked`). Blocking a domain is putting it in `block` (PATCH or the config file), which does all of this by itself ([domain blocks](#domain-blocks)); the panel still calls this right after, which is harmless (`revoked: 0`) |
 | `GET /v1/admin/federation/bans` | `users.view` \| `settings.manage` | `{bans: [{identity, issuer, subject, reason, created_by, created_at}]}` newest first |
 
 **RemoteUser:**
@@ -251,7 +251,41 @@ disabled through ban and unban.
 Other audit events: `federation_login` (a federated sign-in; `meta:
 identity, domain, created, session_id`), `federation_login_failed`
 (`meta: reason, domain`), `federation_assertion_issued` (home side;
-`meta: audience`).
+`meta: audience`), `federation_domain_blocked` (a block list change
+caught signed-in accounts; no actor; `meta: domains` = the blocked home
+domains with accounts, `accounts` = how many were newly blocked,
+`sessions_revoked`).
+
+### Domain blocks
+
+A home domain is blocked while it matches the effective `block` list,
+whatever set it (PATCH, the stack config file, `FEDERATION_BLOCK`). Then:
+
+- its sign-ins are refused (`403 domain_blocked`);
+- each of its federated accounts, the moment the block is applied, loses
+  every session (refresh tokens stop working) and gets an entry on the
+  removed-accounts feed (`GET /internal/v1/irc/accounts/removed`, `reason:
+  "disabled"`, `cause: "domain_blocked"`), so the stack's boson-ergo helper
+  disconnects its IRC clients at its next poll exactly as for a banned
+  identity;
+- `GET /internal/v1/users/{handle}/irc` answers `disabled: true` for those
+  accounts, so the IRC auth-script refuses their OAUTHBEARER /
+  IRCV3BEARER logins even with an access token that hasn't expired yet
+  (SASL PLAIN never works for federated accounts).
+
+The local accounts are **not** disabled (`disabled` stays `false` in
+RemoteUser and the admin user APIs) and nothing is deleted. When the
+domain leaves the list its feed entries stop applying, the lookup says
+`disabled: false` again and the users simply sign in again; blocking the
+domain once more drops them again. Local accounts are never affected, and
+a ban stays a ban (its own `disabled` entry) whether or not the domain is
+blocked.
+
+"Applied" means: right away after a PATCH; within a second or so of a
+config file change (the file watcher); at startup for `FEDERATION_BLOCK`;
+and every minute in any case (other replicas, retries). Each account is
+handled once per block (`federated_accounts.domain_blocked_at`), so
+re-applying is free.
 
 ### Settings
 
@@ -332,9 +366,17 @@ feed as for any account. Federated users have no password, so SASL PLAIN
 fails for them: clients must use the token mechanisms (`IRC_OAUTHBEARER`,
 on by default). A ban disables the account, so it shows up in
 `/internal/v1/irc/accounts/removed` (`reason: disabled`) and Ergo drops it.
-A domain block plus revoke-sessions ends auth sessions and refuses new
-sign-ins, but doesn't disconnect IRC clients already logged in (their
-token is only checked at SASL time); they can't reconnect.
+A [domain block](#domain-blocks) does the same for every account of that
+domain without disabling them (`reason: disabled`, `cause:
+domain_blocked`), and revoke-sessions too (`cause: sessions_revoked`), so
+connected IRC clients are dropped at the helper's next poll and their
+reconnects are refused while the domain stays blocked. The helper needs no
+change for this: it already disconnects (`POST /v1/account_disconnect`)
+and keeps the account for `disabled` entries, and its auth-script already
+refuses token logins when the user lookup says `disabled`. (With
+`IRC_ROLES=false` the auth-script doesn't ask auth, so a still-valid access
+token, at most `ACCESS_TOKEN_TTL` old, could reconnect until it expires;
+the sessions are gone, so it can't be refreshed.)
 
 **Voice and video.** `POST /v1/voice/token` and call tokens work as for
 local users (the token's `name` is the handle), unless `remote_voice` is
@@ -371,7 +413,10 @@ pushed and remote users get the account default.
   `FILES_INTERNAL_TOKEN: ${FILES_INTERNAL_TOKEN:-}` (the token the files
   service already has as `INTERNAL_TOKEN`).
 - **Traefik**: nothing new; the endpoints are on the auth host.
-- **Ergo**: nothing; keep `IRC_OAUTHBEARER` on.
+- **Ergo**: nothing; keep `IRC_OAUTHBEARER` on. The boson-ergo helper's
+  removed-accounts handling (disconnect on `disabled`, patched Ergo's
+  `POST /v1/account_disconnect`) covers bans and domain blocks alike; it
+  may read `cause` for a nicer QUIT message but doesn't have to.
 - **files**: nothing (per-user overrides already exist). A role-based quota
   would need files to read the token's `roles` claim; not required.
 

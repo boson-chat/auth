@@ -230,6 +230,20 @@ func (s *settingsStore) get(ctx context.Context) (Settings, error) {
 	return v, nil
 }
 
+// fresh is get without the cache (the database row is read now).
+func (s *settingsStore) fresh(ctx context.Context) (Settings, error) {
+	if f := s.file.Load(); f != nil {
+		return s.fromFile(f), nil
+	}
+	row, err := s.repo.GetSettings(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	v := s.effective(row)
+	s.store(v)
+	return v, nil
+}
+
 func (s *settingsStore) store(v Settings) {
 	s.mu.Lock()
 	s.cached, s.cachedAt, s.valid = v, s.now(), true
