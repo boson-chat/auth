@@ -368,8 +368,8 @@ func TestNickServAthemeSignupFlow(t *testing.T) {
 
 	// Not confirmed yet.
 	e.expect(e.login("gina", nsPassword), 403, "email_not_verified")
-	e.expect(e.api("POST", "/v1/register/confirm", map[string]string{"username": "gina", "code": "wrong"}), 400, "invalid_code")
-	e.expect(e.api("POST", "/v1/register/confirm", map[string]string{"username": "gina", "code": "key-gina"}), 200, "")
+	e.expect(e.api("POST", "/v1/register/confirm", map[string]string{"username": "gina", "password": nsPassword, "code": "wrong"}), 400, "invalid_code")
+	e.expect(e.api("POST", "/v1/register/confirm", map[string]string{"username": "gina", "password": nsPassword, "code": "key-gina"}), 200, "")
 
 	r = e.login("gina", nsPassword)
 	e.expect(r, 200, "")
@@ -382,9 +382,11 @@ func TestNickServAthemeSignupFlow(t *testing.T) {
 	if strings.Contains(string(enc), "ck") {
 		t.Fatal("authcookie stored in clear")
 	}
-	// Logout ends the services session too.
+	// Logout ends the services session too (the confirmations above logged
+	// in and out of Atheme twice).
+	before := f.logouts.Load()
 	e.expect(e.api("POST", "/v1/logout", nil, bearer(r.str("access_token"))), 204, "")
-	if f.logouts.Load() != 1 {
+	if f.logouts.Load() != before+1 {
 		t.Fatalf("atheme.logout calls = %d", f.logouts.Load())
 	}
 	if err := e.sqlDB().QueryRow(`SELECT session_enc FROM nickserv_accounts WHERE user_id = $1`, id).Scan(&enc); err != nil || enc != nil {

@@ -295,10 +295,10 @@ func TestAtheme(t *testing.T) {
 			if err != nil || acct.Confirmed == nil || *acct.Confirmed {
 				t.Fatalf("before VERIFY: %+v %v", acct, err)
 			}
-			if err := b.Registrar.ConfirmRegistration(ctx(t), account, "wrongkey", ""); !errors.Is(err, nickserv.ErrInvalidCode) {
+			if err := b.Registrar.ConfirmRegistration(ctx(t), account, password, "wrongkey", ""); !errors.Is(err, nickserv.ErrInvalidCode) {
 				t.Fatalf("wrong key: %v", err)
 			}
-			if err := b.Registrar.ConfirmRegistration(ctx(t), account, athemeKey(t, account), ""); err != nil {
+			if err := b.Registrar.ConfirmRegistration(ctx(t), account, password, athemeKey(t, account), ""); err != nil {
 				t.Fatal(err)
 			}
 			acct = checkVerifier(t, b.Verifier, account, password)
@@ -328,7 +328,7 @@ func TestAthemeOverIRC(t *testing.T) {
 	if _, err := rpc.Registrar.Register(ctx(t), account, password, account+"@example.org", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.Registrar.ConfirmRegistration(ctx(t), account, athemeKey(t, account), ""); err != nil {
+	if err := rpc.Registrar.ConfirmRegistration(ctx(t), account, password, athemeKey(t, account), ""); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("identify/ngircd", func(t *testing.T) {

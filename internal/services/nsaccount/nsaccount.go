@@ -117,8 +117,10 @@ type NickServAccountServiceImpl interface {
 	// Register registers a NickServ account (when the strategy can) and its
 	// local record. Call inside the registration transaction.
 	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
-	// ConfirmRegistration submits the emailed verification code.
-	ConfirmRegistration(ctx context.Context, account, code string) error
+	// ConfirmRegistration submits the emailed verification code. With a
+	// password (needed by Atheme 7.2) the attempt counts like a sign-in
+	// (rate limits, lockout).
+	ConfirmRegistration(ctx context.Context, account, password, code string) error
 	Signup() SignupInfo
 	// EndSession ends and forgets the stored services session of userID
 	// (logout). Best effort.
@@ -534,7 +536,7 @@ func (s *NickServAccountService) Register(ctx context.Context, in RegisterInput)
 	return &RegisterResult{User: u, VerificationRequired: reg.VerificationRequired, Message: reg.Message}, nil
 }
 
-func (s *NickServAccountService) ConfirmRegistration(ctx context.Context, account, code string) error {
+func (s *NickServAccountService) ConfirmRegistration(ctx context.Context, account, password, code string) error {
 	account, code = strings.TrimSpace(account), strings.TrimSpace(code)
 	if s.Backend.Registrar == nil {
 		return ErrSignupUnavailable.WithMessage(s.Signup().Message)
@@ -542,11 +544,33 @@ func (s *NickServAccountService) ConfirmRegistration(ctx context.Context, accoun
 	if !nickserv.ValidAccount(account) || code == "" || len(code) > 128 || strings.ContainsAny(code, " \r\n\x00") {
 		return ErrInvalidCode
 	}
+	if password != "" && !nickserv.ValidPassword(password) {
+		return apperr.ErrInvalidCredentials
+	}
+	folded, ip := nick.Fold(account), reqmeta.From(ctx).IP
+	if password != "" {
+		denial, err := s.Guard.Allow(ctx, folded, ip)
+		if err != nil {
+			return err
+		}
+		if denial != nil && denial.Locked {
+			return ErrAccountLocked.WithRetryAfter(denial.RetryAfter)
+		} else if denial != nil {
+			return ErrRateLimited.WithRetryAfter(denial.RetryAfter)
+		}
+	}
 	err := s.call(ctx, func(ctx context.Context) error {
-		return s.Backend.Registrar.ConfirmRegistration(ctx, account, code, reqmeta.From(ctx).IP)
+		return s.Backend.Registrar.ConfirmRegistration(ctx, account, password, code, ip)
 	})
 	var rej *nickserv.RejectedError
 	switch {
+	case errors.Is(err, nickserv.ErrInvalidCredentials):
+		if gerr := s.Guard.Failed(ctx, folded, ip); gerr != nil {
+			logger.FromCtx(ctx).Error().Err(gerr).Msg("nickserv: recording a failed attempt")
+		}
+		return apperr.ErrInvalidCredentials
+	case errors.Is(err, nickserv.ErrSuspended):
+		return ErrSuspended
 	case err == nil:
 	case errors.Is(err, nickserv.ErrInvalidCode):
 		return ErrInvalidCode

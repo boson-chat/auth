@@ -100,7 +100,10 @@ type Verifier interface {
 // Registrar registers accounts (Atheme).
 type Registrar interface {
 	Register(ctx context.Context, account, password, email, clientIP string) (*Registration, error)
-	ConfirmRegistration(ctx context.Context, account, code, clientIP string) error
+	// ConfirmRegistration submits the emailed code. password may be "" where
+	// the services accept anonymous confirmation (Atheme 7.3+); Atheme 7.2
+	// needs it (VERIFY only from the logged-in account).
+	ConfirmRegistration(ctx context.Context, account, password, code, clientIP string) error
 }
 
 // SessionEnder ends a services session (Atheme atheme.logout).

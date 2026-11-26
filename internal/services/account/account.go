@@ -83,7 +83,7 @@ type AccountServiceImpl interface {
 	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
 	// ConfirmRegistration submits a NickServ registration code (NickServ
 	// backend); otherwise not_found.
-	ConfirmRegistration(ctx context.Context, account, code string) error
+	ConfirmRegistration(ctx context.Context, account, password, code string) error
 	// CreateUser is the admin/CLI path: no registration mode or invite checks.
 	CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, error)
 	VerifyEmail(ctx context.Context, token string) (*user.User, error)
@@ -298,11 +298,11 @@ func (s *AccountService) registerNickServ(ctx context.Context, in RegisterInput)
 	return out, nil
 }
 
-func (s *AccountService) ConfirmRegistration(ctx context.Context, account, code string) error {
+func (s *AccountService) ConfirmRegistration(ctx context.Context, account, password, code string) error {
 	if s.NickServ == nil {
 		return apperr.ErrNotFound
 	}
-	return s.NickServ.ConfirmRegistration(ctx, account, code)
+	return s.NickServ.ConfirmRegistration(ctx, account, password, code)
 }
 
 func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*user.User, error) {

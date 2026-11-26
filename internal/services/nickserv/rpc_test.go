@@ -213,6 +213,11 @@ func (f *fakeAtheme) handle(method string, p []string) (any, int, string) {
 				return nil, athemeFaultNoSuchTarget, "\x02" + args[1] + "\x02 is not registered."
 			case !a.waitAuth:
 				return nil, athemeFaultNoChange, "not awaiting verification."
+			case f.cookies[cookie] != strings.ToLower(args[1]):
+				// Atheme 7.2: only the logged-in account may verify.
+				return nil, athemeFaultBadParams, "Please log in before attempting to verify your registration."
+			case false:
+				return nil, athemeFaultNoChange, "not awaiting verification."
 			case a.key != args[2]:
 				return nil, athemeFaultBadParams, "Verification failed. Invalid key for \x02" + a.name + "\x02."
 			}
@@ -314,13 +319,20 @@ func TestAtheme(t *testing.T) {
 			if err != nil || acct.Confirmed == nil || *acct.Confirmed {
 				t.Fatalf("unverified login: %+v %v", acct, err)
 			}
-			if err := a.ConfirmRegistration(ctx, "bob", "wrong", ""); !errors.Is(err, ErrInvalidCode) {
+			if err := a.ConfirmRegistration(ctx, "bob", secret, "wrong", ""); !errors.Is(err, ErrInvalidCode) {
 				t.Fatalf("wrong code: %v", err)
 			}
-			if err := a.ConfirmRegistration(ctx, "bob", "12345", ""); err != nil {
+			if err := a.ConfirmRegistration(ctx, "bob", "wrong-password", "12345", ""); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("wrong password: %v", err)
+			}
+			open := len(f.cookies)
+			if err := a.ConfirmRegistration(ctx, "bob", secret, "12345", ""); err != nil {
 				t.Fatal(err)
 			}
-			if err := a.ConfirmRegistration(ctx, "bob", "12345", ""); err != nil {
+			if len(f.cookies) != open {
+				t.Fatal("ConfirmRegistration left a session open")
+			}
+			if err := a.ConfirmRegistration(ctx, "bob", "", "12345", ""); err != nil {
 				t.Fatalf("confirming twice is fine: %v", err)
 			}
 			acct, err = a.Verify(ctx, Credentials{Account: "bob", Password: secret})

@@ -214,8 +214,12 @@ strategies have no session to keep.
   email_verification_sent, email_verification_required}`.
   - `verification: "nickserv_code"`: the network requires email
     verification (`auth = email`) and Atheme has mailed a key. The client
-    asks for it and sends `POST /v1/register/confirm {username, code}` →
-    `200`, or `400 invalid_code`. (Running `/msg NickServ VERIFY REGISTER
+    asks for it and sends `POST /v1/register/confirm {username, password,
+    code}` → `200`, or `400 invalid_code`. Atheme 7.2 accepts `VERIFY
+    REGISTER` only from the account itself, so auth logs in with the
+    password first (and out again); this counts like a sign-in for the rate
+    limits and lockout (`401 invalid_credentials` for a wrong password).
+    Atheme 7.3+ also takes it without the password. (Running `/msg NickServ VERIFY REGISTER
     <account> <key>` on IRC works too.) Until then sign-in gives `403
     email_not_verified` while `require_email_verification` is on.
   - `verification: ""`: nothing to verify; sign in.

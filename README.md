@@ -66,7 +66,7 @@ browsers, with the HttpOnly cookies set by cookie-mode login (see
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` (NickServ backend: registers a NickServ account and adds `verification: "nickserv_code"\|""`, `message`, or `403 registration_unavailable`; [details](docs/nickserv.md#sign-up)) |
-| `POST /v1/register/confirm` | – | `{username, code}` → 200: confirm a NickServ registration with the code the services emailed ([NickServ backend](docs/nickserv.md#sign-up)); `400 invalid_code`; `404` on the local backend |
+| `POST /v1/register/confirm` | – | `{username, password, code}` → 200: confirm a NickServ registration with the code the services emailed ([NickServ backend](docs/nickserv.md#sign-up)); `400 invalid_code`; `404` on the local backend |
 | `POST /v1/email/verify` | – | `{token, return_to?}` → `{user, redirect_to?}`: where the verify page sends the user next (see below) |
 | `POST /v1/email/resend` | optional | `{email, return_to?}` (or a bearer token) → 202, same response whether or not the account exists |
 | `POST /v1/login` | – | `{login, password, cookie?}` (`login` = username or email) → `{token_type, access_token, expires_in, refresh_token, refresh_expires_in, session_id, user}` |

@@ -207,6 +207,8 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 type confirmRegistrationReq struct {
 	Username string `json:"username"`
+	// Password: Atheme 7.2 only takes the code from the account itself.
+	Password string `json:"password"`
 	Code     string `json:"code"`
 }
 
@@ -220,7 +222,7 @@ func (h *Handlers) confirmRegistration(w nethttp.ResponseWriter, r *nethttp.Requ
 	if !h.Limits.allow(w, r, BucketVerify, accountKey(req.Username)) {
 		return
 	}
-	if err := h.Account.ConfirmRegistration(r.Context(), req.Username, req.Code); err != nil {
+	if err := h.Account.ConfirmRegistration(r.Context(), req.Username, req.Password, req.Code); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -80,23 +80,9 @@ func rpcString(raw json.RawMessage) (string, error) {
 
 func (a *Atheme) Verify(ctx context.Context, c Credentials) (*Account, error) {
 	ip := sourceIP(c.ClientIP)
-	raw, err := a.RPC.Call(ctx, "atheme.login", c.Account, c.Password, ip)
+	cookie, err := a.login(ctx, c.Account, c.Password, ip)
 	if err != nil {
-		var re *RPCError
-		if errors.As(err, &re) {
-			switch re.Code {
-			case athemeFaultNoSuchSource, athemeFaultAuthFail:
-				return nil, ErrInvalidCredentials
-			case athemeFaultNoPrivs:
-				return nil, ErrSuspended
-			}
-			return nil, fmt.Errorf("%w: atheme.login: %s", ErrUnavailable, re.Message)
-		}
 		return nil, err
-	}
-	cookie, err := rpcString(raw)
-	if err != nil || cookie == "" {
-		return nil, fmt.Errorf("%w: atheme.login returned no authcookie", ErrUnavailable)
 	}
 	acct := &Account{Name: c.Account}
 	// INFO as the account itself shows its own (even hidden) email.
@@ -180,9 +166,44 @@ func (a *Atheme) Register(ctx context.Context, account, password, email, clientI
 	return &Registration{VerificationRequired: athemeNeedsVerify.MatchString(text), Message: text}, nil
 }
 
-func (a *Atheme) ConfirmRegistration(ctx context.Context, account, code, clientIP string) error {
-	_, err := a.RPC.Call(ctx, "atheme.command", athemeNoCookie, athemeNoAccount, sourceIP(clientIP),
-		"NickServ", "VERIFY", "REGISTER", account, code)
+// login runs atheme.login and maps its faults.
+func (a *Atheme) login(ctx context.Context, account, password, ip string) (string, error) {
+	raw, err := a.RPC.Call(ctx, "atheme.login", account, password, ip)
+	if err != nil {
+		var re *RPCError
+		if errors.As(err, &re) {
+			switch re.Code {
+			case athemeFaultNoSuchSource, athemeFaultAuthFail:
+				return "", ErrInvalidCredentials
+			case athemeFaultNoPrivs:
+				return "", ErrSuspended
+			}
+			return "", fmt.Errorf("%w: atheme.login: %s", ErrUnavailable, re.Message)
+		}
+		return "", err
+	}
+	cookie, err := rpcString(raw)
+	if err != nil || cookie == "" {
+		return "", fmt.Errorf("%w: atheme.login returned no authcookie", ErrUnavailable)
+	}
+	return cookie, nil
+}
+
+// ConfirmRegistration runs NickServ VERIFY REGISTER. Atheme 7.2 only
+// accepts it from the account itself, so with a password it logs in first
+// (and out afterwards); without one it runs anonymously (Atheme 7.3+).
+func (a *Atheme) ConfirmRegistration(ctx context.Context, account, password, code, clientIP string) error {
+	ip := sourceIP(clientIP)
+	cookie, as := athemeNoCookie, athemeNoAccount
+	if password != "" {
+		c, err := a.login(ctx, account, password, ip)
+		if err != nil {
+			return err
+		}
+		cookie, as = c, account
+		defer func() { _, _ = a.RPC.Call(context.WithoutCancel(ctx), "atheme.logout", c, account) }()
+	}
+	_, err := a.RPC.Call(ctx, "atheme.command", cookie, as, ip, "NickServ", "VERIFY", "REGISTER", account, code)
 	if err == nil {
 		return nil
 	}
@@ -190,7 +211,7 @@ func (a *Atheme) ConfirmRegistration(ctx context.Context, account, code, clientI
 	if errors.As(err, &re) {
 		switch re.Code {
 		case athemeFaultNoChange:
-			return nil // not awaiting verification: already done
+			return nil // not awaiting verification: already done (7.3+; 7.2 says badparams)
 		case athemeFaultBadParams, athemeFaultNoSuchTarget, athemeFaultAuthFail, athemeFaultNeedMoreParams:
 			return fmt.Errorf("%w: %s", ErrInvalidCode, StripFormatting(re.Message))
 		case athemeFaultInternalError:
