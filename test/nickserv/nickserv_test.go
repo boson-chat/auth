@@ -258,6 +258,7 @@ func athemeKey(t *testing.T, account string) string {
 		out, err := exec.Command("docker", "exec", athemeMailbox, "sh", "-c", "cat /mail/*.eml 2>/dev/null").Output()
 		if err == nil {
 			if m := re.FindStringSubmatch(string(out)); m != nil {
+				t.Logf("verification mail line: %q", m[0])
 				return m[1]
 			}
 		}

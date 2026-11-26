@@ -192,7 +192,7 @@ func (a *Atheme) ConfirmRegistration(ctx context.Context, account, code, clientI
 		case athemeFaultNoChange:
 			return nil // not awaiting verification: already done
 		case athemeFaultBadParams, athemeFaultNoSuchTarget, athemeFaultAuthFail, athemeFaultNeedMoreParams:
-			return ErrInvalidCode
+			return fmt.Errorf("%w: %s", ErrInvalidCode, StripFormatting(re.Message))
 		case athemeFaultInternalError:
 		default:
 			return &RejectedError{Message: StripFormatting(re.Message)}
