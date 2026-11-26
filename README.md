@@ -11,7 +11,9 @@ On an existing IRC network, accounts can instead be the network's NickServ
 accounts ([NickServ backend](docs/nickserv.md), `ACCOUNT_BACKEND=nickserv`).
 Users of other Boson servers can sign in with their home account
 ([federated login](docs/federation.md)): auth issues assertions for its
-own users and accepts them from trusted servers.
+own users and accepts them from trusted servers. Next to an existing IRC
+server, auth also keeps every account's [evrd bridge](docs/bridge.md)
+account (`BRIDGE_API_URL`), NickServ logins included.
 
 - Go 1.27, plain REST/JSON on `net/http`, Postgres via GORM, embedded
   golang-migrate migrations, zerolog, OpenTelemetry metrics (Prometheus).
@@ -164,6 +166,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /internal/v1/irc/channel-access` | `{version, autojoin, rejoin, channels: [{channel, private, everyone, accounts}], network: {founder, autojoin_guests, channels: [{channel, name, topic, autojoin}]}}` for RoleServ; `ETag`/`If-None-Match` ([role channels](docs/roles.md#internal-api-roleserv)) |
 | `GET /internal/v1/irc/autojoin?account=`, `POST /internal/v1/irc/autojoin` `{account, channels}` | one account's auto-join channels `{account, enabled, rejoin, channels, pending, network, network_pending}` / record what RoleServ joined (`rejoin: once`, and network channels) |
 | `GET /internal/v1/irc/accounts/removed?since=&limit=` | `{accounts: [{username, reason: "deleted"\|"disabled", at}], next}`: deleted and disabled accounts in commit order after the cursor `since`, for IRC to drop; `limit` 1–1000 (500) ([removed-accounts feed](docs/roles.md#get-internalv1ircaccountsremoved-deleted-and-disabled-accounts)) |
+| `POST /internal/v1/bridge/reconcile`, `GET /internal/v1/bridge/status` | header `X-Internal-Token`; a full sync of the evrd bridge's accounts now / the outbox and last full sync; 404 without `BRIDGE_API_URL` ([bridge accounts](docs/bridge.md#internal-api)) |
 | `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}, layout_html?, html?}` → `{subject, html, text, from, warnings}`, live preview with unsaved settings and unsaved compiled MJML (`layout_html` with `{{content}}`, `html` with `{{link}}`, ≤ 512 KB each; field-tagged 400s) ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
 | `GET /internal/email/default-mjml?part=layout\|verification\|password_reset\|account_setup\|invite` | bearer with `settings.manage`; `{mjml}`: Boson's default MJML source (the layout, or a whole email built on it) for the admin panel's MJML editor ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `POST /internal/email/test` | bearer with `settings.manage`; `{template, to}` → `{status: "sent"\|"logged", to, subject}`; rate-limited, audited `email_test_sent` |
@@ -578,6 +581,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `OTEL_METRICS_EXPORTER` | – | `none` disables OTLP push |
 | `ACCOUNT_BACKEND` | `local` | `local` (auth's own accounts) \| `nickserv` (the IRC network's NickServ accounts; `NICKSERV_*` settings in [docs/nickserv.md](docs/nickserv.md#configuration)) |
 | `FEDERATION_MODE` | `directory` | federated login: `off` \| `allowlist` \| `directory` \| `open`; `FEDERATION_ALLOW`, `FEDERATION_BLOCK`, `FEDERATION_DIRECTORY_URL`, `FEDERATION_DOMAIN`, `FEDERATION_REMOTE_ROLE`, `FEDERATION_REMOTE_UPLOAD_QUOTA`, `FEDERATION_REMOTE_MAX_FILE`, `FEDERATION_REMOTE_VOICE`, `FILES_INTERNAL_URL` / `FILES_INTERNAL_TOKEN` and the rest in [docs/federation.md](docs/federation.md#configuration) |
+| `BRIDGE_API_URL` / `BRIDGE_TOKEN` | – | the evrd bridge's managed API (e.g. `http://evrd-links:8098`) and its token: auth gives every account its bridge account and hands NickServ logins on; `BRIDGE_NICKSERV_METHOD`, `BRIDGE_RECONCILE_INTERVAL` and the rest in [docs/bridge.md](docs/bridge.md#configuration). Unset: off |
 | `TEST_DATABASE_URL` | – | tests only: enables the integration suite |
 | `TEST_NICKSERV` | – | tests only: `1` runs `test/nickserv` against the real services from `make test-nickserv-up` |
 | `TEST_DEX_ISSUER` | – | tests only: run the OIDC flow against a real Dex (`make test-dex-up`) |
