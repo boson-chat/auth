@@ -25,6 +25,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/settings"
 	"github.com/boson-chat/auth/internal/services/social"
 	"github.com/boson-chat/auth/internal/services/sso"
+	"github.com/boson-chat/auth/internal/services/workload"
 	"github.com/boson-chat/auth/internal/textutil"
 )
 
@@ -64,6 +65,9 @@ type Handlers struct {
 	Email email.EmailServiceImpl
 	// Bridge is the evrd bridge's accounts (nil: BRIDGE_API_URL unset).
 	Bridge BridgeService
+	// Workload is the workload issuer (nil: WORKLOAD_IDENTITIES empty,
+	// routes not registered).
+	Workload *workload.Service
 	// ReturnTo checks the verification page's return_to (the SSO policy:
 	// this site's web origins + SSO_RETURN_TO_ALLOWED). Nil: none allowed.
 	ReturnTo *sso.ReturnToPolicy

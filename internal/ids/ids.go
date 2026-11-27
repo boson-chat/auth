@@ -21,6 +21,7 @@ const (
 	SigningKey   = "key"
 	TokenID      = "jti"
 	SSOCode      = "ssc"
+	WorkloadKey  = "wkey"
 )
 
 // New returns prefix_ULID. ulid.Make is safe for concurrent use and

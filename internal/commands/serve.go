@@ -54,6 +54,12 @@ var serveCmd = &cobra.Command{
 		if err := app.Keys.Ensure(ctx); err != nil {
 			return err
 		}
+		if app.Workload != nil {
+			if err := app.Workload.Keys.Ensure(ctx); err != nil {
+				return err
+			}
+			log.Info().Str("issuer", app.Workload.Issuer()).Msg("workload issuer on (WORKLOAD_IDENTITIES)")
+		}
 		if cfg.SMTPConfig.Host == "" {
 			log.Warn().Msg("SMTP_HOST is empty: emails are logged, not sent (dev only)")
 		}
