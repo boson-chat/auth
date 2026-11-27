@@ -114,6 +114,15 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if u != "" {
 		filesURL = &u
 	}
+	// The network's name (SITE_NAME / network.name); null when unset.
+	var networkName *string
+	name := h.Config.AppConfig.NetworkName()
+	if h.NetworkName != nil {
+		name = h.NetworkName()
+	}
+	if name != "" {
+		networkName = &name
+	}
 	// The network channels (config irc.channels).
 	channels := h.Config.IRCConfig.Channels
 	if h.NetworkChannels != nil {
@@ -139,6 +148,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		// Guests may join voice: only when guests may connect at all.
 		"guest_voice":   st.GuestAccess && st.GuestVoice,
 		"sso_providers": providers,
+		"network_name":  networkName,
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
 		"channels":      public,

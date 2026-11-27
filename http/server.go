@@ -344,6 +344,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		ReturnTo:        returnTo,
 		FilesURL:        func() string { return stackConfig.Effective().FilesConfig.URL() },
 		NetworkChannels: func() []config.NetworkChannel { return stackConfig.Effective().IRCConfig.Channels },
+		NetworkName:     func() string { return stackConfig.Effective().AppConfig.NetworkName() },
 		Ready: func(ctx context.Context) error {
 			s, err := database.SQL()
 			if err != nil {

@@ -194,3 +194,34 @@ func TestConfigFilesURL(t *testing.T) {
 	writeConfig(t, path, "version: 1\nfiles: { enabled: false }\n")
 	eventually(t, "files_url null", func() bool { return filesURL() == nil })
 }
+
+// network_name in GET /v1/config: null without a name, SITE_NAME, then the
+// config file's network.name (the admin panel's edit) live over it.
+func TestConfigNetworkName(t *testing.T) {
+	// Built-in default only: null, but present.
+	e := newEnv(t, func(c *config.Config) { c.AppConfig.SiteName = config.DefaultSiteName })
+	if c := e.api("GET", "/v1/config", nil); c.body["network_name"] != nil {
+		t.Fatalf("network_name without SITE_NAME: %s", c.raw)
+	} else if _, ok := c.body["network_name"]; !ok {
+		t.Fatalf("network_name must be present (null): %s", c.raw)
+	}
+
+	path := filepath.Join(t.TempDir(), "boson.yaml")
+	writeConfig(t, path, "version: 1\n")
+	e = newEnv(t, func(c *config.Config) {
+		c.AppConfig.SiteName = "IRCForever"
+		c.AppConfig.ConfigFile = path
+		c.AppConfig.ConfigPoll = 200 * time.Millisecond
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.app.StackConfig.Run(ctx)
+	name := func() any { return e.api("GET", "/v1/config", nil).body["network_name"] }
+	if n := name(); n != "IRCForever" {
+		t.Fatalf("network_name from SITE_NAME = %v", n)
+	}
+	writeConfig(t, path, "version: 1\nnetwork:\n  name: Renamed Net\n")
+	eventually(t, "network_name from network.name", func() bool { return name() == "Renamed Net" })
+	writeConfig(t, path, "version: 1\n")
+	eventually(t, "network_name back to SITE_NAME", func() bool { return name() == "IRCForever" })
+}
