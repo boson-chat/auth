@@ -22,11 +22,18 @@ func FederationPaths(path string) bool {
 
 const federationMetadataPath = "/.well-known/boson-federation.json"
 
+// WebOriginsPath lists the browser origins of the Boson web clients this
+// install's voice, video and files services accept (their
+// WEBTRANSPORT_ORIGINS=directory mode). Public: it is built from public
+// data (the directory and other servers' boson.json).
+const WebOriginsPath = "/v1/web-origins"
+
 func (h *Handlers) registerFederation(mux *nethttp.ServeMux) {
 	if h.Federation == nil {
 		return
 	}
 	mux.HandleFunc("GET "+federationMetadataPath, h.federationMetadata)
+	mux.HandleFunc("GET "+WebOriginsPath, h.webOrigins)
 	mux.HandleFunc("POST /v1/federation/assertions", h.authed(h.federationAssert))
 	mux.HandleFunc("POST /v1/federation/login", h.federationLogin)
 	mux.HandleFunc("GET /v1/users/{handle}/identity", h.userIdentity)
@@ -95,6 +102,17 @@ func (h *Handlers) federationMetadata(w nethttp.ResponseWriter, r *nethttp.Reque
 	}
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	writeJSON(w, nethttp.StatusOK, md)
+}
+
+// webOrigins: GET /v1/web-origins → {origins, own, directory, updated_at}.
+func (h *Handlers) webOrigins(w nethttp.ResponseWriter, r *nethttp.Request) {
+	o, err := h.Federation.WebOrigins(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	writeJSON(w, nethttp.StatusOK, o)
 }
 
 type assertReq struct {

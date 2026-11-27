@@ -113,6 +113,12 @@ type FederationServiceImpl interface {
 	// change and every minute, until ctx is done.
 	Run(ctx context.Context)
 	Cleanup(ctx context.Context) error
+	// WebOrigins is GET /v1/web-origins: the browser origins of this
+	// install's web client and those of the verified servers in the
+	// directory (weborigins.go).
+	WebOrigins(ctx context.Context) (WebOrigins, error)
+	// RunWebOrigins keeps that list fresh until ctx is done.
+	RunWebOrigins(ctx context.Context)
 }
 
 var _ FederationServiceImpl = (*FederationService)(nil)
@@ -146,6 +152,8 @@ type FederationService struct {
 	files    *filesQuota
 	// blocksChanged wakes Run after a stack config file change.
 	blocksChanged chan struct{}
+	// webOrigins is the last good GET /v1/web-origins list (weborigins.go).
+	webOrigins webOriginsState
 }
 
 func NewFederationService(d Deps) *FederationService {
