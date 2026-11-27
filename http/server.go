@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	nethttp "net/http"
+	"net/url"
 	"time"
 
 	"github.com/boson-chat/auth/config"
@@ -363,8 +364,10 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 			middleware.Recover, middleware.ClientIP(trusted), middleware.Logging,
 			middleware.SecurityHeaders,
 			// The branding is public: any origin, no credentials.
-			// Federated login: any origin, bearer / assertion only, no cookies.
-			middleware.BearerCORS(handlers.FederationPaths,
+			// Federation and (CORS_ANY_ORIGIN) the bearer-token API: any
+			// origin, no credentials, cookies stripped; the allowlist
+			// keeps its credentialed CORS there.
+			middleware.TokenCORS(handlers.AnyOriginPaths(cfg.HTTPConfig.CORSAnyOrigin), stackConfig.CORSOrigins, originOf(cfg.HTTPConfig.PublicURL),
 				middleware.PublicCORS(middleware.PathPrefix(branding.DocumentPath), middleware.DynamicCORS(stackConfig.CORSOrigins)))),
 		Internal: middleware.Chain(internalMux,
 			middleware.Recover, middleware.ClientIP(nil), middleware.Logging, middleware.SecurityHeaders),
@@ -474,4 +477,13 @@ func Serve(ctx context.Context, app *App) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}
 	return runErr
+}
+
+// originOf returns scheme://host of u ("" when u isn't an absolute URL).
+func originOf(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme == "" || p.Host == "" {
+		return ""
+	}
+	return p.Scheme + "://" + p.Host
 }

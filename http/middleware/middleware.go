@@ -163,29 +163,3 @@ func PublicCORS(public func(path string) bool, credentialed func(nethttp.Handler
 func PathPrefix(p string) func(string) bool {
 	return func(path string) bool { return path == p || strings.HasPrefix(path, p+"/") }
 }
-
-// BearerCORS serves CORS * without credentials on the paths match accepts
-// (GET and POST with Authorization / Content-Type), for APIs that other
-// origins call with a bearer token or a signed assertion in the request
-// and never with cookies (federated login). Other paths go to rest.
-func BearerCORS(match func(path string) bool, rest func(nethttp.Handler) nethttp.Handler) func(nethttp.Handler) nethttp.Handler {
-	return func(next nethttp.Handler) nethttp.Handler {
-		other := rest(next)
-		return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-			if !match(r.URL.Path) {
-				other.ServeHTTP(w, r)
-				return
-			}
-			h := w.Header()
-			h.Set("Access-Control-Allow-Origin", "*")
-			if r.Method == nethttp.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-				h.Set("Access-Control-Allow-Methods", "GET, POST")
-				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				h.Set("Access-Control-Max-Age", "86400")
-				w.WriteHeader(nethttp.StatusNoContent)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}

@@ -351,6 +351,30 @@ func TestCookieModeAndCSRF(t *testing.T) {
 	if r.str("refresh_token") != "" || len(r.header.Values("Set-Cookie")) != 2 {
 		t.Fatalf("cookie refresh: %s %v", r.raw, r.header.Values("Set-Cookie"))
 	}
+	// Other origins get the token API with CORS * but never the cookie
+	// session: the Cookie header is dropped, Set-Cookie too.
+	evilOrigin := header("Origin", "https://evil.example")
+	r = e.api("GET", "/v1/me", nil, evilOrigin)
+	e.expect(r, 401, "")
+	if r.header.Get("Access-Control-Allow-Origin") != "*" || r.header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("foreign /v1/me CORS: %v", r.header)
+	}
+	if r = e.api("POST", "/v1/token/refresh", nil, xrw, evilOrigin); r.status == 200 || len(r.header.Values("Set-Cookie")) != 0 {
+		t.Fatalf("foreign cookie refresh: %d %s %v", r.status, r.raw, r.header)
+	}
+	r = e.api("POST", "/v1/login", map[string]any{"login": "kim", "password": pw, "cookie": true}, xrw, evilOrigin)
+	if r.status != 200 || len(r.header.Values("Set-Cookie")) != 0 {
+		t.Fatalf("foreign cookie login must not set cookies: %d %v", r.status, r.header)
+	}
+	// The allowlisted origin keeps the cookie session.
+	r = e.api("GET", "/v1/me", nil, header("Origin", "https://app.integration.test"))
+	e.expect(r, 200, "")
+	if r.header.Get("Access-Control-Allow-Origin") != "https://app.integration.test" || r.header.Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("allowlisted /v1/me CORS: %v", r.header)
+	}
+	e.expect(e.api("POST", "/v1/logout", nil, evilOrigin, xrw), 401, "")
+	e.expect(e.api("GET", "/v1/me", nil), 200, "")
+
 	e.expect(e.api("POST", "/v1/logout", nil), 403, "csrf")
 	e.expect(e.api("POST", "/v1/logout", nil, xrw), 204, "")
 	e.expect(e.api("GET", "/v1/me", nil), 401, "")
@@ -359,14 +383,20 @@ func TestCookieModeAndCSRF(t *testing.T) {
 	r = e.api("POST", "/v1/login", nil, header("Content-Type", "application/x-www-form-urlencoded"))
 	e.expect(r, 415, "unsupported_media_type")
 
-	// CORS: only the configured origin is reflected.
+	// CORS: only the configured origin is reflected with credentials;
+	// any other origin gets the token API as CORS * without credentials.
 	pre := e.api("OPTIONS", "/v1/login", nil, header("Origin", "https://app.integration.test"), header("Access-Control-Request-Method", "POST"))
 	if pre.status != 204 || pre.header.Get("Access-Control-Allow-Origin") != "https://app.integration.test" || pre.header.Get("Access-Control-Allow-Credentials") != "true" {
 		t.Fatalf("preflight: %d %v", pre.status, pre.header)
 	}
 	evil := e.api("OPTIONS", "/v1/login", nil, header("Origin", "https://evil.example"), header("Access-Control-Request-Method", "POST"))
-	if evil.header.Get("Access-Control-Allow-Origin") != "" {
-		t.Fatal("foreign origin allowed")
+	if evil.status != 204 || evil.header.Get("Access-Control-Allow-Origin") != "*" || evil.header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("foreign preflight: %d %v", evil.status, evil.header)
+	}
+	// Cookie-based browser flows stay on the allowlist.
+	sso := e.api("OPTIONS", "/v1/sso/x/start", nil, header("Origin", "https://evil.example"), header("Access-Control-Request-Method", "GET"))
+	if sso.header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("SSO opened: %v", sso.header)
 	}
 }
 

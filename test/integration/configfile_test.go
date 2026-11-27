@@ -88,7 +88,8 @@ irc: { plaintext: true }
 	cors := func(origin string) string {
 		return e.api("GET", "/v1/config", nil, header("Origin", origin)).header.Get("Access-Control-Allow-Origin")
 	}
-	if cors("https://admin.integration.test") != "https://admin.integration.test" || cors("https://app.integration.test") != "" {
+	// Unlisted origins get the token API as CORS * (no credentials).
+	if cors("https://admin.integration.test") != "https://admin.integration.test" || cors("https://app.integration.test") != "*" {
 		t.Fatal("CORS must follow the file")
 	}
 
@@ -105,7 +106,7 @@ auth:
 	eventually(t, "reload", func() bool {
 		return e.api("GET", "/v1/config", nil).str("registration") == "open"
 	})
-	if cors("https://app.integration.test") != "https://app.integration.test" || cors("https://admin.integration.test") != "" {
+	if cors("https://app.integration.test") != "https://app.integration.test" || cors("https://admin.integration.test") != "*" {
 		t.Fatal("CORS must reload live")
 	}
 	e.expect(e.api("POST", "/v1/register", map[string]string{"username": "late", "email": "late@example.com", "password": pw}), 201, "")

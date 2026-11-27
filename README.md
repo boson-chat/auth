@@ -56,7 +56,9 @@ Errors are `{"error": "<code>", "message": "<text>"}`.
 
 Clients authenticate with `Authorization: Bearer <access_token>` or, in
 browsers, with the HttpOnly cookies set by cookie-mode login (see
-[Browsers](#browsers-cookies-and-csrf)).
+[Browsers](#browsers-cookies-and-csrf)). Web clients on any origin may call
+the bearer-token API from the browser (CORS `*`, no credentials; see
+[CORS](#browsers-cors)).
 
 ### Public listener (`HTTP_ADDR`, default `:8080`)
 
@@ -492,6 +494,52 @@ and the user's disabled flag on every request.
   `AUTH_KEY_ENCRYPTION_KEY` makes the stored keys unusable: the service
   refuses to start rather than silently minting new ones.
 
+## Browsers: CORS
+
+Every Boson install serves its own web client (`https://chat.example.org`)
+and that page talks straight to other servers' auth: signing in to a home
+server, "Continue as you@home", `/v1/config`, refresh, voice tokens. So the
+**bearer-token JSON API** answers CORS for any origin, while cookie and
+redirect flows stay on the allowlist:
+
+| | paths | CORS |
+|---|---|---|
+| token API (`CORS_ANY_ORIGIN`, default on) | `GET /v1/config`; `POST /v1/register`, `/v1/email/resend`, `/v1/password/forgot`, `/v1/password/change`, `/v1/login`, `/v1/token/refresh`, `/v1/logout`, `/v1/sso/exchange`, `/v1/voice/token`, `/v1/voice/guest-token`; `/v1/me` and everything under it (identities, privacy, channels); `/v1/sessions[/…]`; friends, blocks, calls, `/v1/events`, `GET /v1/users/{username}/relation`; `GET /v1/roles`, `/v1/users/roles` | `*` |
+| federation (always) | `/.well-known/boson-federation.json`, `/v1/federation/assertions`, `/v1/federation/login`, `/v1/users/{handle}/identity`, `/v1/users/identities` | `*` |
+| branding (always) | `/v1/branding[/…]` | `*` (GET/HEAD, `If-None-Match`) |
+| everything else: `/v1/admin/*`, SSO `/v1/sso/{slug}/start\|callback\|saml/*`, `/v1/email/verify`, `/v1/password/reset`, `/v1/register/confirm`, the HTML pages | | `CORS_ALLOWED_ORIGINS` only |
+
+On the `*` paths a request from any origin gets `Access-Control-Allow-Origin: *`
+(never `Allow-Credentials`, `Vary: Origin`, exposing `Retry-After`, `ETag`,
+`X-Request-Id`), and a preflight gets `204` with
+`Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE`,
+`Access-Control-Allow-Headers: Authorization, Content-Type, Accept, If-None-Match`
+and `Access-Control-Max-Age: 86400`. An origin in `CORS_ALLOWED_ORIGINS`
+keeps its credentialed treatment there (its own origin echoed,
+`Allow-Credentials: true`, `X-Requested-With` allowed), so a same-site web app
+can keep using cookie mode.
+
+**Why `*` is safe here.** Those endpoints take the token in the
+`Authorization` header or the JSON body. Some of them *also* have a cookie
+mode for same-site apps (`/v1/login` and `/v1/federation/login` with
+`"cookie": true`, `/v1/token/refresh` and `/v1/logout` without a body token,
+and every bearer endpoint, which falls back to the `boson_at` cookie). Browsers
+never expose a credentialed response that came back with `*`, and refuse a
+credentialed preflighted request outright; on top of that, auth makes requests
+from an origin that is neither allowlisted nor its own (`PUBLIC_URL`)
+cookie-free: the `Cookie` header is dropped before the handler runs and any
+`Set-Cookie` is dropped from the response. For other origins those endpoints
+are pure bearer endpoints (cookie mode there yields no tokens at all). Only
+the allowlist and auth's own pages see cookie sessions.
+
+**What CORS is not.** It only stops *browsers* from letting one site read
+another's responses; curl, bots and servers ignore it entirely. Abuse
+protection is the per-IP (and per-account) rate limiting, which is the same
+whatever the origin. Operators who still want the strict allowlist set
+`CORS_ANY_ORIGIN=false`: the token API then answers only
+`CORS_ALLOWED_ORIGINS` (federation and branding stay `*`, as other servers'
+apps must reach them), and web clients on other origins can't sign in here.
+
 ## Browsers: cookies and CSRF
 
 - `POST /v1/login` with `"cookie": true` (and `POST /v1/token/refresh`
@@ -501,7 +549,9 @@ and the user's disabled flag on every request.
 - Any state-changing request that relies on cookies must send an
   `X-Requested-With` header (any value). Cross-site forms can't set it, and
   cross-origin scripts can't either unless the origin is in
-  `CORS_ALLOWED_ORIGINS`. Bearer-token requests don't need it.
+  `CORS_ALLOWED_ORIGINS` (the any-origin `*` preflight doesn't allow it, and
+  other origins' requests are stripped of cookies anyway). Bearer-token
+  requests don't need it.
 - JSON-only bodies are a second CSRF barrier: HTML forms can't send
   `application/json`.
 
@@ -533,6 +583,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `WEB_CLIENT_URL` | – | where `/verify-email` sends the user after verifying when the request had no (allowed) `return_to`, e.g. `https://chat.example.com/`. Unset: the page offers an "Open the Boson app" (`boson://open`) button |
 | `TRUSTED_PROXIES` | – | comma-separated CIDRs/IPs whose `X-Forwarded-For` is honoured (e.g. the Caddy container network) |
 | `CORS_ALLOWED_ORIGINS` | origin of `APP_URL` | comma-separated origins allowed to make credentialed requests (*file*: `auth.cors_allowed_origins`) |
+| `CORS_ANY_ORIGIN` | `true` | serve the bearer-token API to every origin with CORS `*` (no credentials, cookies stripped); `false` = `CORS_ALLOWED_ORIGINS` only ([CORS](#browsers-cors)) |
 | `COOKIE_SECURE` | `true` | set `false` only for plain-http dev |
 | `COOKIE_DOMAIN` | – | cookie `Domain`; empty = host-only |
 | `DATABASE_URL` | – | `postgres://…`; wins over the `DB_*` parts |
