@@ -69,6 +69,7 @@ the bearer-token API from the browser (CORS `*`, no credentials; see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
+| `GET /workload/.well-known/openid-configuration`, `GET /workload/jwks.json` | – | the [workload issuer](docs/workload-identity.md) `$ISSUER/workload`: its discovery document (`ES256`) and its own JWKS (P-256 keys only, never the user-token keys); 404 without `WORKLOAD_IDENTITIES` |
 | `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
@@ -173,6 +174,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `POST /internal/email/preview` | bearer with `settings.manage`; `{template, subject?, body?, email?: {sender_name?, accent?, footer?, logo?}, layout_html?, html?}` → `{subject, html, text, from, warnings}`, live preview with unsaved settings and unsaved compiled MJML (`layout_html` with `{{content}}`, `html` with `{{link}}`, ≤ 512 KB each; field-tagged 400s) ([emails](docs/branding.md#admin-endpoints-internal-listener)) |
 | `GET /internal/email/default-mjml?part=layout\|verification\|password_reset\|account_setup\|invite` | bearer with `settings.manage`; `{mjml}`: Boson's default MJML source (the layout, or a whole email built on it) for the admin panel's MJML editor ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
 | `POST /internal/email/test` | bearer with `settings.manage`; `{template, to}` → `{status: "sent"\|"logged", to, subject}`; rate-limited, audited `email_test_sent` |
+| `GET /internal/v1/workload/token?audience=&format=json\|text` | header `X-Workload-Token: $WORKLOAD_TOKEN_<NAME>` (never `INTERNAL_API_TOKEN`); a short-lived ES256 JWT `{iss: $ISSUER/workload, sub: "service:<name>", aud, iat, exp, jti}` for a pair in `WORKLOAD_IDENTITIES`, as `{id_token, token_type, expires_in, expires_at}` or the bare JWT (`application/jwt`): a Google `external_account` url credential source; 404 without `WORKLOAD_IDENTITIES` ([workload identity](docs/workload-identity.md)) |
 | `/internal/v1/acting/…` | the admin roles API on behalf of `X-Acting-Account`, authenticated by `X-Internal-Token: $INTERNAL_ACTING_TOKEN` (never `INTERNAL_API_TOKEN`); 404 when that is unset ([acting API](docs/roles.md#acting-api-roleserv)) |
 
 The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-script helper does). Because the caller is authenticated by `INTERNAL_API_TOKEN`, auth trusts that value: it is recorded in the audit log and used for an extra per-IP limit (`RATE_LIMIT_IP_*` ×2), so one IRC client can't spray many accounts. Without the header only the per-account limit applies, so the IRC server's own shared address is never limited.
@@ -619,6 +621,10 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `SMTP_TLS` | `starttls` | `starttls` (required) \| `tls` (implicit, 465) \| `none` (dev, e.g. Mailpit) |
 | `INTERNAL_API_TOKEN` | – | shared secret for `/internal/v1/*`; empty disables it |
 | `INTERNAL_ACTING_TOKEN` | – | separate secret for `/internal/v1/acting/*` (RoleServ acting as an account); must differ from `INTERNAL_API_TOKEN`; empty = the acting API doesn't exist (404) |
+| `WORKLOAD_IDENTITIES` | – | `name:audience` pairs the [workload issuer](docs/workload-identity.md) may mint (`sub` `service:<name>`), comma-separated, e.g. `pushrelay:boson-pushrelay`; empty = off (`/workload/*` and `/internal/v1/workload/*` are 404) |
+| `WORKLOAD_TOKEN_<NAME>` | – | each workload's own secret for `GET /internal/v1/workload/token` (`<NAME>` upper-cased, `-` → `_`, e.g. `WORKLOAD_TOKEN_PUSHRELAY`); required for every name, ≥ 16 characters, unique, never `INTERNAL_API_TOKEN` |
+| `WORKLOAD_TOKEN_TTL` | `5m` | lifetime of a workload token, at most `10m` |
+| `WORKLOAD_KEY_ROTATION` / `WORKLOAD_KEY_PUBLISH_LEAD` | `720h` / `1h` | the workload ES256 key's lifetime / how long a new key is published before it signs (and an old one stays after its last token expired) |
 | `SSO_RETURN_TO_ALLOWED` | `http://127.0.0.1:*,http://[::1]:*,boson://` | extra SSO `return_to` targets (code mode), besides this site's web origins. Patterns `scheme://host[:port\|:*][/path-prefix]`; `boson://` = any URL of that scheme |
 | `SSO_STATE_TTL` | `10m` | lifetime of the encrypted SSO state cookie (time allowed at the IdP) |
 | `SSO_CODE_TTL` | `1m` | lifetime of one-time codes for native clients |
@@ -668,7 +674,7 @@ auth user create --username U [--email E] [--role user|admin|owner] [--password-
 auth user list [query] | set-role <user> <user|admin|owner> | disable <user> | enable <user> | revoke-sessions <user>
 auth user set-roles <user> [role name or id ...]   replace a user's roles (none = Member only)
 auth role list
-auth keys list | rotate [--now] | gen-kek
+auth keys list | rotate [--now] [--workload] | gen-kek   (--workload: the workload issuer's ES256 key)
 auth invite create [--uses N] [--ttl 168h] [--note ..] | list | revoke <id>
 auth export-config                           print network:/auth: YAML for config/boson.yaml from env + database
 ```

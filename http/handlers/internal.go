@@ -44,6 +44,7 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	h.registerInternalRoleChannels(mux)
 	h.registerActing(mux)
 	h.registerEmail(mux)
+	h.registerWorkloadInternal(mux)
 }
 
 // internalSettings serves the network settings to Ergo and quicvoiced (same

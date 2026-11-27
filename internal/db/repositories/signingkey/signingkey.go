@@ -25,6 +25,13 @@ func (SigningKey) TableName() string { return "signing_keys" }
 // across replicas ("boson-ke" as an int64).
 const rotationLockID int64 = 0x626f736f6e2d6b65
 
+// workloadLockID serialises workload key creation ("boson-wk").
+const workloadLockID int64 = 0x626f736f6e2d776b
+
+// WorkloadTable holds the ES256 keys of the workload issuer
+// (<ISSUER>/workload), kept apart from the user-token keys.
+const WorkloadTable = "workload_signing_keys"
+
 type SigningKeyRepositoryImpl interface {
 	// LockRotation takes a transaction-scoped advisory lock. Call inside WithTx.
 	LockRotation(ctx context.Context) error
@@ -36,36 +43,44 @@ type SigningKeyRepositoryImpl interface {
 }
 
 type SigningKeyRepository struct {
-	db *db.DB
+	db     *db.DB
+	table  string
+	lockID int64
 }
 
 func NewSigningKeyRepository(d *db.DB) SigningKeyRepositoryImpl {
-	return &SigningKeyRepository{db: d}
+	return &SigningKeyRepository{db: d, table: SigningKey{}.TableName(), lockID: rotationLockID}
+}
+
+// NewWorkloadKeyRepository is the same repository over WorkloadTable, with
+// its own rotation lock.
+func NewWorkloadKeyRepository(d *db.DB) SigningKeyRepositoryImpl {
+	return &SigningKeyRepository{db: d, table: WorkloadTable, lockID: workloadLockID}
 }
 
 func (r *SigningKeyRepository) LockRotation(ctx context.Context) error {
-	return r.db.Conn(ctx).Exec("SELECT pg_advisory_xact_lock(?)", rotationLockID).Error
+	return r.db.Conn(ctx).Exec("SELECT pg_advisory_xact_lock(?)", r.lockID).Error
 }
 
 func (r *SigningKeyRepository) Create(ctx context.Context, k *SigningKey) error {
-	return r.db.Conn(ctx).Create(k).Error
+	return r.db.Conn(ctx).Table(r.table).Create(k).Error
 }
 
 func (r *SigningKeyRepository) ListUsable(ctx context.Context, retiredAfter time.Time) ([]*SigningKey, error) {
 	var out []*SigningKey
-	err := r.db.Conn(ctx).Where("retired_at IS NULL OR retired_at > ?", retiredAfter).
+	err := r.db.Conn(ctx).Table(r.table).Where("retired_at IS NULL OR retired_at > ?", retiredAfter).
 		Order("activated_at ASC, kid ASC").Find(&out).Error
 	return out, err
 }
 
 func (r *SigningKeyRepository) ListAll(ctx context.Context) ([]*SigningKey, error) {
 	var out []*SigningKey
-	err := r.db.Conn(ctx).Order("activated_at ASC, kid ASC").Find(&out).Error
+	err := r.db.Conn(ctx).Table(r.table).Order("activated_at ASC, kid ASC").Find(&out).Error
 	return out, err
 }
 
 func (r *SigningKeyRepository) Retire(ctx context.Context, kid string, at time.Time) error {
-	res := r.db.Conn(ctx).Model(&SigningKey{}).Where("kid = ?", kid).Update("retired_at", at)
+	res := r.db.Conn(ctx).Table(r.table).Where("kid = ?", kid).Update("retired_at", at)
 	if res.Error == nil && res.RowsAffected == 0 {
 		return repositories.ErrNotFound
 	}

@@ -58,6 +58,7 @@ import (
 	"github.com/boson-chat/auth/internal/services/sso"
 	"github.com/boson-chat/auth/internal/services/stackconfig"
 	"github.com/boson-chat/auth/internal/services/token"
+	"github.com/boson-chat/auth/internal/services/workload"
 	"github.com/boson-chat/auth/metrics"
 	"github.com/rs/zerolog"
 )
@@ -112,7 +113,9 @@ type App struct {
 	// Federation is Boson federated login.
 	Federation federation.FederationServiceImpl
 	// Bridge provisions the evrd bridge's accounts (nil: BRIDGE_API_URL unset).
-	Bridge        *bridge.Service
+	Bridge *bridge.Service
+	// Workload is the workload issuer (nil: WORKLOAD_IDENTITIES empty).
+	Workload      *workload.Service
 	nickServGuard *nickserv.Guard
 	limits        *handlers.Limits
 }
@@ -330,6 +333,24 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		MintToken: authnService.CallVoiceToken, Now: opts.Now, PollWait: cfg.SocialConfig.EventsPollWait,
 	})
 
+	// The workload issuer (<ISSUER>/workload), off without WORKLOAD_IDENTITIES.
+	var workloadService *workload.Service
+	if wc := cfg.WorkloadConfig; wc.Enabled() {
+		list, err := wc.Workloads()
+		if err != nil {
+			_ = database.Close()
+			return nil, err
+		}
+		keySet, err := workload.NewKeySet(signingkey.NewWorkloadKeyRepository(database), database, workload.KeyOptions{
+			EncryptionKey: kek, Rotation: wc.KeyRotation, PublishLead: wc.KeyPublishLead, TokenTTL: wc.TokenTTL, Now: opts.Now,
+		})
+		if err != nil {
+			_ = database.Close()
+			return nil, err
+		}
+		workloadService = workload.NewService(keySet, cfg.TokenConfig.Issuer, wc.TokenTTL, list, opts.Now)
+	}
+
 	// 4. Handlers
 	limits := handlers.NewLimits(cfg.RateLimitConfig, m)
 	assertBurst, assertRate := cfg.FederationConfig.AssertLimit()
@@ -339,8 +360,9 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		bridgeHandler = bridgeService
 	}
 	h := &handlers.Handlers{
-		Bridge:  bridgeHandler,
-		Account: accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
+		Bridge:   bridgeHandler,
+		Workload: workloadService,
+		Account:  accountService, Authn: authnService, Sessions: sessionService, Admin: adminService,
 		Keys: keyService, SSO: ssoService, Settings: settingsService, Roles: rolesService, IRCAccounts: ircAccountsService,
 		RoleChannels: roleChannelsService, Social: socialService, Branding: brandingService, Email: emailService, Limits: limits, Config: cfg, ConfigStatus: stackConfig.Status,
 		NickServ:        nickServService,
@@ -380,12 +402,16 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 		Email: emailService, SSO: ssoService, Settings: settingsService, Roles: rolesService,
 		IRCAccounts: ircAccountsService, StackConfig: stackConfig, Branding: brandingService, Social: socialService, limits: limits,
 		NickServ: nickServService, nickServGuard: nickServGuard, Federation: federationService, Bridge: bridgeService,
+		Workload: workloadService,
 	}, nil
 }
 
 // RunBackground starts key maintenance, rate-limiter pruning and cleanup.
 func (a *App) RunBackground(ctx context.Context) {
 	go a.Keys.Run(ctx, time.Minute)
+	if a.Workload != nil {
+		go a.Workload.Run(ctx, time.Minute)
+	}
 	go a.StackConfig.Run(ctx)
 	// Blocked home domains: sessions end, IRC drops their users.
 	go a.Federation.Run(ctx)

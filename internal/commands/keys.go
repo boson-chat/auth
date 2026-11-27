@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -23,8 +24,16 @@ var keysRotateCmd = &cobra.Command{
 	Short: "Create a new signing key (published now, signs after KEY_PUBLISH_LEAD; --now to sign immediately)",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		now, _ := cmd.Flags().GetBool("now")
+		wl, _ := cmd.Flags().GetBool("workload")
 		return withApp(cmd.Context(), func(ctx context.Context, app *authhttp.App) error {
-			kid, err := app.Keys.Rotate(ctx, now)
+			rotate := app.Keys.Rotate
+			if wl {
+				if app.Workload == nil {
+					return errWorkloadOff
+				}
+				rotate = app.Workload.Keys.Rotate
+			}
+			kid, err := rotate(ctx, now)
 			if err != nil {
 				return err
 			}
@@ -38,8 +47,16 @@ var keysListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List signing keys and their state",
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		wl, _ := cmd.Flags().GetBool("workload")
 		return withApp(cmd.Context(), func(ctx context.Context, app *authhttp.App) error {
-			list, err := app.Keys.List(ctx)
+			listKeys := app.Keys.List
+			if wl {
+				if app.Workload == nil {
+					return errWorkloadOff
+				}
+				listKeys = app.Workload.Keys.List
+			}
+			list, err := listKeys(ctx)
 			if err != nil {
 				return err
 			}
@@ -71,8 +88,12 @@ var keysGenKEKCmd = &cobra.Command{
 	},
 }
 
+var errWorkloadOff = errors.New("the workload issuer is off (WORKLOAD_IDENTITIES is empty)")
+
 func init() {
 	keysRotateCmd.Flags().Bool("now", false, "sign with the new key immediately (e.g. after a key compromise)")
+	keysRotateCmd.Flags().Bool("workload", false, "the workload issuer's ES256 key (<ISSUER>/workload) instead of the user-token key")
+	keysListCmd.Flags().Bool("workload", false, "list the workload issuer's ES256 keys")
 	keysCmd.AddCommand(keysRotateCmd, keysListCmd, keysGenKEKCmd)
 	rootCmd.AddCommand(keysCmd)
 }

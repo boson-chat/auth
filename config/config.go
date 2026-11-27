@@ -39,6 +39,8 @@ type Config struct {
 	FilesInternalConfig FilesInternalConfig
 	// BridgeConfig is the evrd bridge's accounts (docs/bridge.md).
 	BridgeConfig BridgeConfig
+	// WorkloadConfig is the workload issuer (README "Workload identity").
+	WorkloadConfig WorkloadConfig
 }
 
 // SocialConfig is friends and private calls (docs/friends-calls.md).
@@ -491,6 +493,15 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.BridgeConfig.Validate(); err != nil {
+		return err
+	}
+	var reserved []string
+	for _, t := range []string{c.InternalConfig.APIToken, c.InternalConfig.ActingToken} {
+		if t != "" {
+			reserved = append(reserved, t)
+		}
+	}
+	if err := c.WorkloadConfig.Validate(reserved...); err != nil {
 		return err
 	}
 	if sc := c.SSOConfig; sc.StateTTL <= 0 || sc.CodeTTL <= 0 || sc.HTTPTimeout <= 0 {
