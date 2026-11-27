@@ -274,3 +274,63 @@ func TestRoleChannelsFromFile(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 }
+
+func TestNickServSignupFromFile(t *testing.T) {
+	f, err := loadFile(t, "version: 1\nauth:\n  nickserv:\n    registration: false\n    signup_message: \"  Register on IRC: /msg NickServ REGISTER  \"\n    sync: x\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.NickServRegistration == nil || *f.NickServRegistration || *f.NickServSignupMessage != "Register on IRC: /msg NickServ REGISTER" {
+		t.Fatalf("%+v", f)
+	}
+	if strings.Join(f.Unknown, ",") != "auth.nickserv.sync" {
+		t.Fatal(f.Unknown)
+	}
+	flat := f.Flatten()
+	if flat[KeyNickServRegistration] != false || flat[KeyNickServSignupMessage] != "Register on IRC: /msg NickServ REGISTER" {
+		t.Fatal(flat)
+	}
+	env := envConfig()
+	env.NickServConfig = NickServConfig{Registration: true, SignupMessage: "env message"}
+	got := env.WithFile(f)
+	if got.NickServConfig.Registration || got.NickServConfig.SignupMessage != "Register on IRC: /msg NickServ REGISTER" {
+		t.Fatalf("%+v", got.NickServConfig)
+	}
+	// Absent keys keep the env values.
+	f, _ = loadFile(t, "version: 1\nauth: {}\n")
+	if got := env.WithFile(f); !got.NickServConfig.Registration || got.NickServConfig.SignupMessage != "env message" {
+		t.Fatalf("%+v", got.NickServConfig)
+	}
+
+	for _, c := range []struct{ src, msg string }{
+		{"auth:\n  nickserv:\n    registration: maybe\n", "true or false"},
+		{"auth:\n  nickserv:\n    signup_message: \"" + strings.Repeat("x", MaxSignupMessageLen+1) + "\"\n", "at most 500"},
+		{"auth:\n  nickserv: on\n", "auth.nickserv must be a mapping"},
+	} {
+		_, err := loadFile(t, c.src)
+		if e, ok := configfile.AsError(err); !ok || !strings.Contains(e.Msg, c.msg) {
+			t.Errorf("%q: got %v, want …%s…", c.src[:min(len(c.src), 40)], err, c.msg)
+		}
+	}
+}
+
+func TestExportFileNickServ(t *testing.T) {
+	env := envConfig()
+	out, _ := ExportFile(env, false)
+	if strings.Contains(string(out), "nickserv") {
+		t.Fatalf("local backend exports no nickserv keys:\n%s", out)
+	}
+	env.AccountsConfig.Backend = AccountBackendNickServ
+	env.NickServConfig = NickServConfig{Registration: false, SignupMessage: "Register on IRC"}
+	out, err := ExportFile(env, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := loadFile(t, "version: 1\n"+string(out))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if f.NickServRegistration == nil || *f.NickServRegistration || deref(f.NickServSignupMessage) != "Register on IRC" {
+		t.Fatalf("round trip:\n%s", out)
+	}
+}

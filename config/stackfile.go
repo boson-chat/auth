@@ -36,6 +36,9 @@ import (
 //	    directory_url: https://directory.boson.chat
 //	    remote_upload_quota: 1GB    # "" = the account quota
 //	    remote_voice: true
+//	  nickserv:                     # NickServ account backend only (docs/nickserv.md)
+//	    registration: true          # NICKSERV_REGISTRATION
+//	    signup_message: "Register on IRC: /msg NickServ REGISTER <password> <email>"  # NICKSERV_SIGNUP_MESSAGE
 //	files:
 //	  enabled: true                 # FILES_ENABLED; only this key is auth's (files_url)
 //	irc:                            # only these keys are auth's (irc.go)
@@ -65,6 +68,11 @@ type FileConfig struct {
 	SMTPPort *int
 	SMTPFrom *string
 	SMTPTLS  *string
+
+	// NickServRegistration / NickServSignupMessage are auth.nickserv.*
+	// (NICKSERV_REGISTRATION / NICKSERV_SIGNUP_MESSAGE).
+	NickServRegistration  *bool
+	NickServSignupMessage *string
 
 	// FilesEnabled is files.enabled (the rest of files: belongs to the
 	// files service).
@@ -110,6 +118,8 @@ const (
 	KeySMTPPort                 = "auth.smtp.port"
 	KeySMTPFrom                 = "auth.smtp.from"
 	KeySMTPTLS                  = "auth.smtp.tls"
+	KeyNickServRegistration     = "auth.nickserv.registration"
+	KeyNickServSignupMessage    = "auth.nickserv.signup_message"
 	KeyFilesEnabled             = "files.enabled"
 	KeyRolesChannelsAutojoin    = "roles.channels.autojoin"
 	KeyRolesChannelsRejoin      = "roles.channels.rejoin"
@@ -117,6 +127,9 @@ const (
 
 // MaxSiteNameLen bounds network.name.
 const MaxSiteNameLen = 100
+
+// MaxSignupMessageLen bounds auth.nickserv.signup_message.
+const MaxSignupMessageLen = 500
 
 // LoadFileConfig decodes and validates the network and auth sections.
 // Errors carry the line and column of the offending value.
@@ -131,6 +144,10 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 		return f, err
 	}
 	smtp, err := auth.Sub("smtp")
+	if err != nil {
+		return f, err
+	}
+	nickserv, err := auth.Sub("nickserv")
 	if err != nil {
 		return f, err
 	}
@@ -260,6 +277,19 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			return str(roleChannels, "rejoin", &f.RolesChannelsRejoin, oneOf(ValidRejoin, "login or once"))
 		},
 		func() error {
+			v, err := nickserv.Bool("registration")
+			f.NickServRegistration = v
+			return err
+		},
+		func() error {
+			return str(nickserv, "signup_message", &f.NickServSignupMessage, func(v string) string {
+				if len([]rune(v)) > MaxSignupMessageLen {
+					return fmt.Sprintf("must be at most %d characters", MaxSignupMessageLen)
+				}
+				return ""
+			})
+		},
+		func() error {
 			return str(smtp, "tls", &f.SMTPTLS, oneOf(func(v string) bool { return v == "starttls" || v == "tls" || v == "none" }, "starttls, tls or none"))
 		},
 	}
@@ -291,8 +321,9 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 	}
 	f.Unknown = append(f.Unknown, network.Unknown("name")...)
 	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "guest_voice", "channel_creation",
-		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email", "federation")...)
+		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email", "federation", "nickserv")...)
 	f.Unknown = append(f.Unknown, smtp.Unknown("host", "port", "from", "tls")...)
+	f.Unknown = append(f.Unknown, nickserv.Unknown("registration", "signup_message")...)
 	f.Unknown = append(f.Unknown, rolesSection.Unknown("channels")...)
 	f.Unknown = append(f.Unknown, roleChannels.Unknown("autojoin", "rejoin")...)
 	return f, nil
@@ -335,6 +366,8 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeySMTPPort, f.SMTPPort != nil, deref(f.SMTPPort))
 	put(KeySMTPFrom, f.SMTPFrom != nil, deref(f.SMTPFrom))
 	put(KeySMTPTLS, f.SMTPTLS != nil, deref(f.SMTPTLS))
+	put(KeyNickServRegistration, f.NickServRegistration != nil, deref(f.NickServRegistration))
+	put(KeyNickServSignupMessage, f.NickServSignupMessage != nil, deref(f.NickServSignupMessage))
 	put(KeyFilesEnabled, f.FilesEnabled != nil, deref(f.FilesEnabled))
 	put(KeyRolesChannelsAutojoin, f.RolesChannelsAutojoin != nil, deref(f.RolesChannelsAutojoin))
 	put(KeyRolesChannelsRejoin, f.RolesChannelsRejoin != nil, deref(f.RolesChannelsRejoin))
@@ -384,6 +417,10 @@ func (c Config) WithFile(f FileConfig) Config {
 	if f.SMTPPort != nil {
 		c.SMTPConfig.Port = *f.SMTPPort
 	}
+	if f.NickServRegistration != nil {
+		c.NickServConfig.Registration = *f.NickServRegistration
+	}
+	set(&c.NickServConfig.SignupMessage, f.NickServSignupMessage)
 	if f.FilesEnabled != nil {
 		c.FilesConfig.Enabled = *f.FilesEnabled
 	}
@@ -421,6 +458,13 @@ func ExportFile(c Config, corsSet bool) ([]byte, error) {
 	}
 	smtp = append(smtp, "port", sm.Port, "from", sm.From, "tls", sm.TLS)
 	auth = append(auth, "smtp", mapping(smtp...))
+	if c.AccountsConfig.NickServ() {
+		ns := []any{"registration", c.NickServConfig.Registration}
+		if c.NickServConfig.SignupMessage != "" {
+			ns = append(ns, "signup_message", c.NickServConfig.SignupMessage)
+		}
+		auth = append(auth, "nickserv", mapping(ns...))
+	}
 	root := mapping(
 		"network", mapping("name", c.AppConfig.SiteName),
 		"auth", mapping(auth...),

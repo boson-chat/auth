@@ -116,6 +116,19 @@ func newEnv(t *testing.T, mutate ...func(*config.Config)) *env {
 // newEnvOpts is newEnv with Build options (the mailer is always the capture one).
 func newEnvOpts(t *testing.T, opts authhttp.Options, mutate ...func(*config.Config)) *env {
 	t.Helper()
+	return newEnvMailer(t, opts, true, mutate...)
+}
+
+// newEnvNoMail is newEnv with auth's own mailer: SMTP_HOST is empty and ENV
+// isn't development, so there is no mail server (unless a mutator or the
+// config file sets one).
+func newEnvNoMail(t *testing.T, mutate ...func(*config.Config)) *env {
+	t.Helper()
+	return newEnvMailer(t, authhttp.Options{}, false, mutate...)
+}
+
+func newEnvMailer(t *testing.T, opts authhttp.Options, capture bool, mutate ...func(*config.Config)) *env {
+	t.Helper()
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
 		t.Skip("TEST_DATABASE_URL not set")
@@ -152,7 +165,9 @@ func newEnvOpts(t *testing.T, opts authhttp.Options, mutate ...func(*config.Conf
 	}
 
 	mail := newCaptureMailer()
-	opts.Mailer = mail
+	if capture {
+		opts.Mailer = mail
+	}
 	app, err := authhttp.Build(context.Background(), cfg, opts)
 	if err != nil {
 		t.Fatalf("build: %v", err)

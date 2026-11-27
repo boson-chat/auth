@@ -1,8 +1,11 @@
 package settings
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +14,8 @@ import (
 	"github.com/boson-chat/auth/internal/db"
 	auditrepo "github.com/boson-chat/auth/internal/db/repositories/audit"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
+	"github.com/boson-chat/auth/internal/logger"
+	"github.com/rs/zerolog"
 )
 
 type memRepo struct {
@@ -269,5 +274,72 @@ func TestFileMode(t *testing.T) {
 	s.SetFile(nil)
 	if got, _ := s.Get(t.Context()); got.Source != SourceDB || got.Registration != "closed" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// Without a mail server email verification is off (effective), whatever
+// the setting says; the warning is logged once per loss of the mailer.
+func TestEmailNotConfigured(t *testing.T) {
+	s, _, _, _ := newSvc(time.Minute)
+	var configured atomic.Bool
+	s.EmailConfigured = configured.Load
+	var buf bytes.Buffer
+	ctx := logger.WithLogger(t.Context(), zerolog.New(&buf))
+	warnings := func() int { return strings.Count(buf.String(), "email verification is OFF") }
+
+	for i := 0; i < 3; i++ {
+		got, err := s.Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.RequireEmailVerification || got.RequireEmailVerificationEffective || got.EmailConfigured {
+			t.Fatalf("no mail server: %+v", got)
+		}
+	}
+	if warnings() != 1 {
+		t.Fatalf("warnings = %d, want 1: %s", warnings(), buf.String())
+	}
+
+	configured.Store(true) // e.g. auth.smtp.host set in the config file
+	got, _ := s.Get(ctx)
+	if !got.RequireEmailVerificationEffective || !got.EmailConfigured {
+		t.Fatalf("mail server: %+v", got)
+	}
+	configured.Store(false)
+	got, _ = s.Get(ctx)
+	if got.RequireEmailVerificationEffective {
+		t.Fatalf("mail server gone: %+v", got)
+	}
+	if warnings() != 2 {
+		t.Fatalf("warnings = %d, want 2 (logged again after the mailer came back and went)", warnings())
+	}
+
+	// Setting off: nothing to override, nothing logged.
+	upd, err := s.Update(ctx, "usr_admin", Patch{RequireEmailVerification: ptr(false)})
+	if err != nil || upd.EmailConfigured || upd.RequireEmailVerificationEffective {
+		t.Fatalf("update: %+v %v", upd, err)
+	}
+
+	// File mode too.
+	s.SetFile(&config.AccountConfig{Registration: "open", RequireEmailVerification: true})
+	if got, _ := s.Get(ctx); got.Source != SourceFile || got.RequireEmailVerificationEffective {
+		t.Fatalf("file mode: %+v", got)
+	}
+}
+
+// With the NickServ backend the services verify: the setting applies
+// without auth's mailer.
+func TestEmailNotConfiguredServicesVerify(t *testing.T) {
+	s, _, _, _ := newSvc(0)
+	s.EmailConfigured = func() bool { return false }
+	s.ServicesVerifyEmail = true
+	got, err := s.Get(t.Context())
+	if err != nil || got.EmailConfigured || !got.RequireEmailVerificationEffective {
+		t.Fatalf("nickserv: %+v %v", got, err)
+	}
+	// No EmailConfigured func: email works.
+	s.EmailConfigured, s.ServicesVerifyEmail = nil, false
+	if got, _ := s.Get(t.Context()); !got.EmailConfigured || !got.RequireEmailVerificationEffective {
+		t.Fatalf("default: %+v", got)
 	}
 }

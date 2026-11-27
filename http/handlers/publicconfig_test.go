@@ -112,3 +112,36 @@ func TestPublicConfigSignupFollowsRegistration(t *testing.T) {
 		})
 	}
 }
+
+// email.configured, the effective require_email_verification and
+// accounts.password_reset follow the mail server.
+func TestPublicConfigEmail(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		st         settings.Settings
+		nickserv   bool
+		wantVerify bool
+		wantReset  bool
+	}{
+		{"mail server", settings.Settings{EmailConfigured: true, RequireEmailVerification: true, RequireEmailVerificationEffective: true}, false, true, true},
+		{"no mail server", settings.Settings{RequireEmailVerification: true}, false, false, false},
+		{"nickserv", settings.Settings{RequireEmailVerification: true, RequireEmailVerificationEffective: true}, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handlers{Settings: stubSettings{st: tc.st}}
+			if tc.nickserv {
+				h.NickServ = stubNickServ{}
+			}
+			body := publicConfigBody(t, h)
+			if got := body["email"].(map[string]any)["configured"]; got != tc.st.EmailConfigured {
+				t.Fatalf("email.configured = %v", got)
+			}
+			if body["require_email_verification"] != tc.wantVerify {
+				t.Fatalf("require_email_verification = %v, want %v", body["require_email_verification"], tc.wantVerify)
+			}
+			if got := body["accounts"].(map[string]any)["password_reset"]; got != tc.wantReset {
+				t.Fatalf("password_reset = %v, want %v", got, tc.wantReset)
+			}
+		})
+	}
+}

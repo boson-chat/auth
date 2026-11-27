@@ -243,7 +243,7 @@ func (h *Handlers) adminCreateUser(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeError(w, r, err)
 		return
 	}
-	u, sent, err := h.Admin.CreateUser(r.Context(), principalFrom(r).UserID, admin.CreateUserInput{
+	u, d, err := h.Admin.CreateUser(r.Context(), principalFrom(r).UserID, admin.CreateUserInput{
 		Username: req.Username, Email: req.Email, Role: req.Role, Password: req.Password, SendSetupEmail: req.SendInviteEmail,
 	})
 	if err != nil && u == nil {
@@ -255,15 +255,27 @@ func (h *Handlers) adminCreateUser(w nethttp.ResponseWriter, r *nethttp.Request)
 		// can retry with POST /v1/admin/users/{id}/password-reset.
 		logger.FromCtx(r.Context()).Error().Err(err).Str("user_id", u.ID).Msg("account setup email")
 	}
-	writeJSON(w, nethttp.StatusCreated, map[string]any{"user": toAdminUser(u), "invite_email_sent": sent})
+	out := map[string]any{"user": toAdminUser(u), "invite_email_sent": d.Sent}
+	if d.Link != "" {
+		// No mail server: the admin copies the setup link to the user.
+		out["setup_link"] = d.Link
+	}
+	writeJSON(w, nethttp.StatusCreated, out)
 }
 
 func (h *Handlers) adminSendPasswordReset(w nethttp.ResponseWriter, r *nethttp.Request) {
-	if err := h.Admin.SendPasswordReset(r.Context(), principalFrom(r).UserID, r.PathValue("id")); err != nil {
+	d, err := h.Admin.SendPasswordReset(r.Context(), principalFrom(r).UserID, r.PathValue("id"))
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, nethttp.StatusAccepted, map[string]string{"status": "a password reset link has been sent to the user's email address"})
+	if !d.Sent {
+		// No mail server: nothing was sent; the admin hands the link over.
+		writeJSON(w, nethttp.StatusOK, map[string]any{"status": "no mail server is configured: copy this password reset link to the user",
+			"email_sent": false, "link": d.Link})
+		return
+	}
+	writeJSON(w, nethttp.StatusAccepted, map[string]any{"status": "a password reset link has been sent to the user's email address", "email_sent": true})
 }
 
 func (h *Handlers) adminSendVerification(w nethttp.ResponseWriter, r *nethttp.Request) {

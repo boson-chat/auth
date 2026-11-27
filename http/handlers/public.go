@@ -139,13 +139,17 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		public = append(public, publicChannel{NetworkChannel: c, Restricted: c.Restricted()})
 	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"registration":               st.Registration,
-		"require_email_verification": st.RequireEmailVerification,
-		"channel_creation":           st.ChannelCreation,
-		"voice_channel_creation":     st.VoiceChannelCreation,
-		"channel_auto_register":      st.ChannelAutoRegister,
-		"channel_expiry_days":        st.ChannelExpiryDays,
-		"guest_access":               st.GuestAccess,
+		"registration": st.Registration,
+		// Effective: off while no mail server can send the email.
+		"require_email_verification": st.RequireEmailVerificationEffective,
+		// email.configured: auth can send email (verification, password
+		// reset, invites). False: none of those are emailed.
+		"email":                  map[string]any{"configured": st.EmailConfigured},
+		"channel_creation":       st.ChannelCreation,
+		"voice_channel_creation": st.VoiceChannelCreation,
+		"channel_auto_register":  st.ChannelAutoRegister,
+		"channel_expiry_days":    st.ChannelExpiryDays,
+		"guest_access":           st.GuestAccess,
 		// Guests may join voice: only when guests may connect at all.
 		"guest_voice":   st.GuestAccess && st.GuestVoice,
 		"sso_providers": providers,
@@ -153,7 +157,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
 		"channels":      public,
-		"accounts":      h.accountsInfo(st.Registration),
+		"accounts":      h.accountsInfo(st.Registration, st.EmailConfigured),
 	})
 }
 
@@ -161,10 +165,11 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 // sign-up / password reset do there. signup is false while registration is
 // closed (POST /v1/register refuses then); with invite-only registration it
 // stays true and clients read registration to ask for the invite code.
-func (h *Handlers) accountsInfo(registration string) map[string]any {
+// password_reset (by email, local backend) needs a mail server.
+func (h *Handlers) accountsInfo(registration string, emailConfigured bool) map[string]any {
 	open := registration != config.RegistrationClosed
 	if h.NickServ == nil {
-		return map[string]any{"backend": config.AccountBackendLocal, "signup": open, "signup_message": nil, "password_reset": true}
+		return map[string]any{"backend": config.AccountBackendLocal, "signup": open, "signup_message": nil, "password_reset": emailConfigured}
 	}
 	su := h.NickServ.Signup()
 	var msg *string
@@ -209,7 +214,7 @@ func (h *Handlers) register(w nethttp.ResponseWriter, r *nethttp.Request) {
 	out := map[string]any{
 		"user":                        toUser(res.User),
 		"email_verification_sent":     res.Verification != "",
-		"email_verification_required": st.RequireEmailVerification && res.Verification != "",
+		"email_verification_required": st.RequireEmailVerificationEffective && res.Verification != "",
 	}
 	if h.NickServ != nil {
 		// NickServ backend: the services verify (a code to confirm with

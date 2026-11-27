@@ -56,12 +56,21 @@ type AuditQuery struct {
 
 var errBadCursor = apperr.Invalid("invalid cursor")
 
+// Delivery is how a password reset / account setup link reached the user:
+// emailed (Sent), or, without a mail server, Link for the admin to copy.
+type Delivery struct {
+	Sent bool
+	Link string
+}
+
 type AdminServiceImpl interface {
 	// CreateUser creates an account (email verified) and optionally emails a
-	// "choose your password" link. Returns whether that email was queued.
-	CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, bool, error)
-	// SendPasswordReset emails the user a reset link (same flow as forgot).
-	SendPasswordReset(ctx context.Context, actorID, userID string) error
+	// "choose your password" link (without a mail server: returns the link
+	// for the admin to hand over).
+	CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, Delivery, error)
+	// SendPasswordReset emails the user a reset link (same flow as forgot),
+	// or returns it without a mail server.
+	SendPasswordReset(ctx context.Context, actorID, userID string) (Delivery, error)
 	// SendVerification emails the user a new verification link.
 	SendVerification(ctx context.Context, actorID, userID string) error
 	// ListUsers searches users; sort is a user.Sort* value ("" = created).
@@ -226,47 +235,53 @@ func (s *AdminService) RevokeInvite(ctx context.Context, actorID, id string) err
 	return nil
 }
 
-func (s *AdminService) CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, bool, error) {
+func (s *AdminService) CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, Delivery, error) {
 	if in.Password != "" && in.SendSetupEmail {
-		return nil, false, apperr.Invalid("give either password or send_invite_email, not both")
+		return nil, Delivery{}, apperr.Invalid("give either password or send_invite_email, not both")
 	}
 	if in.SendSetupEmail && strings.TrimSpace(in.Email) == "" {
-		return nil, false, apperr.Invalid("send_invite_email needs an email address")
+		return nil, Delivery{}, apperr.Invalid("send_invite_email needs an email address")
 	}
 	switch in.Role {
 	case "", user.RoleUser:
 	case user.RoleAdmin:
 		if err := s.Roles.CheckAssign(ctx, actorID, role.AdminID); err != nil {
-			return nil, false, err
+			return nil, Delivery{}, err
 		}
 	case role.BuiltinOwner:
 		if err := s.Roles.CheckAssign(ctx, actorID, role.OwnerID); err != nil {
-			return nil, false, err
+			return nil, Delivery{}, err
 		}
 	default:
-		return nil, false, apperr.Invalid("role must be user, admin or owner")
+		return nil, Delivery{}, apperr.Invalid("role must be user, admin or owner")
 	}
 	u, err := s.Account.CreateUser(ctx, actorID, account.CreateUserInput{
 		Username: in.Username, Email: in.Email, Password: in.Password, Role: in.Role, EmailVerified: true,
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, Delivery{}, err
 	}
 	if !in.SendSetupEmail {
-		return u, false, nil
+		return u, Delivery{}, nil
 	}
-	if err := s.Account.SendPasswordReset(ctx, u.ID, true); err != nil {
-		return u, false, err
+	link, err := s.Account.SendPasswordReset(ctx, u.ID, true)
+	if err != nil {
+		return u, Delivery{}, err
 	}
-	return u, true, nil
+	return u, Delivery{Sent: link == "", Link: link}, nil
 }
 
-func (s *AdminService) SendPasswordReset(ctx context.Context, actorID, userID string) error {
-	if err := s.Account.SendPasswordReset(ctx, userID, false); err != nil {
-		return err
+func (s *AdminService) SendPasswordReset(ctx context.Context, actorID, userID string) (Delivery, error) {
+	link, err := s.Account.SendPasswordReset(ctx, userID, false)
+	if err != nil {
+		return Delivery{}, err
 	}
-	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminResetSent, map[string]any{"user_id": userID})
-	return nil
+	meta := map[string]any{"user_id": userID}
+	if link != "" {
+		meta["delivery"] = "link" // handed to the admin, not emailed
+	}
+	s.Audit.RecordTarget(ctx, actorID, userID, audit.EventAdminResetSent, meta)
+	return Delivery{Sent: link == "", Link: link}, nil
 }
 
 func (s *AdminService) SendVerification(ctx context.Context, actorID, userID string) error {

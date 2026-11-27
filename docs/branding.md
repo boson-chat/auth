@@ -379,7 +379,8 @@ request as a whole is a few milliseconds, mostly the access-token check.
 `POST /internal/email/test` `{template, to}` → `{status, to, subject}`
 sends that email (subject prefixed `[Test] `) with the same sample values
 and waits for the SMTP server. `status` is `sent`, or `logged` without
-`SMTP_HOST`. `to` must be one bare address. 502 `email_send_failed` (with
+`SMTP_HOST` in `ENV=development`; elsewhere no `SMTP_HOST` is `409
+email_not_configured`. `to` must be one bare address. 502 `email_send_failed` (with
 the server's reply) when SMTP rejects it. Rate-limited per admin (burst 5,
 then one per 6 minutes; 429 with `Retry-After`) and audited as
 `email_test_sent` (`meta: {template, to, outcome, logged_only}`).

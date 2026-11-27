@@ -115,7 +115,8 @@ type SessionEnder interface {
 type Backend struct {
 	Strategy string
 	Verifier Verifier
-	// Registrar is nil when the strategy can't register.
+	// Registrar is nil when the strategy can't register. Whether Boson
+	// sign-up uses it is NICKSERV_REGISTRATION (nsaccount; live).
 	Registrar Registrar
 	// Sessions is nil when the strategy has no services sessions.
 	Sessions SessionEnder
@@ -139,10 +140,7 @@ func New(cfg config.NickServConfig) (*Backend, error) {
 			rpc = NewXMLRPC(cfg.RPCURL, tlsConf, cfg.Timeout)
 		}
 		a := &Atheme{RPC: rpc, KeepSession: cfg.StoreSession}
-		b.Verifier, b.Sessions = a, a
-		if cfg.Registration {
-			b.Registrar = a
-		}
+		b.Verifier, b.Sessions, b.Registrar = a, a, a
 	case config.StrategySASL, config.StrategyIdentify:
 		dial := IRCDialer{
 			Addr: cfg.IRCAddr, TLS: tlsConf, UseTLS: cfg.IRCTLS, ServerPassword: cfg.IRCPassword,

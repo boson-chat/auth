@@ -74,6 +74,10 @@ var (
 	ErrNoPassword         = New(http.StatusBadRequest, "no_password", "this account has no password")
 	ErrNoEmail            = New(http.StatusBadRequest, "no_email", "this account has no email address")
 	ErrAlreadyVerified    = New(http.StatusConflict, "already_verified", "the email address is already verified")
+	// ErrEmailNotConfigured: no mail server is configured (SMTP_HOST is
+	// empty), so nothing can be emailed.
+	ErrEmailNotConfigured = New(http.StatusConflict, "email_not_configured",
+		"this network has no mail server configured, so it can't send email")
 	// ErrUserDisabled is the admin-facing conflict for acting on a disabled account.
 	ErrUserDisabled = New(http.StatusConflict, "account_disabled", "this account is disabled")
 )

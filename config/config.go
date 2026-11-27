@@ -121,6 +121,10 @@ type AppConfig struct {
 	ConfigPoll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
 }
 
+// Development: ENV=development (or dev). Without SMTP_HOST, emails are then
+// written to the log instead of being refused.
+func (c AppConfig) Development() bool { return c.Env == "development" || c.Env == "dev" }
+
 // DefaultSiteName is SITE_NAME's built-in default: a product placeholder
 // for emails, not a name the operator gave the network.
 const DefaultSiteName = "boson"
