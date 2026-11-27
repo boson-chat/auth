@@ -79,6 +79,10 @@ type Handlers struct {
 	// NetworkChannels are channels in GET /v1/config (config irc.channels,
 	// hot-reloaded). Nil: Config.IRCConfig.
 	NetworkChannels func() []config.NetworkChannel
+	// NetworkName is network_name in GET /v1/config (SITE_NAME / the
+	// config file's network.name, hot-reloaded; "" = null). Nil:
+	// Config.AppConfig.NetworkName().
+	NetworkName func() string
 }
 
 type principalKey struct{}

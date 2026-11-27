@@ -100,7 +100,8 @@ type AppConfig struct {
 	Env      string `default:"development" env:"ENV"`
 	Version  string `default:"dev" env:"VERSION"`
 	LogLevel string `default:"info" env:"LOG_LEVEL"`
-	// Product name used in emails. network.name in the stack config file wins.
+	// The network's name, used in emails and as network_name in
+	// GET /v1/config. network.name in the stack config file wins.
 	SiteName string `default:"boson" env:"SITE_NAME"`
 	// Stack config file (config/boson.yaml). When set and the file exists,
 	// its network: and auth: sections win over the env values below and
@@ -116,6 +117,21 @@ type AppConfig struct {
 	EmailsDir string `env:"BOSON_EMAILS_DIR"`
 	// How often the config file's mtime is polled (besides fsnotify).
 	ConfigPoll time.Duration `default:"10s" env:"BOSON_CONFIG_POLL"`
+}
+
+// DefaultSiteName is SITE_NAME's built-in default: a product placeholder
+// for emails, not a name the operator gave the network.
+const DefaultSiteName = "boson"
+
+// NetworkName is the name the operator gave the network (SITE_NAME or the
+// config file's network.name), or "" when neither is set: empty, or
+// still the built-in default DefaultSiteName.
+func (c AppConfig) NetworkName() string {
+	n := strings.TrimSpace(c.SiteName)
+	if n == DefaultSiteName {
+		return ""
+	}
+	return n
 }
 
 // BrandingDirectory is BOSON_BRANDING_DIR, by default "branding" next to

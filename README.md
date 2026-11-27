@@ -69,7 +69,7 @@ the bearer-token API from the browser (CORS `*`, no credentials; see
 | `GET /version` | – | build version as `text/plain` (`1.3.0\n`) |
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `GET /.well-known/boson-federation.json` | – | the `federation` section for boson.json `{version, issuer, jwks_uri, assertion_endpoint, login_endpoint, accepts}`; CORS `*` ([federation](docs/federation.md#discovery-bosonjson)) |
@@ -223,7 +223,7 @@ without it (env + `network_settings`).
 ```yaml
 version: 1
 network:
-  name: Boson                       # SITE_NAME: product name in emails
+  name: Boson                       # SITE_NAME: network name in emails and /v1/config
 auth:
   registration: open                # open | invite | closed
   require_email_verification: true
@@ -569,7 +569,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `BOSON_CONFIG_POLL` | `10s` | mtime poll interval for the config file (besides fsnotify) |
 | `BOSON_BRANDING_DIR` | `branding` next to `BOSON_CONFIG` | directory of the images named in `branding.images` ([branding](docs/branding.md)) |
 | `BOSON_EMAILS_DIR` | `emails` next to `BOSON_CONFIG` | directory of the MJML / HTML files named in `auth.email.layout` and `auth.email.templates.<name>` ([custom MJML](docs/branding.md#custom-mjml-layout-and-whole-emails)) |
-| `SITE_NAME` | `boson` | product name in emails (*file*: `network.name`) |
+| `SITE_NAME` | `boson` | the network's name: in emails and `GET /v1/config` `network_name` (`null` while it is the default `boson`) (*file*: `network.name`) |
 | `FILES_PUBLIC_URL` | – | the network's files (uploads) service, e.g. `https://files.example.com`; `GET /v1/config` `files_url` while uploads are on |
 | `ROLE_CHANNELS_AUTOJOIN` | `false` | RoleServ auto-joins members to their roles' channels (*file*: `roles.channels.autojoin`) |
 | `ROLE_CHANNELS_REJOIN` | `login` | `login` \| `once` (*file*: `roles.channels.rejoin`) |

@@ -158,3 +158,14 @@ func TestWebClientURL(t *testing.T) {
 		}
 	}
 }
+
+func TestAppConfigNetworkName(t *testing.T) {
+	for in, want := range map[string]string{
+		"IRCForever": "IRCForever", " My Net ": "My Net", "Boson": "Boson",
+		DefaultSiteName: "", "": "", "  ": "",
+	} {
+		if got := (AppConfig{SiteName: in}).NetworkName(); got != want {
+			t.Errorf("NetworkName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
