@@ -282,6 +282,8 @@ in the file are rejected).
 
 #### Running without a mail server
 
+(Since auth 1.32.0.)
+
 Leave `SMTP_HOST` (and `auth.smtp.host`) empty and auth sends no email. Outside
 `ENV=development` (where emails, links included, are written to the log
 instead) that means:
