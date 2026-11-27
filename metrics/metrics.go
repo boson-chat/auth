@@ -135,6 +135,7 @@ const (
 	BridgeOpDelete      = "delete"
 	BridgeOpCredentials = "credentials"
 	BridgeOpReconcile   = "reconcile"
+	BridgeOpSettings    = "settings"
 )
 
 // OutcomeDropped: a NickServ login the bridge never got (retries ran out;

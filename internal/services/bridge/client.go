@@ -69,6 +69,9 @@ type Client interface {
 	Put(ctx context.Context, username string, p Put) error
 	// Delete succeeds when the account is already gone.
 	Delete(ctx context.Context, username string) error
+	// PutSettings changes the bridge's runtime settings (the fields set)
+	// and returns those in effect; a 404 StatusError on an evrd before 0.61.
+	PutSettings(ctx context.Context, p Settings) (*Settings, error)
 }
 
 // StatusError is a managed API answer other than 2xx.

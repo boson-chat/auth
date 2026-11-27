@@ -11,6 +11,7 @@ those accounts itself through evrd's managed API:
 ```
 PUT/GET/DELETE  $BRIDGE_API_URL/api/managed/users/{username}
 GET             $BRIDGE_API_URL/api/managed/users
+PUT             $BRIDGE_API_URL/api/managed/settings   (evrd 0.61+, guests)
 Authorization:  Bearer $BRIDGE_TOKEN
 ```
 
@@ -108,6 +109,35 @@ The password:
 
 The sign-in itself never waits for or fails on the bridge.
 
+## Guests
+
+evrd 0.61 lets clients without credentials in to the bridge as guests
+(evrd `docs/managed.md`, "Guests": `managed_guests`), the way Boson's web
+client lets guests in. auth drives that setting, so an add-on install lets
+guests in exactly when Boson does: the bridge's `guests` is always auth's
+`guest_access` (env `GUEST_ACCESS`, `auth.guest_access` in
+`config/boson.yaml`, or the admin panel).
+
+- At startup every replica sends `PUT /api/managed/settings
+  {"guests": <guest_access>}`. The bridge often starts after auth, so a
+  failure is retried with backoff (`BRIDGE_RETRY_MIN` doubling, at most a
+  minute) and logged once as a warning until it works.
+- A change to `guest_access` (the admin panel, or a live reload of the
+  config file) is checked every `BRIDGE_POLL_INTERVAL` and sent at once.
+- It's sent again every `BRIDGE_RECONCILE_INTERVAL` (10 minutes when that's
+  `0`), in case the bridge's settings were reset (`DELETE
+  /api/managed/settings`).
+- Only `guests` is sent. The guest limits (`managed_guests_max`,
+  `managed_guests_per_ip`, `managed_guest_linger`) and the nick guard's
+  grace (`managed_nick_guard_grace`) stay as evrd.conf says. evrd keeps a
+  setting made through the API over evrd.conf's, across restarts, so leave
+  `managed_guests` out of evrd.conf: auth's value wins anyway.
+- An evrd before 0.61 has no settings API (404): auth logs that once at
+  info, keeps provisioning accounts, and tries again at the next change or
+  resync, so upgrading evrd is enough.
+
+Metric: `auth.bridge.pushes{op="settings"}` (`success` / `error`).
+
 ## Lifecycle and reliability
 
 Database triggers on `users` (insert, delete, and updates of `username`,
@@ -152,10 +182,12 @@ Both are 404 when bridge provisioning is off.
 ### Metrics and logs
 
 - `auth.bridge.pushes{op, outcome}` (Prometheus `auth_bridge_pushes_total`):
-  `op` `put` \| `delete` \| `credentials` (a NickServ login) \| `reconcile`;
+  `op` `put` \| `delete` \| `credentials` (a NickServ login) \| `reconcile` \|
+  `settings` (the guest setting);
   `outcome` `success` \| `error` \| `dropped`.
 - `auth.bridge.outbox.pending` (`auth_bridge_outbox_pending`): changes not
   yet pushed. Alert when it stays above zero.
 - Logs: `bridge: push failed, will retry` (with `user_id`, `attempts`,
   `retry_in`), `bridge: full sync failed`, `bridge: handing the bridge the
-  NickServ login failed`, and an Info line per created or removed account.
+  NickServ login failed`, `bridge: sending the guest setting failed`, and an
+  Info line per created or removed account and per guest setting sent.
