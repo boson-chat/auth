@@ -66,6 +66,10 @@ type EmailServiceImpl interface {
 	// SendAccountSetup invites a user an admin created to choose a password
 	// (a reset-password token, opened on the same page).
 	SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration)
+	// ResetLink is the password reset / account setup link for token (the
+	// link those emails carry), for an admin to hand over when no email can
+	// be sent.
+	ResetLink(token string) string
 	// SetSiteName changes the product name in subjects and bodies.
 	SetSiteName(name string)
 	// SetConfig applies auth.email from the stack config file; nil means
@@ -230,6 +234,8 @@ func (s *EmailService) SendPasswordReset(ctx context.Context, u *user.User, toke
 	s.sendUser(ctx, u, catalog[config.EmailPasswordReset], s.link(ResetPath, token), ttl)
 }
 
+func (s *EmailService) ResetLink(token string) string { return s.link(ResetPath, token) }
+
 func (s *EmailService) SendAccountSetup(ctx context.Context, u *user.User, token string, ttl time.Duration) {
 	s.sendUser(ctx, u, catalog[config.EmailAccountSetup], s.link(ResetPath, token), ttl)
 }
@@ -337,6 +343,9 @@ func (s *EmailService) SendTest(ctx context.Context, actorID, name, username, to
 		return Rendered{}, err
 	}
 	r.Subject = "[Test] " + r.Subject
+	if !mailer.Configured(s.Mailer) {
+		return Rendered{}, apperr.ErrEmailNotConfigured.WithMessage("no mail server is configured (auth.smtp.host / SMTP_HOST): set one up to send email")
+	}
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	record := func(outcome string) {

@@ -24,6 +24,7 @@ import (
 	"github.com/boson-chat/auth/internal/apperr"
 	"github.com/boson-chat/auth/internal/db"
 	settingsrepo "github.com/boson-chat/auth/internal/db/repositories/settings"
+	"github.com/boson-chat/auth/internal/logger"
 	"github.com/boson-chat/auth/internal/services/audit"
 )
 
@@ -42,6 +43,16 @@ type Settings struct {
 	// Source is where the values come from: "file" (stack config file,
 	// read-only here) or "db" (network_settings over env defaults).
 	Source string `json:"source"`
+
+	// EmailConfigured: auth can send email (a mail server is configured,
+	// or ENV=development logs emails). Not a setting: filled in by Get.
+	EmailConfigured bool `json:"email_configured"`
+	// RequireEmailVerificationEffective is what sign-in enforces:
+	// RequireEmailVerification, except that it is off while auth can't
+	// send the verification email (local backend without a mail server).
+	// With the NickServ backend the services verify, so it is
+	// RequireEmailVerification.
+	RequireEmailVerificationEffective bool `json:"require_email_verification_effective"`
 }
 
 // Sources.
@@ -109,7 +120,17 @@ type SettingsService struct {
 	TTL        time.Duration
 	Now        func() time.Time
 
+	// EmailConfigured reports whether email can be sent now (nil: it can).
+	// Without it, email verification is off whatever the setting says.
+	EmailConfigured func() bool
+	// ServicesVerifyEmail: the NickServ backend, whose services send and
+	// check the verification emails; auth's mailer doesn't matter then.
+	ServicesVerifyEmail bool
+
 	file atomic.Pointer[config.AccountConfig]
+	// overridden: the "verification is off, no mail server" warning was
+	// logged (reset once email works again, so a later loss logs again).
+	overridden atomic.Bool
 
 	mu       sync.Mutex
 	cached   Settings
@@ -189,13 +210,13 @@ func (s *SettingsService) SetFile(v *config.AccountConfig) {
 
 func (s *SettingsService) Get(ctx context.Context) (Settings, error) {
 	if f := s.file.Load(); f != nil {
-		return fromFile(f), nil
+		return s.withEmail(ctx, fromFile(f)), nil
 	}
 	s.mu.Lock()
 	if s.valid && s.Now().Sub(s.cachedAt) < s.TTL {
 		v := s.cached
 		s.mu.Unlock()
-		return v, nil
+		return s.withEmail(ctx, v), nil
 	}
 	s.mu.Unlock()
 	row, err := s.Repository.Get(ctx)
@@ -204,7 +225,24 @@ func (s *SettingsService) Get(ctx context.Context) (Settings, error) {
 	}
 	v := s.effective(row)
 	s.store(v)
-	return v, nil
+	return s.withEmail(ctx, v), nil
+}
+
+// withEmail fills in the email state (live: the mailer can change with the
+// stack config file) and the effective email verification, logging once
+// when the setting is overridden.
+func (s *SettingsService) withEmail(ctx context.Context, v Settings) Settings {
+	v.EmailConfigured = s.EmailConfigured == nil || s.EmailConfigured()
+	v.RequireEmailVerificationEffective = v.RequireEmailVerification && (v.EmailConfigured || s.ServicesVerifyEmail)
+	if v.RequireEmailVerification && !v.RequireEmailVerificationEffective {
+		if s.overridden.CompareAndSwap(false, true) {
+			logger.FromCtx(ctx).Warn().Msg("email verification is OFF: require_email_verification is on, but no mail server " +
+				"is configured (SMTP_HOST / auth.smtp.host is empty), so new accounts can sign in without verifying their email")
+		}
+	} else if v.EmailConfigured {
+		s.overridden.Store(false)
+	}
+	return v
 }
 
 func (s *SettingsService) store(v Settings) {
@@ -272,7 +310,7 @@ func (s *SettingsService) Update(ctx context.Context, actorID string, p Patch) (
 	s.store(after)
 	oldV, newV := diff(before, after)
 	s.Audit.Record(ctx, actorID, audit.EventSettingsUpdated, map[string]any{"old": oldV, "new": newV})
-	return after, nil
+	return s.withEmail(ctx, after), nil
 }
 
 // diff returns the changed fields' old and new values.

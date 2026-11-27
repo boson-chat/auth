@@ -91,17 +91,22 @@ type AccountServiceImpl interface {
 	// ResendVerification sends a new link to userID's address, or to the
 	// account with emailAddr. It reveals nothing: unknown, verified or
 	// disabled accounts are silently skipped.
-	// returnTo as RegisterInput.ReturnTo.
+	// returnTo as RegisterInput.ReturnTo. email_not_configured without a
+	// mail server (verification is off then).
 	ResendVerification(ctx context.Context, userID, emailAddr, returnTo string) error
 	// ForgotPassword emails a reset link to the stored address of the account
-	// with that email. It always returns nil to clients.
+	// with that email. It always returns nil to clients, except
+	// email_not_configured without a mail server (the same for everyone).
 	ForgotPassword(ctx context.Context, emailAddr string) error
 	// SendPasswordReset emails userID a reset link (admin action). setup
 	// words it as "choose your password" for a new account and uses
-	// ACCOUNT_SETUP_TTL. Errors: not_found, no_email, account_disabled.
-	SendPasswordReset(ctx context.Context, userID string, setup bool) error
+	// ACCOUNT_SETUP_TTL. Without a mail server nothing is sent and the
+	// link is returned for the admin to hand over ("" when it was emailed).
+	// Errors: not_found, no_email (when emailing), account_disabled.
+	SendPasswordReset(ctx context.Context, userID string, setup bool) (link string, err error)
 	// SendVerification emails userID a new verification link (admin action).
-	// Errors: not_found, no_email, already_verified, account_disabled.
+	// Errors: not_found, no_email, already_verified, account_disabled,
+	// email_not_configured.
 	SendVerification(ctx context.Context, userID string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
 	ChangePassword(ctx context.Context, userID, keepSessionID, current, newPassword string) error
@@ -231,11 +236,15 @@ func (s *AccountService) Register(ctx context.Context, in RegisterInput) (*Regis
 	if s.NickServ != nil {
 		return s.registerNickServ(ctx, in)
 	}
-	u, err := s.registerLocal(ctx, in)
+	u, sent, err := s.registerLocal(ctx, in)
 	if err != nil {
 		return nil, err
 	}
-	return &RegisterResult{User: u, Verification: VerificationEmail}, nil
+	out := &RegisterResult{User: u}
+	if sent {
+		out.Verification = VerificationEmail
+	}
+	return out, nil
 }
 
 // checkRegistrationMode applies the registration setting.
@@ -313,29 +322,31 @@ func (s *AccountService) ConfirmRegistration(ctx context.Context, account, passw
 	return s.NickServ.ConfirmRegistration(ctx, account, password, code)
 }
 
-func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*user.User, error) {
+// registerLocal creates a local account; sent: a verification email was
+// sent (not without a mail server).
+func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*user.User, bool, error) {
 	st, err := s.Settings.Get(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	switch st.Registration {
 	case config.RegistrationClosed:
 		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
-		return nil, apperr.ErrRegistrationClosed
+		return nil, false, apperr.ErrRegistrationClosed
 	case config.RegistrationInvite:
 		if in.InviteCode == "" {
 			s.Metrics.Registration(ctx, metrics.OutcomeRejected)
-			return nil, apperr.ErrInviteRequired
+			return nil, false, apperr.ErrInviteRequired
 		}
 	}
 	addr, err := validateIdentity(in.Username, in.Email, in.Password, true)
 	if err != nil {
 		s.Metrics.Registration(ctx, metrics.OutcomeRejected)
-		return nil, err
+		return nil, false, err
 	}
 	hash, err := s.Hasher.Hash(in.Password)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	now := s.now()
 	u := &user.User{
@@ -355,6 +366,9 @@ func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*
 		if err := s.Credentials.Upsert(ctx, u.ID, hash); err != nil {
 			return err
 		}
+		if !st.EmailConfigured {
+			return nil // no mail server: nothing to verify with
+		}
 		verifyToken, err = s.newEmailToken(ctx, u.ID, emailtoken.PurposeVerifyEmail, s.Config.EmailVerifyTTL)
 		return err
 	})
@@ -364,12 +378,20 @@ func (s *AccountService) registerLocal(ctx context.Context, in RegisterInput) (*
 		} else {
 			s.Metrics.Registration(ctx, metrics.OutcomeError)
 		}
-		return nil, err
+		return nil, false, err
 	}
-	s.Email.SendVerification(ctx, u, verifyToken, s.Config.EmailVerifyTTL, in.ReturnTo)
+	if verifyToken != "" {
+		s.Email.SendVerification(ctx, u, verifyToken, s.Config.EmailVerifyTTL, in.ReturnTo)
+	}
 	s.Metrics.Registration(ctx, metrics.OutcomeSuccess)
 	s.Audit.Record(ctx, u.ID, audit.EventRegister, nil)
-	return u, nil
+	return u, verifyToken != "", nil
+}
+
+// emailConfigured: a mail server is configured (settings say so).
+func (s *AccountService) emailConfigured(ctx context.Context) (bool, error) {
+	st, err := s.Settings.Get(ctx)
+	return st.EmailConfigured, err
 }
 
 func (s *AccountService) CreateUser(ctx context.Context, actorID string, in CreateUserInput) (*user.User, error) {
@@ -499,6 +521,11 @@ func (s *AccountService) ResendVerification(ctx context.Context, userID, emailAd
 	if s.NickServ != nil {
 		return nil // the services verify emails
 	}
+	if ok, err := s.emailConfigured(ctx); err != nil {
+		return err
+	} else if !ok {
+		return apperr.ErrEmailNotConfigured.WithMessage("this network can't send email, so there is nothing to verify: sign in without verifying")
+	}
 	var (
 		u   *user.User
 		err error
@@ -536,6 +563,11 @@ func (s *AccountService) ForgotPassword(ctx context.Context, emailAddr string) e
 	if s.NickServ != nil {
 		return nsaccount.ErrPasswordManaged
 	}
+	if ok, err := s.emailConfigured(ctx); err != nil {
+		return err
+	} else if !ok {
+		return apperr.ErrEmailNotConfigured.WithMessage("this network can't send email, so passwords can't be reset by email: ask an admin for a reset link")
+	}
 	addr, err := NormalizeEmail(emailAddr)
 	if err != nil {
 		return err // malformed input is safe to reject: says nothing about accounts
@@ -571,13 +603,14 @@ func (s *AccountService) ForgotPassword(ctx context.Context, emailAddr string) e
 	return nil
 }
 
-// adminTarget loads a user an admin wants to email.
-func (s *AccountService) adminTarget(ctx context.Context, userID string) (*user.User, error) {
+// adminTarget loads a user an admin wants to email (needEmail) or give a
+// link to.
+func (s *AccountService) adminTarget(ctx context.Context, userID string, needEmail bool) (*user.User, error) {
 	u, err := s.Get(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if u.Email == nil {
+	if needEmail && u.Email == nil {
 		return nil, apperr.ErrNoEmail
 	}
 	if u.Disabled() {
@@ -586,20 +619,24 @@ func (s *AccountService) adminTarget(ctx context.Context, userID string) (*user.
 	return u, nil
 }
 
-func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, setup bool) error {
+func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, setup bool) (string, error) {
 	if s.NickServ != nil {
-		return nsaccount.ErrPasswordManaged
+		return "", nsaccount.ErrPasswordManaged
 	}
 	if s.Federated != nil {
 		if fed, err := s.Federated(ctx, userID); err != nil {
-			return err
+			return "", err
 		} else if fed {
-			return ErrFederatedAccount
+			return "", ErrFederatedAccount
 		}
 	}
-	u, err := s.adminTarget(ctx, userID)
+	emailOK, err := s.emailConfigured(ctx)
 	if err != nil {
-		return err
+		return "", err
+	}
+	u, err := s.adminTarget(ctx, userID, emailOK)
+	if err != nil {
+		return "", err
 	}
 	ttl := s.Config.PasswordResetTTL
 	if setup {
@@ -615,21 +652,30 @@ func (s *AccountService) SendPasswordReset(ctx context.Context, userID string, s
 		return err
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	if setup {
+	switch {
+	case !emailOK:
+		// No mail server: the admin hands the link over instead.
+		return s.Email.ResetLink(tok), nil
+	case setup:
 		s.Email.SendAccountSetup(ctx, u, tok, ttl)
-	} else {
+	default:
 		s.Email.SendPasswordReset(ctx, u, tok, ttl)
 	}
-	return nil
+	return "", nil
 }
 
 func (s *AccountService) SendVerification(ctx context.Context, userID string) error {
 	if s.NickServ != nil {
 		return nsaccount.ErrPasswordManaged.WithMessage("emails are verified by NickServ on IRC")
 	}
-	u, err := s.adminTarget(ctx, userID)
+	if ok, err := s.emailConfigured(ctx); err != nil {
+		return err
+	} else if !ok {
+		return apperr.ErrEmailNotConfigured.WithMessage("this network can't send email, so email verification is off: the account can sign in without it")
+	}
+	u, err := s.adminTarget(ctx, userID, true)
 	if err != nil {
 		return err
 	}

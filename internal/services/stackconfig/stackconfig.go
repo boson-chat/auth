@@ -57,12 +57,17 @@ type Deps struct {
 	}
 	// Branding receives the branding: section (nil: not wired).
 	Branding Brander
+	// NickServ receives auth.nickserv.registration / signup_message (nil:
+	// local accounts).
+	NickServ interface {
+		SetSignup(registration bool, message string)
+	}
 	// Mailer is replaced when the smtp keys change. Nil: leave the mailer
 	// alone (a test mailer was injected).
 	Mailer   *mailer.Swappable
 	ReturnTo *sso.ReturnToPolicy
 	Audit    audit.AuditServiceImpl
-	// NewMailer builds the SMTP mailer (default mailer.New).
+	// NewMailer builds the SMTP mailer (default mailer.New for Env's ENV).
 	NewMailer func(config.SMTPConfig) (mailer.Mailer, error)
 	Now       func() time.Time
 }
@@ -91,7 +96,7 @@ type StackConfigService struct {
 
 func NewStackConfigService(d Deps) *StackConfigService {
 	if d.NewMailer == nil {
-		d.NewMailer = mailer.New
+		d.NewMailer = mailer.Factory(d.Env.AppConfig.Development())
 	}
 	s := &StackConfigService{d: d}
 	s.setEffective(d.Env)
@@ -172,6 +177,9 @@ func (s *StackConfigService) apply(ctx context.Context, lc configfile.Change[loa
 	}
 	if len(lc.Next.Value.emailWarnings) > 0 {
 		log.Warn().Strs("warnings", lc.Next.Value.emailWarnings).Msg("config file: custom email HTML")
+	}
+	if s.d.NickServ != nil {
+		s.d.NickServ.SetSignup(eff.NickServConfig.Registration, eff.NickServConfig.SignupMessage)
 	}
 	if s.d.Email != nil {
 		s.d.Email.SetSiteName(eff.AppConfig.SiteName)

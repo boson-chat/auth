@@ -70,7 +70,7 @@ the bearer-token API from the browser (CORS `*`, no credentials; see
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
 | `GET /workload/.well-known/openid-configuration`, `GET /workload/jwks.json` | – | the [workload issuer](docs/workload-identity.md) `$ISSUER/workload`: its discovery document (`ES256`) and its own JWKS (P-256 keys only, never the user-token keys); 404 without `WORKLOAD_IDENTITIES` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend; `email: {configured}`: whether auth can send email ([without a mail server](#running-without-a-mail-server) `require_email_verification` here and `password_reset` are `false`) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `GET /.well-known/boson-federation.json` | – | the `federation` section for boson.json `{version, issuer, jwks_uri, assertion_endpoint, login_endpoint, accepts}`; CORS `*` ([federation](docs/federation.md#discovery-bosonjson)) |
@@ -78,14 +78,14 @@ the bearer-token API from the browser (CORS `*`, no credentials; see
 | `POST /v1/federation/assertions` | bearer | `{audience}` → `{assertion, expires_in}`: a signed assertion (`typ boson-fed+jwt`, 5 min) about the caller for another Boson server; CORS `*` ([details](docs/federation.md#home-post-v1federationassertions)) |
 | `POST /v1/federation/login` | – | `{assertion, cookie?}` → the `/v1/login` response plus `{federated: true, identity, handle}`: sign in a user of another Boson server; CORS `*` ([details](docs/federation.md#remote-post-v1federationlogin)) |
 | `GET /v1/users/{handle}/identity`, `POST /v1/users/identities` `{handles}` | – | whether handles are [federated accounts](docs/federation.md#identity-lookup) and whose: `{handle, federated, identity, home_domain}` (batch: `{identities: {handle: …}}`, ≤ 200); unknown = local; CORS `*`, rate-limited per IP |
-| `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` (NickServ backend: registers a NickServ account and adds `verification: "nickserv_code"\|""`, `message`, or `403 registration_unavailable`; [details](docs/nickserv.md#sign-up)) |
+| `POST /v1/register` | – | `{username, email, password, invite_code?, return_to?}` → 201 `{user, email_verification_sent, email_verification_required}` (both `false` without a mail server; NickServ backend: registers a NickServ account and adds `verification: "nickserv_code"\|""`, `message`, or `403 registration_unavailable`; [details](docs/nickserv.md#sign-up)) |
 | `POST /v1/register/confirm` | – | `{username, password, code}` → 200: confirm a NickServ registration with the code the services emailed ([NickServ backend](docs/nickserv.md#sign-up)); `400 invalid_code`; `404` on the local backend |
 | `POST /v1/email/verify` | – | `{token, return_to?}` → `{user, redirect_to?}`: where the verify page sends the user next (see below) |
-| `POST /v1/email/resend` | optional | `{email, return_to?}` (or a bearer token) → 202, same response whether or not the account exists |
+| `POST /v1/email/resend` | optional | `{email, return_to?}` (or a bearer token) → 202, same response whether or not the account exists; `409 email_not_configured` without a mail server |
 | `POST /v1/login` | – | `{login, password, cookie?}` (`login` = username or email) → `{token_type, access_token, expires_in, refresh_token, refresh_expires_in, session_id, user}` |
 | `POST /v1/token/refresh` | – | `{refresh_token}` or the refresh cookie → same shape as login, with a **new** refresh token |
 | `POST /v1/logout` | bearer, or `{refresh_token}`/cookie | revokes the session → 204 |
-| `POST /v1/password/forgot` | – | `{email}` → 202, identical whether or not the account exists |
+| `POST /v1/password/forgot` | – | `{email}` → 202, identical whether or not the account exists; `409 email_not_configured` without a mail server |
 | `POST /v1/password/reset` | – | `{token, new_password}` → signs out every session |
 | `POST /v1/password/change` | bearer | `{current, new}` → signs out every *other* session |
 | `GET /v1/me` | bearer | `{user, session_id, roles: [{id, name, color, position}], permissions: [id], federation}` ([roles](docs/roles.md)); `federation` is `{identity, home_domain, issuer}` for a [federated account](docs/federation.md#federated-accounts), else `null` |
@@ -128,10 +128,10 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | Method & path | Permission | |
 |---|---|---|
 | `GET /v1/admin/users?q=&sort=&limit=&offset=` | `users.view` | search users (username/email substring) → `{users, total}`; each user has `roles: [{id, name, color, position}]` and the [sign-in / activity fields](#last-sign-in-and-last-active). `sort`: `created` (default, newest first) \| `last_active` \| `last_sign_in` (newest first, never-seen users last); anything else `400 invalid_request` |
-| `POST /v1/admin/users` | `users.manage` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent}`. `role`: `user` (default) \| `admin` \| `owner` (gives the Admin/Owner role; needs `roles.manage` and the hierarchy, so only Owners create Admins). The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request`, `403 role_hierarchy` |
+| `POST /v1/admin/users` | `users.manage` | `{username, email?, role?, password? \| send_invite_email?}` → 201 `{user, invite_email_sent, setup_link?}`. `role`: `user` (default) \| `admin` \| `owner` (gives the Admin/Owner role; needs `roles.manage` and the hierarchy, so only Owners create Admins). The email is marked verified. `send_invite_email` (needs `email`; not with `password`) mails a "choose your password" link valid `ACCOUNT_SETUP_TTL`; with neither the account has no password. Without a mail server nothing is mailed: `invite_email_sent: false` and `setup_link` is the link for the admin to hand over. `409 username_taken\|email_taken`, `400 invalid_username\|weak_password\|invalid_request`, `403 role_hierarchy` |
 | `GET /v1/admin/users/{id}` | `users.view` | `{user` (with the [sign-in / activity fields](#last-sign-in-and-last-active))`, identities: [{id, provider_id, provider_slug, provider_kind, provider_display_name, subject, email, created_at, last_login_at}], has_password, roles: [{id, name, color, position}], permissions: [id]}` |
-| `POST /v1/admin/users/{id}/password-reset` | `users.manage` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202. `400 no_email`, `409 account_disabled`, `404` |
-| `POST /v1/admin/users/{id}/verification` | `users.manage` | resend the verification email → 202. `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
+| `POST /v1/admin/users/{id}/password-reset` | `users.manage` | email the user a reset link (same link and page as forgot-password; earlier links stop working) → 202 `{status, email_sent: true}`; without a mail server → 200 `{status, email_sent: false, link}`, the link for the admin to hand over (no email address needed then). `400 no_email`, `409 account_disabled`, `404` |
+| `POST /v1/admin/users/{id}/verification` | `users.manage` | resend the verification email → 202. `409 email_not_configured` (no mail server: verification is off), `409 already_verified`, `400 no_email`, `409 account_disabled`, `404` |
 | `PATCH /v1/admin/users/{id}` | `roles.manage` | 1.x `{role: "user"\|"admin"\|"owner"}`, mapped onto roles ([details](docs/roles.md#migrating-from-1x)) |
 | `PUT /v1/admin/users/{id}/roles` | `roles.manage` | `{role_ids: [id]}` replaces the user's roles → `{roles: [{id, name, color, position}]}` |
 | `POST /v1/admin/users/{id}/disable` | `users.moderate` \| `users.manage` | disable and revoke every session |
@@ -141,7 +141,7 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
 | `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, updated_at, updated_by, source}`; `source` is `file` (stack config file) or `db` |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, updated_at, updated_by, source, email_configured, require_email_verification_effective}`; `source` is `file` (stack config file) or `db`; `email_configured` and `require_email_verification_effective` (what sign-in enforces) are not settings ([without a mail server](#running-without-a-mail-server)) |
 | `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; `409 managed_by_config_file` while the [stack config file](#stack-config-file) is in use; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 | `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
 | `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
@@ -188,7 +188,7 @@ env variable, so env values are the defaults:
 | Field | Values | Env default | Enforced by |
 |---|---|---|---|
 | `registration` | `open` \| `invite` \| `closed` | `REGISTRATION` | auth (`/v1/register`, SSO sign-up) |
-| `require_email_verification` | bool | `REQUIRE_EMAIL_VERIFICATION` | auth (password login and `/internal/v1/verify-password`) |
+| `require_email_verification` | bool | `REQUIRE_EMAIL_VERIFICATION` | auth (password login and `/internal/v1/verify-password`); off whatever it says while there is [no mail server](#running-without-a-mail-server) (local accounts) |
 | `channel_creation` | `registered` \| `admins` | `CHANNEL_CREATION` (`registered`) | IRC (Ergo): who may create text channels: `registered` = holders of `channel.create` (Member has it), `admins` = holders of `admin.panel` |
 | `voice_channel_creation` | `admins` \| `founders` \| `registered` | `VOICE_CHANNEL_CREATION` (`founders`) | quicvoiced: `admins` = holders of `voice.manage_any`; `founders` = the IRC channel's founder (with `voice.create`) or `voice.manage_any`; `registered` = holders of `voice.create` (Member has it) |
 | `channel_auto_register` | bool | `CHANNEL_AUTO_REGISTER` (`true`) | IRC (Ergo): a logged-in user who creates a new channel by joining it gets it registered to their account |
@@ -254,6 +254,9 @@ auth:
     directory_url: https://directory.boson.chat
     remote_upload_quota: 1GB        # "" = the account quota
     remote_voice: true
+  nickserv:                         # NickServ account backend only ([sign-up](docs/nickserv.md#sign-up))
+    registration: true              # NICKSERV_REGISTRATION: Boson sign-up registers NickServ accounts
+    signup_message: "Register on IRC: /msg NickServ REGISTER <password> <email>"   # NICKSERV_SIGNUP_MESSAGE (≤ 500 chars)
 branding:                           # GET /v1/branding ([details](docs/branding.md))
   theme: { base: dark, colors: { accent: "#7c3aed" } }
   images: { logo: logo-3f2a.svg }   # files in BOSON_BRANDING_DIR (config/branding)
@@ -275,7 +278,30 @@ irc:                                # the boson-ergo helper's section; auth read
 ```
 
 `SMTP_USER` / `SMTP_PASSWORD` stay in the env (`auth.smtp.user` / `password`
-in the file are rejected). auth watches the file's directory (fsnotify, so an
+in the file are rejected).
+
+#### Running without a mail server
+
+Leave `SMTP_HOST` (and `auth.smtp.host`) empty and auth sends no email. Outside
+`ENV=development` (where emails, links included, are written to the log
+instead) that means:
+
+- **Email verification is off**, whatever `require_email_verification` says:
+  new local accounts sign in right away and get no verification email.
+  auth logs this once (`email verification is OFF ...`). `GET /v1/config`
+  reports `email: {configured: false}` and `require_email_verification:
+  false`; `GET /v1/admin/settings` keeps the configured value and adds
+  `email_configured` and `require_email_verification_effective`. With the
+  NickServ backend the services verify, so the setting still applies.
+- **No password reset by email**: `accounts.password_reset` is `false`, and
+  `POST /v1/password/forgot` / `POST /v1/email/resend` answer `409
+  email_not_configured`.
+- **No emailed invites**: an admin's "create user and send the setup email"
+  and "send password reset" return the link (`setup_link` / `link`) for the
+  admin to copy to the person; resending verification and test emails answer
+  `409 email_not_configured`. Invite codes are not emailed by auth anyway.
+
+Setting `auth.smtp.host` in the file later switches all of this back live. auth watches the file's directory (fsnotify, so an
 atomic tmp-file + rename write is seen) and polls its mtime every
 `BOSON_CONFIG_POLL` (10 s). Mount the **directory** (`./config:/config:ro`),
 not the single file: a bind-mounted file keeps pointing at the old inode
@@ -614,7 +640,7 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `EMAIL_VERIFY_TTL` | `24h` | |
 | `PASSWORD_RESET_TTL` | `30m` | |
 | `ARGON2_MEMORY_KIB` / `ARGON2_ITERATIONS` / `ARGON2_PARALLELISM` | `65536` / `3` / `2` | argon2id cost for new hashes; old hashes upgrade on next login |
-| `SMTP_HOST` | – | empty = log links instead of sending (dev only) (*file*: `auth.smtp.host`; likewise `SMTP_PORT`, `SMTP_FROM`, `SMTP_TLS` → `auth.smtp.port` / `from` / `tls`) |
+| `SMTP_HOST` | – | empty = no mail server ([below](#running-without-a-mail-server)); with `ENV=development` links are logged instead (*file*: `auth.smtp.host`; likewise `SMTP_PORT`, `SMTP_FROM`, `SMTP_TLS` → `auth.smtp.port` / `from` / `tls`) |
 | `SMTP_PORT` | `587` | |
 | `SMTP_USER` / `SMTP_PASSWORD` | – | auth is used when `SMTP_USER` is set; env only, never in the config file |
 | `SMTP_FROM` | `boson <no-reply@localhost>` | |

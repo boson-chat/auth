@@ -142,7 +142,7 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	var swapMailer *mailer.Swappable
 	mail := opts.Mailer
 	if mail == nil {
-		smtp, err := mailer.New(cfg.SMTPConfig)
+		smtp, err := mailer.New(cfg.SMTPConfig, cfg.AppConfig.Development())
 		if err != nil {
 			return nil, err
 		}
@@ -184,6 +184,11 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	rolesService := roles.NewRolesService(roleRepo, userRepo, database, auditService, opts.Now)
 	ircAccountsService := ircaccounts.NewIRCAccountsService(removalRepo, opts.Now)
 	settingsService := settings.NewSettingsService(settingsRepo, database, auditService, cfg.AccountConfig, opts.Now)
+	if s, ok := settingsService.(*settings.SettingsService); ok {
+		// No mail server: email verification is off (local backend).
+		s.EmailConfigured = func() bool { return mailer.Configured(mail) }
+		s.ServicesVerifyEmail = cfg.AccountsConfig.NickServ()
+	}
 	keyService, err := keys.NewKeyService(keyRepo, database, keys.Options{
 		EncryptionKey: kek,
 		Rotation:      cfg.TokenConfig.KeyRotation,
@@ -306,10 +311,14 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	if err := ssoService.Reload(ctx); err != nil {
 		logger.FromCtx(ctx).Warn().Err(err).Msg("loading identity providers")
 	}
-	stackConfig := stackconfig.NewStackConfigService(stackconfig.Deps{
+	scDeps := stackconfig.Deps{
 		Env: cfg, Settings: settingsService, Federation: federationService, Email: emailService, Branding: brandingService, Mailer: swapMailer, ReturnTo: returnTo,
 		Audit: auditService, Now: opts.Now,
-	})
+	}
+	if nickServService != nil {
+		scDeps.NickServ = nickServService
+	}
+	stackConfig := stackconfig.NewStackConfigService(scDeps)
 	if err := stackConfig.Load(ctx); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("config file %s: %w", cfg.AppConfig.ConfigFile, err)

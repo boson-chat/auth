@@ -232,7 +232,12 @@ stays `true` and clients ask for the invite code.
 - **Everything else** (and `NICKSERV_REGISTRATION=false`): `POST
   /v1/register` → `403 registration_unavailable` with `signup_message`
   (`NICKSERV_SIGNUP_MESSAGE` overrides it, e.g. to link a web registration
-  page).
+  page). Codes of registrations made before it was turned off can still be
+  confirmed.
+
+Both can be set in the stack config file and apply live:
+`auth.nickserv.registration` (bool) and `auth.nickserv.signup_message`
+(at most 500 characters; empty = the default message above).
 
 ## Security
 
@@ -299,8 +304,8 @@ them to `.env` / the auth service's environment.
 | `NICKSERV_SERVICE_TARGET` | `NICKSERV_SERVICE_NICK` | IDENTIFY's PRIVMSG target (e.g. `NickServ@services.example.org`) |
 | `NICKSERV_SERVICES_SERVER` | – | send IDENTIFY only if NickServ is on this server (WHOIS) |
 | `NICKSERV_IDENTIFY_SUCCESS` / `_FAILURE` / `_REFUSED` | per `NICKSERV_SERVICES` | regexps, one per line or a JSON array |
-| `NICKSERV_REGISTRATION` | `true` | Boson sign-up registers NickServ accounts when the strategy can |
-| `NICKSERV_SIGNUP_MESSAGE` | register on IRC (see above) | shown when sign-up is off |
+| `NICKSERV_REGISTRATION` | `true` | Boson sign-up registers NickServ accounts when the strategy can (*file*: `auth.nickserv.registration`) |
+| `NICKSERV_SIGNUP_MESSAGE` | register on IRC (see above) | shown when sign-up is off (*file*: `auth.nickserv.signup_message`) |
 | `NICKSERV_LINK_EXISTING` | `unclaimed` | `unclaimed` \| `all` \| `none` ([above](#linking-existing-accounts)) |
 | `NICKSERV_STORE_SESSION` | `true` | keep (sealed) and end Atheme's authcookie |
 | `NICKSERV_RATE_ACCOUNT_BURST` / `_PER_MINUTE` | `5` / `2` | checks per account |

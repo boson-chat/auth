@@ -60,9 +60,16 @@ var serveCmd = &cobra.Command{
 			}
 			log.Info().Str("issuer", app.Workload.Issuer()).Msg("workload issuer on (WORKLOAD_IDENTITIES)")
 		}
-		if cfg.SMTPConfig.Host == "" {
-			log.Warn().Msg("SMTP_HOST is empty: emails are logged, not sent (dev only)")
+		if app.StackConfig.Effective().SMTPConfig.Host == "" {
+			if cfg.AppConfig.Development() {
+				log.Warn().Msg("SMTP_HOST is empty: emails are logged, not sent (ENV=development only)")
+			} else {
+				log.Warn().Msg("no mail server (SMTP_HOST / auth.smtp.host is empty): auth sends no email. " +
+					"Email verification is off, password reset by email is unavailable and admins get links to copy instead of emailed invites")
+			}
 		}
+		// Logs once if require_email_verification is overridden.
+		_, _ = app.Settings.Get(ctx)
 		if cfg.InternalConfig.APIToken == "" {
 			log.Warn().Msg("INTERNAL_API_TOKEN is empty: /internal/v1 is disabled")
 		}

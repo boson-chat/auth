@@ -3,6 +3,7 @@ package mailer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	netmail "net/mail"
 	"strings"
@@ -30,12 +31,53 @@ type Mailer interface {
 	Send(ctx context.Context, m Message) error
 }
 
-// New returns the SMTP mailer, or the log mailer when SMTP_HOST is empty.
-func New(cfg config.SMTPConfig) (Mailer, error) {
+// ErrNotConfigured: no mail server is configured (SMTP_HOST is empty
+// outside ENV=development), so nothing can be sent.
+var ErrNotConfigured = errors.New("mailer: no mail server configured (SMTP_HOST is empty)")
+
+// New returns the SMTP mailer. With SMTP_HOST empty it returns the log
+// mailer in development (dev: ENV=development, the link is logged so it
+// can be followed) and Disabled otherwise: production never claims to
+// send, and never writes live links to the log.
+func New(cfg config.SMTPConfig, dev bool) (Mailer, error) {
 	if cfg.Host == "" {
-		return LogMailer{From: cfg.From}, nil
+		if dev {
+			return LogMailer{From: cfg.From}, nil
+		}
+		return Disabled{From: cfg.From}, nil
 	}
 	return NewSMTP(cfg)
+}
+
+// Factory is New for one environment (dev: ENV=development).
+func Factory(dev bool) func(config.SMTPConfig) (Mailer, error) {
+	return func(cfg config.SMTPConfig) (Mailer, error) { return New(cfg, dev) }
+}
+
+// Disabled is the mailer without a mail server: every Send fails with
+// ErrNotConfigured. Callers check Configured first and offer something
+// else (no verification, a link for an admin to copy).
+type Disabled struct {
+	// From is SMTP_FROM (shown in previews; nothing is sent).
+	From string
+}
+
+func (d Disabled) FromAddress() string { return d.From }
+
+func (Disabled) Send(context.Context, Message) error { return ErrNotConfigured }
+
+// Configured reports whether m can deliver email: false for Disabled
+// (also behind a Swappable). The dev log mailer counts as configured: its
+// "delivery" is the log.
+func Configured(m Mailer) bool {
+	if sw, ok := m.(*Swappable); ok {
+		m = sw.Current()
+	}
+	switch m.(type) {
+	case Disabled, *Disabled, nil:
+		return false
+	}
+	return true
 }
 
 // SMTPMailer sends through an SMTP relay.

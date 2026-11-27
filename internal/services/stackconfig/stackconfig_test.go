@@ -480,3 +480,68 @@ func TestNetworkChannelsReloadLive(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+type signupSpy struct {
+	registration bool
+	message      string
+	calls        int
+}
+
+func (s *signupSpy) SetSignup(registration bool, message string) {
+	s.registration, s.message = registration, message
+	s.calls++
+}
+
+// auth.nickserv.* reach the NickServ backend live; without the keys (or the
+// file) the env values apply again.
+func TestNickServSignupReloadLive(t *testing.T) {
+	f := newFixture(t, "version: 1\nauth:\n  nickserv: { registration: false, signup_message: Use IRC }\n")
+	spy := &signupSpy{}
+	env := envCfg(f.path)
+	env.NickServConfig = config.NickServConfig{Registration: true, SignupMessage: "env"}
+	f.svc = NewStackConfigService(Deps{Env: env, Settings: f.settings, Email: f.email, Audit: f.audit, NickServ: spy})
+	ctx := context.Background()
+	if err := f.svc.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if spy.registration || spy.message != "Use IRC" {
+		t.Fatalf("initial: %+v", spy)
+	}
+	write(t, f.path, "version: 1\nauth:\n  nickserv: { registration: true }\n")
+	f.svc.Check(ctx)
+	if !spy.registration || spy.message != "env" {
+		t.Fatalf("reload: %+v", spy)
+	}
+	write(t, f.path, "version: 1\nauth:\n  nickserv: { registration: false }\n")
+	f.svc.Check(ctx)
+	if spy.registration {
+		t.Fatalf("off again: %+v", spy)
+	}
+}
+
+// A mail server configured or removed in the file swaps the mailer, and
+// mailer.Configured follows (what email verification is gated on).
+func TestSMTPHostRemovedDisablesEmail(t *testing.T) {
+	f := newFixture(t, "version: 1\nauth:\n  smtp: { host: file-smtp }\n")
+	f.svc = NewStackConfigService(Deps{
+		Env: func() config.Config {
+			c := envCfg(f.path)
+			c.SMTPConfig.Host = ""
+			c.AppConfig.Env = "production"
+			return c
+		}(),
+		Settings: f.settings, Email: f.email, Mailer: f.mail, Audit: f.audit,
+	})
+	ctx := context.Background()
+	if err := f.svc.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !mailer.Configured(f.mail) {
+		t.Fatalf("file host: %T", f.mail.Current())
+	}
+	write(t, f.path, "version: 1\nauth: {}\n")
+	f.svc.Check(ctx)
+	if mailer.Configured(f.mail) {
+		t.Fatalf("host removed (production): %T, want mailer.Disabled", f.mail.Current())
+	}
+}

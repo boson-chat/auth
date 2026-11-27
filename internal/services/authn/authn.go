@@ -231,7 +231,7 @@ func (s *AuthnService) checkPassword(ctx context.Context, method string, u *user
 	if err != nil {
 		return nil, err
 	}
-	if st.RequireEmailVerification && !u.EmailVerified() {
+	if st.RequireEmailVerificationEffective && !u.EmailVerified() {
 		s.Metrics.LoginAttempt(ctx, method, metrics.OutcomeUnverified)
 		return nil, apperr.ErrEmailNotVerified
 	}

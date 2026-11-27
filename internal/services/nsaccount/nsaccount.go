@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/boson-chat/auth/config"
@@ -127,6 +128,9 @@ type NickServAccountServiceImpl interface {
 	// (rate limits, lockout).
 	ConfirmRegistration(ctx context.Context, account, password, code string) error
 	Signup() SignupInfo
+	// SetSignup changes NICKSERV_REGISTRATION / NICKSERV_SIGNUP_MESSAGE at
+	// runtime (auth.nickserv.* in the stack config file).
+	SetSignup(registration bool, message string)
 	// EndSession ends and forgets the stored services session of userID
 	// (logout). Best effort.
 	EndSession(ctx context.Context, userID string)
@@ -137,6 +141,13 @@ type NickServAccountServiceImpl interface {
 type NickServAccountService struct {
 	Deps
 	sem chan struct{}
+	// signup is Config.Registration / SignupMessage, replaced by SetSignup.
+	signup atomic.Pointer[signupConfig]
+}
+
+type signupConfig struct {
+	registration bool
+	message      string
 }
 
 func NewNickServAccountService(d Deps) NickServAccountServiceImpl {
@@ -147,18 +158,27 @@ func NewNickServAccountService(d Deps) NickServAccountServiceImpl {
 	if n < 1 {
 		n = 1
 	}
-	return &NickServAccountService{Deps: d, sem: make(chan struct{}, n)}
+	s := &NickServAccountService{Deps: d, sem: make(chan struct{}, n)}
+	s.SetSignup(d.Config.Registration, d.Config.SignupMessage)
+	return s
+}
+
+func (s *NickServAccountService) SetSignup(registration bool, message string) {
+	s.signup.Store(&signupConfig{registration: registration, message: strings.TrimSpace(message)})
 }
 
 func (s *NickServAccountService) now() time.Time { return s.Now().UTC() }
 
+// Signup: Boson sign-up registers NickServ accounts when the strategy can
+// (Atheme) and NICKSERV_REGISTRATION is on; otherwise it points at IRC.
 func (s *NickServAccountService) Signup() SignupInfo {
-	msg := s.Config.SignupMessage
+	c := s.signup.Load()
+	if s.Backend.Registrar != nil && c.registration {
+		return SignupInfo{Available: true}
+	}
+	msg := c.message
 	if msg == "" {
 		msg = DefaultSignupMessage
-	}
-	if s.Backend.Registrar != nil {
-		return SignupInfo{Available: true}
 	}
 	return SignupInfo{Message: msg}
 }
@@ -261,7 +281,7 @@ func (s *NickServAccountService) Authenticate(ctx context.Context, login, passwo
 		if err != nil {
 			return nil, err
 		}
-		if st.RequireEmailVerification {
+		if st.RequireEmailVerificationEffective {
 			s.Metrics.LoginAttempt(ctx, method, metrics.OutcomeUnverified)
 			return nil, apperr.ErrEmailNotVerified.WithMessage("confirm your NickServ registration (the code the network emailed you) before signing in")
 		}
@@ -487,7 +507,7 @@ func (s *NickServAccountService) EndSession(ctx context.Context, userID string) 
 }
 
 func (s *NickServAccountService) Register(ctx context.Context, in RegisterInput) (*RegisterResult, error) {
-	if s.Backend.Registrar == nil {
+	if !s.Signup().Available {
 		return nil, ErrSignupUnavailable.WithMessage(s.Signup().Message)
 	}
 	if !nickserv.ValidAccount(in.Username) {
