@@ -7,16 +7,22 @@ import (
 	"testing"
 
 	"github.com/boson-chat/auth/config"
+	"github.com/boson-chat/auth/internal/services/nsaccount"
 	"github.com/boson-chat/auth/internal/services/settings"
 )
 
-type stubSettings struct{ settings.SettingsServiceImpl }
+type stubSettings struct {
+	settings.SettingsServiceImpl
+	st settings.Settings
+}
 
-func (stubSettings) Get(context.Context) (settings.Settings, error) { return settings.Settings{}, nil }
+func (s stubSettings) Get(context.Context) (settings.Settings, error) { return s.st, nil }
 
 func publicConfigBody(t *testing.T, h *Handlers) map[string]any {
 	t.Helper()
-	h.Settings = stubSettings{}
+	if h.Settings == nil {
+		h.Settings = stubSettings{}
+	}
 	mux := nethttp.NewServeMux()
 	mux.HandleFunc("GET /v1/config", h.publicConfig)
 	w := get(mux, "GET", "/v1/config")
@@ -55,6 +61,53 @@ func TestPublicConfigNetworkName(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("network_name = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+type stubNickServ struct {
+	nsaccount.NickServAccountServiceImpl
+	available bool
+}
+
+func (s stubNickServ) Signup() nsaccount.SignupInfo {
+	return nsaccount.SignupInfo{Available: s.available}
+}
+
+// accounts.signup follows the registration setting: false while closed
+// (POST /v1/register refuses), true for open and invite-only (clients tell
+// invite-only apart by registration).
+func TestPublicConfigSignupFollowsRegistration(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		registration string
+		nickserv     *stubNickServ
+		want         bool
+	}{
+		{"local open", config.RegistrationOpen, nil, true},
+		{"local invite", config.RegistrationInvite, nil, true},
+		{"local closed", config.RegistrationClosed, nil, false},
+		{"nickserv open", config.RegistrationOpen, &stubNickServ{available: true}, true},
+		{"nickserv invite", config.RegistrationInvite, &stubNickServ{available: true}, true},
+		{"nickserv closed", config.RegistrationClosed, &stubNickServ{available: true}, false},
+		{"nickserv unavailable", config.RegistrationOpen, &stubNickServ{available: false}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handlers{Settings: stubSettings{st: settings.Settings{Registration: tc.registration}}}
+			if tc.nickserv != nil {
+				h.NickServ = *tc.nickserv
+			}
+			body := publicConfigBody(t, h)
+			if body["registration"] != tc.registration {
+				t.Fatalf("registration = %v, want %q", body["registration"], tc.registration)
+			}
+			acc, ok := body["accounts"].(map[string]any)
+			if !ok {
+				t.Fatalf("accounts missing: %v", body)
+			}
+			if acc["signup"] != tc.want {
+				t.Fatalf("accounts.signup = %v, want %v", acc["signup"], tc.want)
 			}
 		})
 	}

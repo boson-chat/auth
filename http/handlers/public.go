@@ -153,22 +153,25 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"branding_url":  brandingURL,
 		"files_url":     filesURL,
 		"channels":      public,
-		"accounts":      h.accountsInfo(),
+		"accounts":      h.accountsInfo(st.Registration),
 	})
 }
 
 // accountsInfo is GET /v1/config's accounts: where accounts live and what
-// sign-up / password reset do there.
-func (h *Handlers) accountsInfo() map[string]any {
+// sign-up / password reset do there. signup is false while registration is
+// closed (POST /v1/register refuses then); with invite-only registration it
+// stays true and clients read registration to ask for the invite code.
+func (h *Handlers) accountsInfo(registration string) map[string]any {
+	open := registration != config.RegistrationClosed
 	if h.NickServ == nil {
-		return map[string]any{"backend": config.AccountBackendLocal, "signup": true, "signup_message": nil, "password_reset": true}
+		return map[string]any{"backend": config.AccountBackendLocal, "signup": open, "signup_message": nil, "password_reset": true}
 	}
 	su := h.NickServ.Signup()
 	var msg *string
 	if su.Message != "" {
 		msg = &su.Message
 	}
-	return map[string]any{"backend": config.AccountBackendNickServ, "signup": su.Available, "signup_message": msg, "password_reset": false}
+	return map[string]any{"backend": config.AccountBackendNickServ, "signup": open && su.Available, "signup_message": msg, "password_reset": false}
 }
 
 type registerReq struct {
