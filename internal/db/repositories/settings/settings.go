@@ -21,6 +21,8 @@ type Row struct {
 	ChannelExpiryDays        *int
 	GuestAccess              *bool
 	GuestVoice               *bool
+	GuestFirst               *bool
+	GuestFirstChannel        *string
 	UpdatedAt                *time.Time
 	UpdatedBy                *string
 }

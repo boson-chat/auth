@@ -138,6 +138,10 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	for _, c := range channels {
 		public = append(public, publicChannel{NetworkChannel: c, Restricted: c.Restricted()})
 	}
+	var guestFirstChannel *string
+	if c := config.GuestFirstLanding(st.GuestFirstChannel, channels); c != "" {
+		guestFirstChannel = &c
+	}
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"registration": st.Registration,
 		// Effective: off while no mail server can send the email.
@@ -151,13 +155,18 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"channel_expiry_days":    st.ChannelExpiryDays,
 		"guest_access":           st.GuestAccess,
 		// Guests may join voice: only when guests may connect at all.
-		"guest_voice":   st.GuestAccess && st.GuestVoice,
-		"sso_providers": providers,
-		"network_name":  networkName,
-		"branding_url":  brandingURL,
-		"files_url":     filesURL,
-		"channels":      public,
-		"accounts":      h.accountsInfo(st.Registration, st.EmailConfigured),
+		"guest_voice": st.GuestAccess && st.GuestVoice,
+		// Web clients open straight into chat as a guest (only with
+		// guest_access), landing on guest_first_channel (null: the
+		// client's own default).
+		"guest_first":         st.GuestAccess && st.GuestFirst,
+		"guest_first_channel": guestFirstChannel,
+		"sso_providers":       providers,
+		"network_name":        networkName,
+		"branding_url":        brandingURL,
+		"files_url":           filesURL,
+		"channels":            public,
+		"accounts":            h.accountsInfo(st.Registration, st.EmailConfigured),
 	})
 }
 

@@ -23,6 +23,8 @@ import (
 //	  require_email_verification: true
 //	  guest_access: true
 //	  guest_voice: false
+//	  guest_first: false            # web clients open straight into chat as a guest (needs guest_access)
+//	  guest_first_channel: "#lobby" # optional; default: the first auto-join channel
 //	  channel_creation: registered
 //	  voice_channel_creation: founders
 //	  channel_auto_register: true
@@ -56,6 +58,8 @@ type FileConfig struct {
 	RequireEmailVerification *bool
 	GuestAccess              *bool
 	GuestVoice               *bool
+	GuestFirst               *bool
+	GuestFirstChannel        *string
 	ChannelCreation          *string
 	VoiceChannelCreation     *string
 	ChannelAutoRegister      *bool
@@ -109,6 +113,8 @@ const (
 	KeyRequireEmailVerification = "auth.require_email_verification"
 	KeyGuestAccess              = "auth.guest_access"
 	KeyGuestVoice               = "auth.guest_voice"
+	KeyGuestFirst               = "auth.guest_first"
+	KeyGuestFirstChannel        = "auth.guest_first_channel"
 	KeyChannelCreation          = "auth.channel_creation"
 	KeyVoiceChannelCreation     = "auth.voice_channel_creation"
 	KeyChannelAutoRegister      = "auth.channel_auto_register"
@@ -208,6 +214,23 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 		func() error { return boolean("require_email_verification", &f.RequireEmailVerification) },
 		func() error { return boolean("guest_access", &f.GuestAccess) },
 		func() error { return boolean("guest_voice", &f.GuestVoice) },
+		func() error {
+			if err := boolean("guest_first", &f.GuestFirst); err != nil {
+				return err
+			}
+			if f.GuestFirst != nil && *f.GuestFirst && f.GuestAccess != nil && !*f.GuestAccess {
+				return auth.Errorf("guest_first", "requires guest_access: true (guests must be able to connect)")
+			}
+			return nil
+		},
+		func() error {
+			return str(auth, "guest_first_channel", &f.GuestFirstChannel, func(v string) string {
+				if v == "" {
+					return ""
+				}
+				return CheckChannelName(v)
+			})
+		},
 		func() error {
 			return str(auth, "channel_creation", &f.ChannelCreation, oneOf(ValidChannelCreation, "registered or admins"))
 		},
@@ -320,7 +343,7 @@ func LoadFileConfig(doc *configfile.Document) (FileConfig, error) {
 			"SMTP credentials are secrets: set SMTP_USER / SMTP_PASSWORD in .env, not in the config file")
 	}
 	f.Unknown = append(f.Unknown, network.Unknown("name")...)
-	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "guest_voice", "channel_creation",
+	f.Unknown = append(f.Unknown, auth.Unknown("registration", "require_email_verification", "guest_access", "guest_voice", "guest_first", "guest_first_channel", "channel_creation",
 		"voice_channel_creation", "channel_auto_register", "channel_expiry_days", "cors_allowed_origins", "smtp", "email", "federation", "nickserv")...)
 	f.Unknown = append(f.Unknown, smtp.Unknown("host", "port", "from", "tls")...)
 	f.Unknown = append(f.Unknown, nickserv.Unknown("registration", "signup_message")...)
@@ -357,6 +380,8 @@ func (f FileConfig) Flatten() map[string]any {
 	put(KeyRequireEmailVerification, f.RequireEmailVerification != nil, deref(f.RequireEmailVerification))
 	put(KeyGuestAccess, f.GuestAccess != nil, deref(f.GuestAccess))
 	put(KeyGuestVoice, f.GuestVoice != nil, deref(f.GuestVoice))
+	put(KeyGuestFirst, f.GuestFirst != nil, deref(f.GuestFirst))
+	put(KeyGuestFirstChannel, f.GuestFirstChannel != nil, deref(f.GuestFirstChannel))
 	put(KeyChannelCreation, f.ChannelCreation != nil, deref(f.ChannelCreation))
 	put(KeyVoiceChannelCreation, f.VoiceChannelCreation != nil, deref(f.VoiceChannelCreation))
 	put(KeyChannelAutoRegister, f.ChannelAutoRegister != nil, deref(f.ChannelAutoRegister))
@@ -398,8 +423,9 @@ func (c Config) WithFile(f FileConfig) Config {
 	set(&a.Registration, f.Registration)
 	set(&a.ChannelCreation, f.ChannelCreation)
 	set(&a.VoiceChannelCreation, f.VoiceChannelCreation)
+	set(&a.GuestFirstChannel, f.GuestFirstChannel)
 	for dst, v := range map[*bool]*bool{
-		&a.RequireEmailVerification: f.RequireEmailVerification, &a.GuestAccess: f.GuestAccess, &a.GuestVoice: f.GuestVoice, &a.ChannelAutoRegister: f.ChannelAutoRegister,
+		&a.RequireEmailVerification: f.RequireEmailVerification, &a.GuestAccess: f.GuestAccess, &a.GuestVoice: f.GuestVoice, &a.GuestFirst: f.GuestFirst, &a.ChannelAutoRegister: f.ChannelAutoRegister,
 	} {
 		if v != nil {
 			*dst = *v
@@ -443,10 +469,14 @@ func ExportFile(c Config, corsSet bool) ([]byte, error) {
 		"require_email_verification", a.RequireEmailVerification,
 		"guest_access", a.GuestAccess,
 		"guest_voice", a.GuestVoice,
+		"guest_first", a.GuestFirst,
 		"channel_creation", a.ChannelCreation,
 		"voice_channel_creation", a.VoiceChannelCreation,
 		"channel_auto_register", a.ChannelAutoRegister,
 		"channel_expiry_days", a.ChannelExpiryDays,
+	}
+	if a.GuestFirstChannel != "" {
+		auth = append(auth, "guest_first_channel", a.GuestFirstChannel)
 	}
 	if corsSet {
 		auth = append(auth, "cors_allowed_origins", nonNil(SplitList(c.HTTPConfig.CORSAllowedOrigins)))

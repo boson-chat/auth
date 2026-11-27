@@ -1,8 +1,9 @@
 // Package settings serves the runtime network settings: registration mode,
 // email verification, who may create IRC text and voice channels, and the
 // IRC channel lifecycle (auto-registration, expiry of idle channels) and
-// whether IRC lets guests (no account) connect and whether guests may join
-// voice.
+// whether IRC lets guests (no account) connect, whether guests may join
+// voice and whether web clients open straight into chat as a guest
+// (guest_first, guest_first_channel).
 // Values stored in network_settings override the env defaults; reads are
 // cached for SETTINGS_CACHE_TTL so other replicas pick up changes quickly.
 //
@@ -30,16 +31,22 @@ import (
 
 // Settings are the effective values.
 type Settings struct {
-	Registration             string     `json:"registration"`
-	RequireEmailVerification bool       `json:"require_email_verification"`
-	ChannelCreation          string     `json:"channel_creation"`
-	VoiceChannelCreation     string     `json:"voice_channel_creation"`
-	ChannelAutoRegister      bool       `json:"channel_auto_register"`
-	ChannelExpiryDays        int        `json:"channel_expiry_days"`
-	GuestAccess              bool       `json:"guest_access"`
-	GuestVoice               bool       `json:"guest_voice"`
-	UpdatedAt                *time.Time `json:"updated_at"`
-	UpdatedBy                *string    `json:"updated_by"`
+	Registration             string `json:"registration"`
+	RequireEmailVerification bool   `json:"require_email_verification"`
+	ChannelCreation          string `json:"channel_creation"`
+	VoiceChannelCreation     string `json:"voice_channel_creation"`
+	ChannelAutoRegister      bool   `json:"channel_auto_register"`
+	ChannelExpiryDays        int    `json:"channel_expiry_days"`
+	GuestAccess              bool   `json:"guest_access"`
+	GuestVoice               bool   `json:"guest_voice"`
+	// GuestFirst: web clients open straight into chat as a guest. Needs
+	// GuestAccess (Update refuses one without the other).
+	GuestFirst bool `json:"guest_first"`
+	// GuestFirstChannel is where guest-first clients land; "" = the first
+	// auto-join network channel.
+	GuestFirstChannel string     `json:"guest_first_channel"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	UpdatedBy         *string    `json:"updated_by"`
 	// Source is where the values come from: "file" (stack config file,
 	// read-only here) or "db" (network_settings over env defaults).
 	Source string `json:"source"`
@@ -76,12 +83,20 @@ type Patch struct {
 	ChannelExpiryDays        *int    `json:"channel_expiry_days"`
 	GuestAccess              *bool   `json:"guest_access"`
 	GuestVoice               *bool   `json:"guest_voice"`
+	GuestFirst               *bool   `json:"guest_first"`
+	// GuestFirstChannel: "" goes back to the default (first auto-join channel).
+	GuestFirstChannel *string `json:"guest_first_channel"`
 }
 
 func (p Patch) empty() bool {
 	return p.Registration == nil && p.RequireEmailVerification == nil && p.ChannelCreation == nil && p.VoiceChannelCreation == nil &&
-		p.ChannelAutoRegister == nil && p.ChannelExpiryDays == nil && p.GuestAccess == nil && p.GuestVoice == nil
+		p.ChannelAutoRegister == nil && p.ChannelExpiryDays == nil && p.GuestAccess == nil && p.GuestVoice == nil &&
+		p.GuestFirst == nil && p.GuestFirstChannel == nil
 }
+
+// ErrGuestFirstNeedsGuestAccess: an update would leave guest_first on with
+// guest_access off.
+var ErrGuestFirstNeedsGuestAccess = apperr.Invalid("guest_first requires guest_access: turn guest access on, or guest_first off")
 
 // Validate checks every set field.
 func (p Patch) Validate() error {
@@ -96,6 +111,11 @@ func (p Patch) Validate() error {
 	}
 	if p.ChannelExpiryDays != nil && !config.ValidChannelExpiryDays(*p.ChannelExpiryDays) {
 		return apperr.Invalid(fmt.Sprintf("channel_expiry_days must be between 0 and %d (0 = never expire)", config.MaxChannelExpiryDays))
+	}
+	if p.GuestFirstChannel != nil && *p.GuestFirstChannel != "" {
+		if msg := config.CheckChannelName(*p.GuestFirstChannel); msg != "" {
+			return apperr.Invalid("guest_first_channel: " + msg)
+		}
 	}
 	return nil
 }
@@ -156,6 +176,8 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 		ChannelExpiryDays:        s.Defaults.ChannelExpiryDays,
 		GuestAccess:              s.Defaults.GuestAccess,
 		GuestVoice:               s.Defaults.GuestVoice,
+		GuestFirst:               s.Defaults.GuestFirst,
+		GuestFirstChannel:        s.Defaults.GuestFirstChannel,
 		UpdatedAt:                r.UpdatedAt,
 		UpdatedBy:                r.UpdatedBy,
 		Source:                   SourceDB,
@@ -184,6 +206,12 @@ func (s *SettingsService) effective(r *settingsrepo.Row) Settings {
 	if r.GuestVoice != nil {
 		out.GuestVoice = *r.GuestVoice
 	}
+	if r.GuestFirst != nil {
+		out.GuestFirst = *r.GuestFirst
+	}
+	if r.GuestFirstChannel != nil {
+		out.GuestFirstChannel = *r.GuestFirstChannel
+	}
 	return out
 }
 
@@ -193,7 +221,8 @@ func fromFile(a *config.AccountConfig) Settings {
 		Registration: a.Registration, RequireEmailVerification: a.RequireEmailVerification,
 		ChannelCreation: a.ChannelCreation, VoiceChannelCreation: a.VoiceChannelCreation,
 		ChannelAutoRegister: a.ChannelAutoRegister, ChannelExpiryDays: a.ChannelExpiryDays,
-		GuestAccess: a.GuestAccess, GuestVoice: a.GuestVoice, Source: SourceFile,
+		GuestAccess: a.GuestAccess, GuestVoice: a.GuestVoice,
+		GuestFirst: a.GuestFirst, GuestFirstChannel: a.GuestFirstChannel, Source: SourceFile,
 	}
 }
 
@@ -292,6 +321,15 @@ func (s *SettingsService) Update(ctx context.Context, actorID string, p Patch) (
 		if p.GuestVoice != nil {
 			row.GuestVoice = p.GuestVoice
 		}
+		if p.GuestFirst != nil {
+			row.GuestFirst = p.GuestFirst
+		}
+		if p.GuestFirstChannel != nil {
+			row.GuestFirstChannel = p.GuestFirstChannel
+		}
+		if e := s.effective(row); e.GuestFirst && !e.GuestAccess {
+			return ErrGuestFirstNeedsGuestAccess
+		}
 		now := s.Now().UTC()
 		row.UpdatedAt = &now
 		row.UpdatedBy = nil
@@ -329,5 +367,7 @@ func diff(a, b Settings) (map[string]any, map[string]any) {
 	add("channel_expiry_days", a.ChannelExpiryDays, b.ChannelExpiryDays)
 	add("guest_access", a.GuestAccess, b.GuestAccess)
 	add("guest_voice", a.GuestVoice, b.GuestVoice)
+	add("guest_first", a.GuestFirst, b.GuestFirst)
+	add("guest_first_channel", a.GuestFirstChannel, b.GuestFirstChannel)
 	return oldV, newV
 }

@@ -87,6 +87,9 @@ func TestLoadFileConfigValidation(t *testing.T) {
 		{"auth:\n  channel_expiry_days: soon\n", 2, 24, "integer"},
 		{"auth:\n  guest_access: yes\n", 2, 17, "true or false"},
 		{"auth:\n  guest_voice: 1\n", 2, 16, "true or false"},
+		{"auth:\n  guest_first: on\n", 2, 16, "true or false"},
+		{"auth:\n  guest_access: false\n  guest_first: true\n", 3, 16, "requires guest_access"},
+		{"auth:\n  guest_first_channel: lobby\n", 2, 24, "must start with #"},
 		{"auth:\n  cors_allowed_origins:\n    - https://ok.example.com\n    - https://bad.example.com/path\n", 4, 7, "not an origin"},
 		{"auth:\n  cors_allowed_origins: {a: b}\n", 2, 25, "list of strings"},
 		{"auth:\n  smtp:\n    port: 70000\n", 3, 11, "between 1 and 65535"},
@@ -332,5 +335,35 @@ func TestExportFileNickServ(t *testing.T) {
 	}
 	if f.NickServRegistration == nil || *f.NickServRegistration || deref(f.NickServSignupMessage) != "Register on IRC" {
 		t.Fatalf("round trip:\n%s", out)
+	}
+}
+
+func TestLoadFileConfigGuestFirst(t *testing.T) {
+	f, err := loadFile(t, "auth:\n  guest_first: true\n  guest_first_channel: \" #IRCForever \"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !*f.GuestFirst || *f.GuestFirstChannel != "#IRCForever" || len(f.Unknown) != 0 {
+		t.Fatalf("%+v", f)
+	}
+	m := f.Flatten()
+	if m[KeyGuestFirst] != true || m[KeyGuestFirstChannel] != "#IRCForever" {
+		t.Fatal(m)
+	}
+	a := Config{}.WithFile(f).AccountConfig
+	if !a.GuestFirst || a.GuestFirstChannel != "#IRCForever" {
+		t.Fatalf("%+v", a)
+	}
+	// "" is allowed: the default landing channel.
+	if f, err = loadFile(t, "auth:\n  guest_first_channel: \"\"\n"); err != nil || *f.GuestFirstChannel != "" {
+		t.Fatalf("%+v %v", f, err)
+	}
+	// Absent keys stay nil and leave the env values alone.
+	if f, err = loadFile(t, "auth:\n  guest_access: true\n"); err != nil || f.GuestFirst != nil || f.GuestFirstChannel != nil {
+		t.Fatalf("%+v %v", f, err)
+	}
+	env := Config{AccountConfig: AccountConfig{GuestFirst: true, GuestFirstChannel: "#env"}}
+	if a := env.WithFile(f).AccountConfig; !a.GuestFirst || a.GuestFirstChannel != "#env" {
+		t.Fatalf("%+v", a)
 	}
 }

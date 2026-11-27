@@ -3,6 +3,7 @@ package settings
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -341,5 +342,61 @@ func TestEmailNotConfiguredServicesVerify(t *testing.T) {
 	s.EmailConfigured, s.ServicesVerifyEmail = nil, false
 	if got, _ := s.Get(t.Context()); !got.EmailConfigured || !got.RequireEmailVerificationEffective {
 		t.Fatalf("default: %+v", got)
+	}
+}
+
+func TestGuestFirstSetting(t *testing.T) {
+	s, repo, spy, _ := newSvc(0)
+	got, err := s.Get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GuestFirst || got.GuestFirstChannel != "" {
+		t.Fatalf("default must be off: %+v", got)
+	}
+	got, err = s.Update(t.Context(), "usr_admin", Patch{GuestFirst: ptr(true), GuestFirstChannel: ptr("#IRCForever")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GuestFirst || got.GuestFirstChannel != "#IRCForever" {
+		t.Fatalf("after patch: %+v", got)
+	}
+	if repo.row.GuestFirst == nil || !*repo.row.GuestFirst || *repo.row.GuestFirstChannel != "#IRCForever" {
+		t.Fatalf("stored: %+v", repo.row)
+	}
+	oldV, newV := spy.metas[0]["old"].(map[string]any), spy.metas[0]["new"].(map[string]any)
+	if len(oldV) != 2 || oldV["guest_first"] != false || newV["guest_first"] != true || newV["guest_first_channel"] != "#IRCForever" {
+		t.Fatalf("audit diff: old=%v new=%v", oldV, newV)
+	}
+
+	// guest_first needs guest_access: turning guest access off alone is
+	// refused and changes nothing; both together are fine.
+	_, err = s.Update(t.Context(), "usr_admin", Patch{GuestAccess: ptr(false)})
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Status != 400 || !strings.Contains(ae.Message, "guest_first requires guest_access") {
+		t.Fatalf("guest_access off with guest_first on: %v", err)
+	}
+	if repo.row.GuestAccess != nil || len(spy.metas) != 1 {
+		t.Fatalf("refused update must not save: %+v", repo.row)
+	}
+	if got, err = s.Update(t.Context(), "usr_admin", Patch{GuestAccess: ptr(false), GuestFirst: ptr(false)}); err != nil || got.GuestAccess || got.GuestFirst {
+		t.Fatalf("both off: %+v %v", got, err)
+	}
+	if _, err = s.Update(t.Context(), "usr_admin", Patch{GuestFirst: ptr(true)}); err == nil {
+		t.Fatal("guest_first on without guest_access must fail")
+	}
+
+	// The channel: a valid name, or "" back to the default.
+	if _, err = s.Update(t.Context(), "usr_admin", Patch{GuestFirstChannel: ptr("lobby")}); err == nil || !strings.Contains(err.Error(), "must start with #") {
+		t.Fatalf("bad channel: %v", err)
+	}
+	if got, err = s.Update(t.Context(), "usr_admin", Patch{GuestFirstChannel: ptr("")}); err != nil || got.GuestFirstChannel != "" {
+		t.Fatalf("clear channel: %+v %v", got, err)
+	}
+
+	// File mode carries both.
+	s.SetFile(&config.AccountConfig{GuestAccess: true, GuestFirst: true, GuestFirstChannel: "#lobby"})
+	if got, _ := s.Get(t.Context()); got.Source != SourceFile || !got.GuestFirst || got.GuestFirstChannel != "#lobby" {
+		t.Fatalf("file mode: %+v", got)
 	}
 }
