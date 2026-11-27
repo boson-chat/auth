@@ -109,6 +109,20 @@ func (d *fakeDirectory) set(host string, ok bool) {
 }
 
 func (d *fakeDirectory) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if r.URL.Path == "/v1/networks" {
+		// The public listing: verified listings only, one page.
+		d.mu.Lock()
+		nets := []map[string]any{}
+		for h, ok := range d.verified {
+			if ok {
+				nets = append(nets, map[string]any{"hostname": h, "status": "verified"})
+			}
+		}
+		d.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"networks": nets, "next_cursor": nil, "total_estimate": len(nets)})
+		return
+	}
 	if r.URL.Path != "/v1/networks/lookup" {
 		nethttp.NotFound(w, r)
 		return

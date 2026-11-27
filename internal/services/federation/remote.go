@@ -143,13 +143,22 @@ func (r *remote) getJSON(ctx context.Context, u string, v any) (found bool, err 
 		return false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("GET %s: HTTP %d", u, resp.StatusCode)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDocBytes))
+		return false, &statusError{url: u, code: resp.StatusCode}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDocBytes)).Decode(v); err != nil {
 		return false, fmt.Errorf("GET %s: %w", u, err)
 	}
 	return true, nil
 }
+
+// statusError: an answer other than 200 or 404.
+type statusError struct {
+	url  string
+	code int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("GET %s: HTTP %d", e.url, e.code) }
 
 func prune[T any](m map[string]cached[T], now time.Time) {
 	if len(m) < maxCacheEntries {

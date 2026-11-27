@@ -389,6 +389,8 @@ func (a *App) RunBackground(ctx context.Context) {
 	go a.StackConfig.Run(ctx)
 	// Blocked home domains: sessions end, IRC drops their users.
 	go a.Federation.Run(ctx)
+	// GET /v1/web-origins: the directory's web clients, every 10 min.
+	go a.Federation.RunWebOrigins(ctx)
 	go a.Social.Run(ctx)
 	if a.Bridge != nil {
 		go a.Bridge.Run(ctx)

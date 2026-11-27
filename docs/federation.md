@@ -141,6 +141,50 @@ addresses, so a hostile boson.json can't point auth at internal services
 `GET /v1/me` has `"federation": {"identity", "home_domain", "issuer"}` for a
 federated account and `null` for a local one.
 
+## Web origins
+
+`GET /v1/web-origins` (public, `Cache-Control: public, max-age=60`)
+
+```json
+{
+  "origins": ["https://chat.boson.chat", "https://chat.example.org"],
+  "own": "https://chat.boson.chat",
+  "directory": "https://directory.boson.chat",
+  "updated_at": "2026-11-27T12:00:00Z"
+}
+```
+
+The browser origins of the Boson web clients this install accepts calls
+from: the stack points quicvoice, quicvideo and files at it
+(`WEBTRANSPORT_ORIGINS=directory`, `ORIGINS_URL=http://auth:8080/v1/web-origins`)
+so a web client of any verified Boson server can join calls and upload
+here, without opening them to every page on the web.
+
+- `own` (listed first): the origin of `WEB_CLIENT_URL` (`""` when unset).
+- Then, for every **verified** listing in the directory (`directory_url`,
+  the same one directory mode trusts; a directory also lists what it
+  imports from the directories it follows), the origin of `web.url` in
+  that server's boson.json. The listing's hostname is an IRC host, so
+  boson.json is read where the app looks for it: the hostname minus its
+  first label (`irc.example.org` → `https://example.org/.well-known/boson.json`),
+  then the hostname itself. A document whose `irc.host` is another host is
+  ignored. `web.url` must be https on that domain or one of its
+  subdomains; without a `web` section the server adds nothing (nothing is
+  guessed).
+- Origins are `scheme://host[:port]`: lower-case, default port dropped, no
+  path or trailing slash. At most 5000.
+
+The directory part is rebuilt at start and every 10 min, by reading every
+page of `GET {directory_url}/v1/networks?nsfw=true&sort=name` and each
+server's boson.json (8 at a time, 5 s each, through the same client as
+discovery: https only, no private addresses). If the directory can't be
+read the last good list stays (retried every minute); if one server's
+boson.json can't be read (unreachable, 5xx) its last origin stays; a 404 or
+a document without `web` drops it. Until the first successful build
+`updated_at` is `null` and only `own` is listed. So a newly verified
+server's web client is accepted here within about 10 minutes (plus the
+caller's own cache).
+
 ## Trust policy
 
 `mode` (env `FEDERATION_MODE`, default `directory`):
