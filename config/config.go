@@ -156,6 +156,10 @@ type HTTPConfig struct {
 	// Comma-separated origins allowed to call the API with credentials (CORS).
 	// Defaults to the origin of APP_URL.
 	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS"`
+	// Serve the bearer-token JSON API (config, login, refresh, me, voice
+	// tokens, friends, …) to web apps on any origin with CORS * and no
+	// credentials. Off: only CORS_ALLOWED_ORIGINS (federation stays *).
+	CORSAnyOrigin bool `default:"true" env:"CORS_ANY_ORIGIN"`
 	// Secure flag on cookies. Only turn off for plain-http local dev.
 	CookieSecure bool `default:"true" env:"COOKIE_SECURE"`
 	// Cookie Domain attribute; empty = host-only cookie.
