@@ -112,7 +112,10 @@ type ProviderInput struct {
 	Enabled     *bool
 	AllowSignup *bool
 	TrustEmail  *bool
-	Config      map[string]any
+	// SignupWhenClosed: AllowSignup also applies while registration is
+	// closed or invite-only.
+	SignupWhenClosed *bool
+	Config           map[string]any
 }
 
 // ProviderView is a provider for the admin API. Secrets are never included.
@@ -557,10 +560,12 @@ func (s *SSOService) linkOrCreate(ctx context.Context, row *identity.Provider, x
 			if err != nil {
 				return err
 			}
-			switch st.Registration {
-			case config.RegistrationClosed:
+			switch {
+			case row.SignupWhenClosed:
+				// The provider is the gate: an account there is the invitation.
+			case st.Registration == config.RegistrationClosed:
 				return apperr.ErrRegistrationClosed
-			case config.RegistrationInvite:
+			case st.Registration == config.RegistrationInvite:
 				if err := s.Invites.Redeem(ctx, inviteCode); err != nil {
 					return err
 				}
@@ -828,6 +833,9 @@ func (s *SSOService) CreateProvider(ctx context.Context, actorID string, in Prov
 	if in.TrustEmail != nil {
 		p.TrustEmail = *in.TrustEmail
 	}
+	if in.SignupWhenClosed != nil {
+		p.SignupWhenClosed = *in.SignupWhenClosed
+	}
 	if err := validateFields(p); err != nil {
 		return nil, err
 	}
@@ -886,6 +894,9 @@ func (s *SSOService) UpdateProvider(ctx context.Context, actorID, id string, in 
 	}
 	if in.TrustEmail != nil {
 		p.TrustEmail, changed = *in.TrustEmail, append(changed, "trust_email")
+	}
+	if in.SignupWhenClosed != nil {
+		p.SignupWhenClosed, changed = *in.SignupWhenClosed, append(changed, "signup_when_closed")
 	}
 	if err := validateFields(p); err != nil {
 		return nil, err
