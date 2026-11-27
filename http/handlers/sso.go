@@ -233,23 +233,24 @@ func (h *Handlers) unlinkMyIdentity(w nethttp.ResponseWriter, r *nethttp.Request
 }
 
 type providerJSON struct {
-	ID              string         `json:"id"`
-	Slug            string         `json:"slug"`
-	Kind            string         `json:"kind"`
-	DisplayName     string         `json:"display_name"`
-	Enabled         bool           `json:"enabled"`
-	AllowSignup     bool           `json:"allow_signup"`
-	TrustEmail      bool           `json:"trust_email"`
-	Config          map[string]any `json:"config"`
-	HasClientSecret bool           `json:"has_client_secret"`
-	StartURL        string         `json:"start_url"`
-	RedirectURI     string         `json:"redirect_uri,omitempty"`
-	ACSURL          string         `json:"acs_url,omitempty"`
-	SPMetadataURL   string         `json:"sp_metadata_url,omitempty"`
-	SPEntityID      string         `json:"sp_entity_id,omitempty"`
-	SPCertificate   string         `json:"sp_certificate,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID               string         `json:"id"`
+	Slug             string         `json:"slug"`
+	Kind             string         `json:"kind"`
+	DisplayName      string         `json:"display_name"`
+	Enabled          bool           `json:"enabled"`
+	AllowSignup      bool           `json:"allow_signup"`
+	TrustEmail       bool           `json:"trust_email"`
+	SignupWhenClosed bool           `json:"signup_when_closed"`
+	Config           map[string]any `json:"config"`
+	HasClientSecret  bool           `json:"has_client_secret"`
+	StartURL         string         `json:"start_url"`
+	RedirectURI      string         `json:"redirect_uri,omitempty"`
+	ACSURL           string         `json:"acs_url,omitempty"`
+	SPMetadataURL    string         `json:"sp_metadata_url,omitempty"`
+	SPEntityID       string         `json:"sp_entity_id,omitempty"`
+	SPCertificate    string         `json:"sp_certificate,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 func toProvider(v *sso.ProviderView) providerJSON {
@@ -262,25 +263,26 @@ func toProvider(v *sso.ProviderView) providerJSON {
 	}
 	return providerJSON{
 		ID: v.ID, Slug: v.Slug, Kind: v.Kind, DisplayName: v.DisplayName, Enabled: v.Enabled,
-		AllowSignup: v.AllowSignup, TrustEmail: v.TrustEmail, Config: cfg, HasClientSecret: v.HasClientSecret,
+		AllowSignup: v.AllowSignup, TrustEmail: v.TrustEmail, SignupWhenClosed: v.SignupWhenClosed, Config: cfg, HasClientSecret: v.HasClientSecret,
 		StartURL: v.StartURL, RedirectURI: v.RedirectURI, ACSURL: v.ACSURL, SPMetadataURL: v.SPMetadataURL,
 		SPEntityID: v.SPEntityID, SPCertificate: v.SPCert, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 	}
 }
 
 type providerReq struct {
-	Slug        *string        `json:"slug"`
-	Kind        *string        `json:"kind"`
-	DisplayName *string        `json:"display_name"`
-	Enabled     *bool          `json:"enabled"`
-	AllowSignup *bool          `json:"allow_signup"`
-	TrustEmail  *bool          `json:"trust_email"`
-	Config      map[string]any `json:"config"`
+	Slug             *string        `json:"slug"`
+	Kind             *string        `json:"kind"`
+	DisplayName      *string        `json:"display_name"`
+	Enabled          *bool          `json:"enabled"`
+	AllowSignup      *bool          `json:"allow_signup"`
+	TrustEmail       *bool          `json:"trust_email"`
+	SignupWhenClosed *bool          `json:"signup_when_closed"`
+	Config           map[string]any `json:"config"`
 }
 
 func (p providerReq) input() sso.ProviderInput {
 	return sso.ProviderInput{Slug: p.Slug, Kind: p.Kind, DisplayName: p.DisplayName, Enabled: p.Enabled,
-		AllowSignup: p.AllowSignup, TrustEmail: p.TrustEmail, Config: p.Config}
+		AllowSignup: p.AllowSignup, TrustEmail: p.TrustEmail, SignupWhenClosed: p.SignupWhenClosed, Config: p.Config}
 }
 
 func (h *Handlers) adminListProviders(w nethttp.ResponseWriter, r *nethttp.Request) {

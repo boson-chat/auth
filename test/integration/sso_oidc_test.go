@@ -453,3 +453,40 @@ func TestOIDCChallengeWithoutModeOnWebOriginUsesCode(t *testing.T) {
 		t.Fatalf("cookie+challenge: %d %s", r2.StatusCode, l)
 	}
 }
+
+// A provider with signup_when_closed creates accounts while registration is
+// closed or invite-only; other providers on the same server still can't.
+func TestOIDCSignupWhenClosed(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.AccountConfig.SettingsCacheTTL = 0 })
+	adminAT := e.adminToken("ssoadmin")
+	m := mockIdP(t)
+	id := e.oidcProvider(adminAT, "community", m, map[string]any{"signup_when_closed": true})
+	m2 := mockIdP(t)
+	e.oidcProvider(adminAT, "other", m2, nil)
+	errOf := func(res string) string { u, _ := url.Parse(res); return u.Query().Get("error") }
+
+	r := e.api("GET", "/v1/admin/sso/providers/"+id, nil, bearer(adminAT))
+	e.expect(r, 200, "")
+	if v, _ := r.body["provider"].(map[string]any)["signup_when_closed"].(bool); !v {
+		t.Fatalf("signup_when_closed not stored: %s", r.raw)
+	}
+
+	for _, mode := range []string{"closed", "invite"} {
+		e.expect(e.api("PATCH", "/v1/admin/settings", map[string]any{"registration": mode}, bearer(adminAT)), 200, "")
+		res := e.oidcLogin("community", m, &mockoidc.MockUser{Subject: "c-" + mode, PreferredUsername: "member" + mode}, url.Values{})
+		if res.StatusCode != 303 || errOf(res.Header.Get("Location")) != "" {
+			t.Fatalf("%s: community provider should create the account: %s", mode, res.Header.Get("Location"))
+		}
+		res = e.oidcLogin("other", m2, &mockoidc.MockUser{Subject: "o-" + mode}, url.Values{})
+		if errOf(res.Header.Get("Location")) == "" {
+			t.Fatalf("%s: other provider must still be refused: %s", mode, res.Header.Get("Location"))
+		}
+	}
+	// Switching it off restores the normal rule.
+	e.expect(e.api("PATCH", "/v1/admin/sso/providers/"+id, map[string]any{"signup_when_closed": false}, bearer(adminAT)), 200, "")
+	e.expect(e.api("PATCH", "/v1/admin/settings", map[string]any{"registration": "closed"}, bearer(adminAT)), 200, "")
+	res := e.oidcLogin("community", m, &mockoidc.MockUser{Subject: "c-late"}, url.Values{})
+	if errOf(res.Header.Get("Location")) != "registration_closed" {
+		t.Fatalf("after switching off: %s", res.Header.Get("Location"))
+	}
+}

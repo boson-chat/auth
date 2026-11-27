@@ -33,6 +33,9 @@ type Provider struct {
 	// Link to an existing account when the IdP asserts a verified email that
 	// matches. Only enable for IdPs you control.
 	TrustEmail bool
+	// Create accounts through this provider even when registration is closed
+	// or invite-only (AllowSignup must also be on).
+	SignupWhenClosed bool
 	// Encrypted secrets (keycrypt, aad = "<column>:<id>").
 	ClientSecretEnc []byte
 	SPKeyEnc        []byte
@@ -99,7 +102,7 @@ func (r *IdentityRepository) CreateProvider(ctx context.Context, p *Provider) er
 func (r *IdentityRepository) UpdateProvider(ctx context.Context, p *Provider) error {
 	res := r.db.Conn(ctx).Model(&Provider{}).Where("id = ?", p.ID).Updates(map[string]any{
 		"slug": p.Slug, "display_name": p.DisplayName, "config": p.Config, "enabled": p.Enabled,
-		"allow_signup": p.AllowSignup, "trust_email": p.TrustEmail, "client_secret_enc": p.ClientSecretEnc,
+		"allow_signup": p.AllowSignup, "trust_email": p.TrustEmail, "signup_when_closed": p.SignupWhenClosed, "client_secret_enc": p.ClientSecretEnc,
 		"sp_key_enc": p.SPKeyEnc, "sp_cert": p.SPCert, "updated_at": p.UpdatedAt,
 	})
 	if repositories.UniqueViolation(res.Error) != "" {
