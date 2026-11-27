@@ -303,7 +303,7 @@ func ValidChannelExpiryDays(n int) bool { return n >= 0 && n <= MaxChannelExpiry
 
 // AccountConfig: Registration, RequireEmailVerification, ChannelCreation,
 // VoiceChannelCreation, ChannelAutoRegister, ChannelExpiryDays and
-// GuestAccess and GuestVoice are only
+// GuestAccess, GuestVoice, GuestFirst and GuestFirstChannel are only
 // defaults; admins change them at runtime (network_settings,
 // PATCH /v1/admin/settings).
 type AccountConfig struct {
@@ -324,9 +324,16 @@ type AccountConfig struct {
 	GuestAccess bool `default:"true" env:"GUEST_ACCESS"`
 	// Guests may join voice (and so video) under their unverified IRC nick
 	// (POST /v1/voice/guest-token). Only effective with GuestAccess.
-	GuestVoice       bool          `default:"false" env:"GUEST_VOICE"`
-	EmailVerifyTTL   time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
-	PasswordResetTTL time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
+	GuestVoice bool `default:"false" env:"GUEST_VOICE"`
+	// Web clients open straight into chat as a guest (a ready nick and a
+	// "Join chat" button; sign-in and sign-up a click away). Needs
+	// GuestAccess.
+	GuestFirst bool `default:"false" env:"GUEST_FIRST"`
+	// The channel guest-first web clients land on; "" = the first
+	// auto-join network channel guests may join.
+	GuestFirstChannel string        `env:"GUEST_FIRST_CHANNEL"`
+	EmailVerifyTTL    time.Duration `default:"24h" env:"EMAIL_VERIFY_TTL"`
+	PasswordResetTTL  time.Duration `default:"30m" env:"PASSWORD_RESET_TTL"`
 	// Lifetime of the "set your password" link in admin-created account emails.
 	AccountSetupTTL time.Duration `default:"72h" env:"ACCOUNT_SETUP_TTL"`
 	// How long a replica may serve cached network settings written by another replica.
@@ -449,6 +456,9 @@ func (c Config) Validate() error {
 	}
 	if !ValidChannelExpiryDays(a.ChannelExpiryDays) {
 		return fmt.Errorf("CHANNEL_EXPIRY_DAYS must be between 0 and %d (0 = never expire), got %d", MaxChannelExpiryDays, a.ChannelExpiryDays)
+	}
+	if err := ValidateGuestFirst(a.GuestAccess, a.GuestFirst, a.GuestFirstChannel, c.IRCConfig.Channels); err != nil {
+		return err
 	}
 	if a.AccountSetupTTL <= 0 || a.SettingsCacheTTL < 0 {
 		return errors.New("ACCOUNT_SETUP_TTL must be positive and SETTINGS_CACHE_TTL not negative")

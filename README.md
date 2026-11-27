@@ -70,7 +70,7 @@ the bearer-token API from the browser (CORS `*`, no credentials; see
 | `GET /.well-known/jwks.json` | – | public keys, `Cache-Control: public, max-age=300` |
 | `GET /.well-known/openid-configuration` | – | `{issuer, jwks_uri, id_token_signing_alg_values_supported}` |
 | `GET /workload/.well-known/openid-configuration`, `GET /workload/jwks.json` | – | the [workload issuer](docs/workload-identity.md) `$ISSUER/workload`: its discovery document (`ES256`) and its own JWKS (P-256 keys only, never the user-token keys); 404 without `WORKLOAD_IDENTITIES` |
-| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend; `email: {configured}`: whether auth can send email ([without a mail server](#running-without-a-mail-server) `require_email_verification` here and `password_reset` are `false`) |
+| `GET /v1/config` | – | `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, guest_first, guest_first_channel, autojoin_guests, sso_providers: [{slug, kind, display_name, start_url}], network_name, branding_url, files_url, channels: [{name, topic, autojoin, restricted?}]}` (live [network settings](#network-settings); `guest_voice` here is `guest_access && guest_voice`, `guest_first` is `guest_access && guest_first` and `guest_first_channel` is the [landing channel](#network-settings) or `null`; `autojoin_guests` is `irc.autojoin_guests` (live): guests are joined to the auto-join `channels` too, which clients do themselves where no RoleServ does; enabled [SSO providers](#single-sign-on); `network_name` is the network's name, the config file's `network.name` (live) or `SITE_NAME`, `null` when neither is set (the built-in default `boson` counts as unset; clients show their domain instead); `branding_url` is `GET /v1/branding`'s URL, or `null` without branding; `files_url` is the network's [files (uploads) service](#configuration), `FILES_PUBLIC_URL`, or `null` when it has none or uploads are off; `channels` are the [network channels](docs/roles.md#network-channels) from `irc.channels`, `[]` when none (treat a missing field, older auth, as `[]`); `restricted: true` on a channel only some roles may join, which roles isn't public; `accounts: {backend: "local"\|"nickserv", signup, signup_message, password_reset}`: where accounts live and whether sign-up and password reset work here ([NickServ backend](docs/nickserv.md#sign-up)); treat a missing field as the local backend; `email: {configured}`: whether auth can send email ([without a mail server](#running-without-a-mail-server) `require_email_verification` here and `password_reset` are `false`) |
 | `GET /v1/branding` | – | the network theme (boson-theme/1) with absolute image URLs; CORS `*`, `ETag`/`If-None-Match` → 304; 404 `no_branding` when not configured ([branding](docs/branding.md)) |
 | `GET /v1/branding/assets/{file}` | – | a branding image (only files the branding names); `?v=<hash>` → cached for a year; `nosniff`, strict CSP for SVG |
 | `GET /.well-known/boson-federation.json` | – | the `federation` section for boson.json `{version, issuer, jwks_uri, assertion_endpoint, login_endpoint, accepts}`; CORS `*` ([federation](docs/federation.md#discovery-bosonjson)) |
@@ -141,8 +141,8 @@ the caller to outrank that user ([hierarchy](docs/roles.md#hierarchy)).
 | `GET /v1/admin/invites`, `POST /v1/admin/invites` `{max_uses, ttl, note}`, `DELETE /v1/admin/invites/{id}` | `invites.manage` | invite codes (the code is only in the create response) |
 | `GET /v1/admin/audit?event=&actor=&target=&user_id=&since=&until=&cursor=&limit=` | `audit.view` | audit log, newest first → `{entries, next_cursor}` ([below](#audit-log-api)) |
 | `GET /v1/admin/sso/providers`, `POST` (create), `GET/PATCH/DELETE /v1/admin/sso/providers/{id}`, `POST /v1/admin/sso/providers/{id}/test` | `sso.manage` | SSO providers, see [docs/sso.md](docs/sso.md#admin-api); `client_secret` is write-only (`has_client_secret`) |
-| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, updated_at, updated_by, source, email_configured, require_email_verification_effective}`; `source` is `file` (stack config file) or `db`; `email_configured` and `require_email_verification_effective` (what sign-in enforces) are not settings ([without a mail server](#running-without-a-mail-server)) |
-| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types or `channel_expiry_days` outside 0–3650; `409 managed_by_config_file` while the [stack config file](#stack-config-file) is in use; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
+| `GET /v1/admin/settings` | `admin.panel` \| `settings.manage` | network settings → `{registration, require_email_verification, channel_creation, voice_channel_creation, channel_auto_register, channel_expiry_days, guest_access, guest_voice, guest_first, guest_first_channel, updated_at, updated_by, source, email_configured, require_email_verification_effective}`; `source` is `file` (stack config file) or `db`; `email_configured` and `require_email_verification_effective` (what sign-in enforces) are not settings ([without a mail server](#running-without-a-mail-server)) |
+| `PATCH /v1/admin/settings` | `settings.manage` | same fields, any subset → the updated object; `400 invalid_request` on unknown values, wrong JSON types `channel_expiry_days` outside 0–3650, a `guest_first_channel` that isn't a channel name, or a change that would leave `guest_first` on with `guest_access` off; `409 managed_by_config_file` while the [stack config file](#stack-config-file) is in use; audit event `settings_updated` with `meta.old` / `meta.new` (changed fields only) |
 | `GET /v1/admin/permissions` | `admin.panel` | the permission catalog → `{permissions: [{id, group, label, description}]}` |
 | `GET /v1/admin/roles`, `GET /v1/admin/roles/{id}` | `admin.panel` | `{roles: [role]}` most senior first (with `member_count`) / `{role}` |
 | `POST /v1/admin/roles`, `PATCH /v1/admin/roles/{id}` | `roles.manage` | `{name, color?, position?, permissions?, irc?: {whois_line?, vhost?, oper?}, hoist?, mentionable?}` → 201 / 200 `{role}` |
@@ -181,7 +181,7 @@ The caller may forward the end user's address in `X-Forwarded-For` (Ergo's auth-
 
 ### Network settings
 
-Eight settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
+Ten settings can be changed at runtime by admins (`PATCH /v1/admin/settings`)
 and are stored in `network_settings`. Until an admin sets one, it follows its
 env variable, so env values are the defaults:
 
@@ -195,11 +195,13 @@ env variable, so env values are the defaults:
 | `channel_expiry_days` | integer 0–3650 | `CHANNEL_EXPIRY_DAYS` (`0`) | IRC (Ergo): registered channels with no joins or messages for this many days are unregistered; `0` = never expire |
 | `guest_access` | bool | `GUEST_ACCESS` (`true`) | IRC (Ergo): `true` = people may connect without an account (guests can chat but can't register channels or use voice or roles); `false` = IRC requires SASL login. Clients read it from `GET /v1/config`; treat a missing field (older auth) as `true` |
 | `guest_voice` | bool | `GUEST_VOICE` (`false`) | auth (`POST /v1/voice/guest-token`): guests may join voice (and so video) under their unverified IRC nick, with a guest badge; only effective with `guest_access`. `GET /v1/config` reports `guest_access && guest_voice`; treat a missing field (older auth) as `false` |
+| `guest_first` | bool | `GUEST_FIRST` (`false`) | Boson web clients: open straight into chat as a guest (a ready, editable nick and a "Join chat" button; sign-in and sign-up one click away), the evrd web-chat embed experience. Needs `guest_access`: an update that would leave it on with `guest_access` off is refused (`400`), and so is such a stack config file. `GET /v1/config` reports `guest_access && guest_first`; treat a missing field (older auth) as `false` |
+| `guest_first_channel` | channel name or `""` | `GUEST_FIRST_CHANNEL` (`""`) | Boson web clients: the channel guest-first visitors land on. `""` = the first auto-join [network channel](#stack-config-file) not restricted to roles; `GET /v1/config` reports the resolved channel, or `null` when there is none (the client's own default). In the stack config file it may not be a channel restricted to roles |
 
 ```json
 {"registration":"open","require_email_verification":true,"channel_creation":"registered",
  "voice_channel_creation":"founders","channel_auto_register":true,"channel_expiry_days":0,
- "guest_access":true,"guest_voice":false,
+ "guest_access":true,"guest_voice":false,"guest_first":false,"guest_first_channel":"",
  "updated_at":"2026-11-13T21:04:05.123456Z","updated_by":"usr_01J…"}
 ```
 
@@ -209,7 +211,7 @@ PATCH sees it at once. auth enforces the first two and `guest_voice`; the others
 are published for the IRC and voice services (`GET /internal/v1/settings`,
 cache them a few seconds too) and for clients (`GET /v1/config`).
 
-With the [stack config file](#stack-config-file) the same eight settings come
+With the [stack config file](#stack-config-file) the same ten settings come
 from its `auth:` section instead (`source: "file"`, `updated_at` / `updated_by`
 `null`), `network_settings` is ignored and `PATCH` answers `409`.
 
@@ -232,6 +234,8 @@ auth:
   require_email_verification: true
   guest_access: true
   guest_voice: false                # guests may join voice (needs guest_access)
+  guest_first: false                # web clients open straight into chat as a guest (needs guest_access)
+  guest_first_channel: "#lobby"     # where they land; absent / "" = the first auto-join channel
   channel_creation: registered      # registered | admins
   voice_channel_creation: founders  # admins | founders | registered
   channel_auto_register: true
@@ -637,6 +641,8 @@ Everything is an environment variable. Durations use Go syntax (`15m`,
 | `CHANNEL_EXPIRY_DAYS` | `0` | default for `channel_expiry_days`: 0–3650, days of inactivity before IRC unregisters a channel (`0` = never) (*file*: `auth.channel_expiry_days`) |
 | `GUEST_ACCESS` | `true` | default for `guest_access`: IRC lets people connect without an account; `false` = SASL login required (*file*: `auth.guest_access`) |
 | `GUEST_VOICE` | `false` | default for `guest_voice`: guests may get voice tokens (`POST /v1/voice/guest-token`); needs `guest_access` (*file*: `auth.guest_voice`) |
+| `GUEST_FIRST` | `false` | default for `guest_first`: Boson web clients open straight into chat as a guest; needs `guest_access` (*file*: `auth.guest_first`) |
+| `GUEST_FIRST_CHANNEL` | – | default for `guest_first_channel`: where guest-first visitors land; empty = the first auto-join network channel (*file*: `auth.guest_first_channel`) |
 | `SETTINGS_CACHE_TTL` | `5s` | how long a replica caches the network settings |
 | `ACCOUNT_SETUP_TTL` | `72h` | lifetime of the "choose your password" link for admin-created accounts |
 | `EMAIL_VERIFY_TTL` | `24h` | |

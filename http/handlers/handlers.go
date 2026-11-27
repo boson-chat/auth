@@ -83,6 +83,8 @@ type Handlers struct {
 	// NetworkChannels are channels in GET /v1/config (config irc.channels,
 	// hot-reloaded). Nil: Config.IRCConfig.
 	NetworkChannels func() []config.NetworkChannel
+	// AutojoinGuests is irc.autojoin_guests (live), in GET /v1/config.
+	AutojoinGuests func() bool
 	// NetworkName is network_name in GET /v1/config (SITE_NAME / the
 	// config file's network.name, hot-reloaded; "" = null). Nil:
 	// Config.AppConfig.NetworkName().
