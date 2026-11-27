@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -304,4 +306,75 @@ func TestBridgeNickServLogin(t *testing.T) {
 			}
 		})
 	}
+}
+
+// auth drives the bridge's guest setting (evrd's managed_guests) from its
+// own guest_access: at startup, on every change (admin panel, config
+// file), and an evrd without the settings API is tolerated.
+func TestBridgeGuestSetting(t *testing.T) {
+	t.Run("admin panel", func(t *testing.T) {
+		fb := bridgetest.New("bridge-token")
+		t.Cleanup(fb.Close)
+		e, _ := bridgeEnv(t, fb, func(c *config.Config) {
+			c.AccountConfig.GuestAccess = true
+			c.AccountConfig.SettingsCacheTTL = 0
+		})
+		e.runBridge()
+		guests := func(want bool) func() bool {
+			return func() bool { on, set := fb.Guests(); return set && on == want }
+		}
+		eventually(t, "guests on at startup", guests(true))
+		admin := e.adminToken("boss")
+		e.expect(e.api("PATCH", "/v1/admin/settings", map[string]any{"guest_access": false}, bearer(admin)), 200, "")
+		eventually(t, "guests off", guests(false))
+		e.expect(e.api("PATCH", "/v1/admin/settings", map[string]any{"guest_access": true}, bearer(admin)), 200, "")
+		eventually(t, "guests on again", guests(true))
+	})
+
+	t.Run("bridge starts later", func(t *testing.T) {
+		fb := bridgetest.New("bridge-token")
+		t.Cleanup(fb.Close)
+		fb.Down.Store(true)
+		e, logs := bridgeEnv(t, fb, func(c *config.Config) { c.AccountConfig.GuestAccess = false })
+		e.runBridge()
+		eventually(t, "a failed attempt", func() bool { return strings.Contains(logs.String(), "sending the guest setting failed") })
+		fb.Down.Store(false)
+		eventually(t, "guests sent once the bridge is up", func() bool { on, set := fb.Guests(); return set && !on })
+	})
+
+	t.Run("config file", func(t *testing.T) {
+		fb := bridgetest.New("bridge-token")
+		t.Cleanup(fb.Close)
+		path := filepath.Join(t.TempDir(), "boson.yaml")
+		file := func(on bool) string {
+			return "version: 1\nauth:\n  guest_access: " + strconv.FormatBool(on) + "\nirc: { plaintext: true }\n"
+		}
+		writeConfig(t, path, file(false))
+		e, _ := bridgeEnv(t, fb, func(c *config.Config) {
+			c.AppConfig.ConfigFile = path
+			c.AppConfig.ConfigPoll = 100 * time.Millisecond
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go e.app.StackConfig.Run(ctx)
+		e.runBridge()
+		eventually(t, "guests off from the file", func() bool { on, set := fb.Guests(); return set && !on })
+		writeConfig(t, path, file(true))
+		eventually(t, "guests on after the reload", func() bool { on, set := fb.Guests(); return set && on })
+	})
+
+	t.Run("evrd before 0.61", func(t *testing.T) {
+		fb := bridgetest.New("bridge-token")
+		t.Cleanup(fb.Close)
+		fb.NoSettings.Store(true)
+		e, logs := bridgeEnv(t, fb)
+		e.runBridge()
+		eventually(t, "logged once", func() bool { return strings.Contains(logs.String(), "evrd before 0.61") })
+		// Accounts are still provisioned.
+		id := e.registerVerified("Gina", "gina@example.org")
+		eventually(t, "gina on the bridge", func() bool { a := fb.Get("gina"); return a != nil && a.Subject == id })
+		if strings.Count(logs.String(), "evrd before 0.61") != 1 || strings.Contains(logs.String(), "sending the guest setting failed") {
+			t.Fatalf("logs: %s", logs)
+		}
+	})
 }

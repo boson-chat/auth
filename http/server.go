@@ -216,6 +216,10 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 			Client: bridge.NewHTTPClient(bc.APIURL, bc.Token, bc.Timeout, opts.BridgeHTTPClient),
 			Store:  bridgeStore, Metrics: m, Config: bc, Strategy: cfg.NickServConfig.Strategy,
 			Log: opts.BridgeLog, CredentialRetries: opts.BridgeCredentialRetries,
+			GuestAccess: func(ctx context.Context) (bool, error) {
+				st, err := settingsService.Get(ctx)
+				return st.GuestAccess, err
+			},
 		})
 		if err := bridgeService.Start(ctx); err != nil {
 			_ = database.Close()

@@ -12,6 +12,8 @@
 //     services login (the NickServ password), so the bridge can log the
 //     user in to NickServ. The password is only ever held in memory while
 //     it's being sent; it's never logged or stored.
+//   - RunGuests keeps the bridge's guest setting (evrd's managed_guests,
+//     PUT /api/managed/settings) equal to auth's guest_access.
 package bridge
 
 import (
@@ -56,6 +58,10 @@ type Deps struct {
 	Log *zerolog.Logger
 	// CredentialRetries: nil is DefaultCredentialRetries.
 	CredentialRetries []time.Duration
+	// GuestAccess is auth's guest setting (guest_access), sent to the
+	// bridge as its "guests" by RunGuests; nil: the bridge's own setting
+	// is left alone.
+	GuestAccess func(ctx context.Context) (bool, error)
 }
 
 // Result is what a full sync did.
@@ -114,8 +120,13 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 // Run pushes queued changes every BRIDGE_POLL_INTERVAL and runs a full
-// sync at once and every BRIDGE_RECONCILE_INTERVAL, until ctx is done.
+// sync at once and every BRIDGE_RECONCILE_INTERVAL, and keeps the
+// bridge's guest setting in step (RunGuests), until ctx is done.
 func (s *Service) Run(ctx context.Context) {
+	var guests sync.WaitGroup
+	guests.Add(1)
+	go func() { defer guests.Done(); s.RunGuests(ctx) }()
+	defer guests.Wait()
 	s.reconcileLogged(ctx)
 	poll := time.NewTicker(s.Config.PollInterval)
 	defer poll.Stop()

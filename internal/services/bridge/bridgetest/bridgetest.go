@@ -2,6 +2,8 @@
 // for tests: accounts by name, fields left out of a PUT stay as they are,
 // "" keeps the saved password and method none clears it, a subject held by
 // another account is a 409, and Down makes every call fail.
+// /api/managed/settings keeps the settings PUT (evrd 0.61); NoSettings
+// makes it a 404, as an older evrd answers.
 package bridgetest
 
 import (
@@ -34,11 +36,14 @@ type Bridge struct {
 	Token string
 	// Down: every call gets a 503.
 	Down atomic.Bool
+	// NoSettings: /api/managed/settings is a 404 (an evrd before 0.61).
+	NoSettings atomic.Bool
 
-	mu    sync.Mutex
-	accts map[string]*Account
-	calls []Call
-	srv   *httptest.Server
+	mu       sync.Mutex
+	accts    map[string]*Account
+	calls    []Call
+	settings map[string]any // set through PUT /api/managed/settings
+	srv      *httptest.Server
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,31}$`)
@@ -88,6 +93,19 @@ func (b *Bridge) Names() []string {
 	return out
 }
 
+// Setting returns a setting PUT through /api/managed/settings (nil: never set).
+func (b *Bridge) Setting(name string) any {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.settings[name]
+}
+
+// Guests is the "guests" setting PUT through the settings API, if any.
+func (b *Bridge) Guests() (on, set bool) {
+	v, ok := b.Setting("guests").(bool)
+	return v, ok
+}
+
 // Calls returns the requests so far and forgets them.
 func (b *Bridge) Calls() []Call {
 	b.mu.Lock()
@@ -127,6 +145,10 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			list = append(list, view(a))
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"users": list})
+		return
+	}
+	if r.URL.Path == "/api/managed/settings" && !b.NoSettings.Load() {
+		b.serveSettings(w, r.Method, raw)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/managed/users/") {
@@ -218,4 +240,55 @@ func (b *Bridge) put(w http.ResponseWriter, name, raw string) {
 		w.WriteHeader(http.StatusCreated)
 	}
 	_ = json.NewEncoder(w).Encode(view(a))
+}
+
+// serveSettings is GET/PUT/DELETE /api/managed/settings, with evrd's
+// defaults under what was set.
+func (b *Bridge) serveSettings(w http.ResponseWriter, method, raw string) {
+	switch method {
+	case http.MethodGet:
+	case http.MethodDelete:
+		b.settings = nil
+	case http.MethodPut:
+		var in map[string]any
+		if err := json.Unmarshal([]byte(raw), &in); err != nil {
+			http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+			return
+		}
+		for k, v := range in {
+			switch k {
+			case "guests":
+				if _, ok := v.(bool); !ok {
+					http.Error(w, `{"error":"guests must be true or false"}`, http.StatusUnprocessableEntity)
+					return
+				}
+			case "guestsMax", "guestsPerIP", "guestLingerSeconds", "nickGuardGraceSeconds":
+				if n, ok := v.(float64); !ok || n < 0 {
+					http.Error(w, `{"error":"`+k+` must be 0 or more"}`, http.StatusUnprocessableEntity)
+					return
+				}
+			default:
+				http.Error(w, `{"error":"unknown field `+k+`"}`, http.StatusUnprocessableEntity)
+				return
+			}
+		}
+		if b.settings == nil {
+			b.settings = map[string]any{}
+		}
+		for k, v := range in {
+			b.settings[k] = v
+		}
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	out := map[string]any{"guests": false, "guestsMax": 100, "guestsPerIP": 3, "guestLingerSeconds": 30, "nickGuardGraceSeconds": 60}
+	set := []string{}
+	for k, v := range b.settings {
+		out[k] = v
+		set = append(set, k)
+	}
+	sort.Strings(set)
+	out["set"] = set
+	_ = json.NewEncoder(w).Encode(out)
 }
