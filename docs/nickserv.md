@@ -204,7 +204,9 @@ strategies have no session to keep.
 ```
 
 (`backend: "local"`, `signup: true`, `password_reset: true` and
-`signup_message: null` on the local backend.)
+`signup_message: null` on the local backend.) `signup` is `false` on either
+backend while `registration` is `closed`; with `registration: "invite"` it
+stays `true` and clients ask for the invite code.
 
 - **Atheme** (`atheme_jsonrpc` / `atheme_xmlrpc`, `NICKSERV_REGISTRATION=true`):
   `POST /v1/register {username, email, password, invite_code?}` follows the
