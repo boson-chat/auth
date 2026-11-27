@@ -63,12 +63,13 @@ func TestGuestFirstConfigFile(t *testing.T) {
 	go e.app.StackConfig.Run(ctx)
 
 	// No guest_first_channel: the first auto-join channel guests may join.
-	if c := e.api("GET", "/v1/config", nil); c.body["guest_first"] != true || c.str("guest_first_channel") != "#IRCForever" {
+	if c := e.api("GET", "/v1/config", nil); c.body["guest_first"] != true || c.str("guest_first_channel") != "#IRCForever" || c.body["autojoin_guests"] != true {
 		t.Fatalf("/v1/config: %s", c.raw)
 	}
-	writeConfig(t, path, "version: 1\nauth:\n  guest_first: true\n  guest_first_channel: \"#help\"\n")
+	writeConfig(t, path, "version: 1\nauth:\n  guest_first: true\n  guest_first_channel: \"#help\"\nirc:\n  autojoin_guests: false\n")
 	eventually(t, "guest_first_channel from the file", func() bool {
-		return e.api("GET", "/v1/config", nil).str("guest_first_channel") == "#help"
+		c := e.api("GET", "/v1/config", nil)
+		return c.str("guest_first_channel") == "#help" && c.body["autojoin_guests"] == false
 	})
 	// A restricted landing channel is refused; the last good config stays.
 	writeConfig(t, path, "version: 1\nauth:\n  guest_first: true\n  guest_first_channel: \"#staff\"\n"+

@@ -138,6 +138,12 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 	for _, c := range channels {
 		public = append(public, publicChannel{NetworkChannel: c, Restricted: c.Restricted()})
 	}
+	// Guests are joined to the auto-join channels too (irc.autojoin_guests):
+	// clients of networks whose IRC doesn't (no RoleServ) join them.
+	autojoinGuests := h.Config.IRCConfig.AutojoinGuests
+	if h.AutojoinGuests != nil {
+		autojoinGuests = h.AutojoinGuests()
+	}
 	var guestFirstChannel *string
 	if c := config.GuestFirstLanding(st.GuestFirstChannel, channels); c != "" {
 		guestFirstChannel = &c
@@ -166,6 +172,7 @@ func (h *Handlers) publicConfig(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"branding_url":        brandingURL,
 		"files_url":           filesURL,
 		"channels":            public,
+		"autojoin_guests":     autojoinGuests,
 		"accounts":            h.accountsInfo(st.Registration, st.EmailConfigured),
 	})
 }
