@@ -308,7 +308,14 @@ func (s *SSOService) Providers(context.Context) []idp.ProviderInfo {
 // ---- login flow -----------------------------------------------------------
 
 func (s *SSOService) Start(ctx context.Context, in StartInput) (*StartResult, error) {
-	rt, mode, err := s.ReturnTo.Resolve(in.ReturnTo, in.Mode)
+	// A PKCE challenge only makes sense for the code flow: a client that sends
+	// one without a mode (the Boson app on the server's own web origin, where
+	// the automatic choice would be cookie) wants code.
+	reqMode := in.Mode
+	if reqMode == "" && in.CodeChallenge != "" {
+		reqMode = ModeCode
+	}
+	rt, mode, err := s.ReturnTo.Resolve(in.ReturnTo, reqMode)
 	if err != nil {
 		return nil, err
 	}

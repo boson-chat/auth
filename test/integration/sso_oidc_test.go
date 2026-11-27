@@ -428,3 +428,28 @@ func TestAdminSSOProviders(t *testing.T) {
 		t.Fatalf("provider audit entries = %d: %s", n, a.raw)
 	}
 }
+
+// The web app on the server's own origin sends a PKCE challenge without a
+// mode: that means the code flow, not "code_challenge is only used with
+// mode=code" (automatic mode would otherwise pick cookie for a web origin).
+func TestOIDCChallengeWithoutModeOnWebOriginUsesCode(t *testing.T) {
+	e := newEnv(t)
+	adminAT := e.adminToken("ssoadmin")
+	m := mockIdP(t)
+	e.oidcProvider(adminAT, "corp", m, nil)
+
+	verifier := strings.Repeat("w", 50)
+	user := &mockoidc.MockUser{Subject: "web-1", Email: "web@corp.example", PreferredUsername: "webby"}
+	q := url.Values{"return_to": {"/"}, "code_challenge": {pkce(verifier)}, "code_challenge_method": {"S256"}}
+	res := e.oidcLogin("corp", m, user, q)
+	loc, _ := url.Parse(res.Header.Get("Location"))
+	if res.StatusCode != 303 || !strings.HasPrefix(loc.Query().Get("code"), "bsc_") {
+		t.Fatalf("want a code redirect, got %d %s", res.StatusCode, loc)
+	}
+	// An explicit cookie mode with a challenge is still refused.
+	c := e.browser()
+	r2, body := e.get(c, e.public.URL+"/v1/sso/corp/start?return_to=/&mode=cookie&code_challenge="+pkce(verifier))
+	if l := location(t, r2, body); l.Query().Get("error") != "invalid_request" || !strings.Contains(l.Query().Get("error_description"), "mode=code") {
+		t.Fatalf("cookie+challenge: %d %s", r2.StatusCode, l)
+	}
+}
