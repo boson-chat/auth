@@ -100,6 +100,9 @@ type UserRepositoryImpl interface {
 	// than at-minAge, so a busy user costs at most one write per minAge.
 	// Reports whether it wrote.
 	TouchActive(ctx context.Context, id string, at time.Time, minAge time.Duration) (bool, error)
+	// Counts is how many accounts there are and how many were active
+	// (last_active_at) since each of the given times, in one query.
+	Counts(ctx context.Context, activeSince ...time.Time) (total int64, active []int64, err error)
 }
 
 type UserRepository struct {
@@ -237,4 +240,27 @@ func (r *UserRepository) TouchActive(ctx context.Context, id string, at time.Tim
 	res := r.db.Conn(ctx).Exec(`UPDATE users SET last_active_at = ?
 		WHERE id = ? AND (last_active_at IS NULL OR last_active_at <= ?)`, at, id, at.Add(-minAge))
 	return res.RowsAffected > 0, res.Error
+}
+
+func (r *UserRepository) Counts(ctx context.Context, activeSince ...time.Time) (int64, []int64, error) {
+	sel := "count(*)"
+	args := make([]any, 0, len(activeSince))
+	for _, at := range activeSince {
+		sel += ", count(*) FILTER (WHERE last_active_at >= ?)"
+		args = append(args, at)
+	}
+	row := r.db.Conn(ctx).Raw("SELECT "+sel+" FROM users", args...).Row()
+	if err := row.Err(); err != nil {
+		return 0, nil, err
+	}
+	var total int64
+	active := make([]int64, len(activeSince))
+	dst := []any{&total}
+	for i := range active {
+		dst = append(dst, &active[i])
+	}
+	if err := row.Scan(dst...); err != nil {
+		return 0, nil, err
+	}
+	return total, active, nil
 }
