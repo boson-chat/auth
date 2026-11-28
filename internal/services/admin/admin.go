@@ -76,6 +76,9 @@ type AdminServiceImpl interface {
 	// ListUsers searches users; sort is a user.Sort* value ("" = created).
 	ListUsers(ctx context.Context, query, sort string, limit, offset int) ([]*user.User, int64, error)
 	GetUser(ctx context.Context, id string) (*user.User, error)
+	// Stats counts the accounts and those active in the last 7 and 30
+	// days (GET /internal/v1/stats, the admin panel's usage stats).
+	Stats(ctx context.Context) (*Stats, error)
 	// FindUser resolves a user id or username (CLI convenience).
 	FindUser(ctx context.Context, idOrUsername string) (*user.User, error)
 	// SetDisabled disables (revoking every session) or re-enables a user
@@ -127,6 +130,22 @@ func (s *AdminService) ListUsers(ctx context.Context, query, sort string, limit,
 		return nil, 0, apperr.Invalid("sort must be created, last_active or last_sign_in")
 	}
 	return s.Users.List(ctx, user.ListFilter{Query: query, Sort: sort, Limit: clampLimit(limit), Offset: max(offset, 0)})
+}
+
+// Stats are account counts, never who.
+type Stats struct {
+	Accounts  int64 `json:"accounts"`
+	Active7d  int64 `json:"active_7d"`
+	Active30d int64 `json:"active_30d"`
+}
+
+func (s *AdminService) Stats(ctx context.Context) (*Stats, error) {
+	now := s.Now()
+	total, active, err := s.Users.Counts(ctx, now.Add(-7*24*time.Hour), now.Add(-30*24*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	return &Stats{Accounts: total, Active7d: active[0], Active30d: active[1]}, nil
 }
 
 func notFound(err error) error {

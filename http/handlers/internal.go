@@ -40,6 +40,7 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 	mux.HandleFunc("GET /internal/v1/roles/{id}/members", h.internalOnly(h.adminRoleMembers))
 	mux.HandleFunc("GET /internal/v1/irc/grants", h.internalOnly(h.internalIRCGrants))
 	mux.HandleFunc("GET /internal/v1/irc/accounts/removed", h.internalOnly(h.internalRemovedAccounts))
+	mux.HandleFunc("GET /internal/v1/stats", h.internalOnly(h.internalStats))
 	h.registerBridge(mux)
 	h.registerInternalRoleChannels(mux)
 	h.registerActing(mux)
@@ -51,6 +52,18 @@ func (h *Handlers) RegisterInternal(mux *nethttp.ServeMux, metrics nethttp.Handl
 // object as GET /v1/admin/settings).
 func (h *Handlers) internalSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
 	st, err := h.Settings.Get(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, nethttp.StatusOK, st)
+}
+
+// internalStats: GET /internal/v1/stats, account counts for the admin
+// panel's usage & health stats (the stack's docs/telemetry.md):
+// {accounts, active_7d, active_30d}. Counts only, never who.
+func (h *Handlers) internalStats(w nethttp.ResponseWriter, r *nethttp.Request) {
+	st, err := h.Admin.Stats(r.Context())
 	if err != nil {
 		writeError(w, r, err)
 		return
